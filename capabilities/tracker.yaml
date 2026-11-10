@@ -1,0 +1,151 @@
+# Ticket management, described without describing a ticket system.
+#
+# This is a wireframe: concepts every tracker has, the operations a profile can bind,
+# the guarantees those operations make, and the questions the setup process asks to fit
+# it to one profile. It carries no implementation, no transport and no product name -
+# tests/test_capabilities.py refuses any. Anything not universal to every tracker is an
+# answer to a setup question, never a concept here.
+#
+# One source for two readers: a profile reads it as the template for its own tracker, and
+# capability binding validates a profile's bindings against the names under `operations`.
+
+# What every ticket system has, named and never typed to one system.
+concepts:
+  issue:
+    description: One tracked unit of work, from filing to resolution.
+  identifier:
+    description: How one issue is referred to, in conversation and in a change record.
+  summary:
+    description: The one-line title that identifies an issue in a list.
+  description:
+    description: The body. What is wrong or wanted, how it was established, and what done means.
+  owner:
+    description: The person answerable for an issue.
+  priority:
+    description: An ordering of issues by when they get done. The scale is a setup answer.
+  status:
+    description: Where an issue is in its lifecycle. The states are a setup answer.
+  resolution:
+    description: Why an issue was closed - completed, declined, duplicated, or superseded.
+  relation:
+    description: A link between issues, such as parent and child, or blocks and blocked by.
+  comment:
+    description: A dated note added to an issue after it is filed.
+  category:
+    description: The type or label by which a system groups issues, however it does so.
+
+# Each operation is one capability a profile binds, so a profile whose system lacks an
+# operation loses only what needs it.
+operations:
+  create:
+    capability: tracker.create
+    description: File a new issue with its summary, description and required fields.
+    guarantees: [read-back, refuse-incomplete]
+  edit:
+    capability: tracker.edit
+    description: Change an existing issue's summary, description or category.
+    guarantees: [read-back, refuse-incomplete]
+  query:
+    capability: tracker.query
+    description: Find issues by their fields and relations, in an order the profile defines.
+    guarantees: [unknown-not-empty]
+  comment:
+    capability: tracker.comment
+    description: Add a note to an existing issue.
+    guarantees: [read-back]
+  close:
+    capability: tracker.close
+    description: Resolve an issue and record why.
+    guarantees: [read-back]
+  link:
+    capability: tracker.link
+    description: Relate two issues.
+    guarantees: [read-back]
+  status:
+    capability: tracker.status
+    description: Move an issue between lifecycle states.
+    guarantees: [read-back]
+  priority:
+    capability: tracker.priority
+    description: Set an issue's place in the ordering.
+    guarantees: [read-back]
+
+# Promises that come from the core's design principles, not from any one implementation.
+guarantees:
+  read-back:
+    description: A write is done only when the record is read back and found complete. An accepted request and a completed one are different events.
+  refuse-incomplete:
+    description: An incomplete record is refused before it is written, naming what is missing.
+  unknown-not-empty:
+    description: A failed lookup reports failure. It never returns an empty result that reads as nothing there.
+
+# Asked by the setup process; the answers belong to the profile and are stored there,
+# under answers: as tracker.<id>. Each `example` is written for an invented system.
+# `declares: true` marks the one answer that names the system: answered with nothing
+# bound, render reports the system unbuilt. `renders: true` marks a convention an agent
+# needs while working, rather than an answer that only drives bindings: once the system is
+# declared, render writes each one, with its ask, into an on-demand conventions rule.
+setup:
+  - id: system
+    declares: true
+    ask: Which ticket system does this profile use?
+    why: Every other answer depends on it, and the core binds no system by default.
+    feeds: [issue]
+    example: "ExampleTracker, a hosted tracker with projects."
+  - id: connection
+    ask: How is the system reached, and how is access authorised?
+    why: A binding needs a transport, and a credential is never stored in the core.
+    feeds: [create, query]
+    example: "Through its command-line client, with a token read from the environment."
+  - id: fields
+    renders: true
+    ask: Which fields matter, and which must be filled before an issue counts as filed?
+    why: This is what an incomplete record means for this profile, and it is what is refused.
+    feeds: [create, edit]
+    example: "Summary, description, owner and category are required. Due date is optional."
+  - id: body
+    renders: true
+    ask: What should a description look like? Give an example.
+    why: A consistent body is what lets a later reader trust an issue without the conversation behind it.
+    feeds: [description]
+    example: "Opens with a one-line impact statement, then Problem, Steps and Done when."
+  - id: summary
+    renders: true
+    ask: How should a summary be formatted?
+    why: Summaries are what a list shows, so their shape decides whether a list can be scanned.
+    feeds: [summary]
+    example: "Imperative, under 80 characters, starting with the area it touches."
+  - id: status
+    renders: true
+    ask: How is status handled, and which states mean started and finished?
+    why: Operations that start or stop work need to know which states those are.
+    feeds: [status, close]
+    example: "Open, Active, Done. Active means started. Done is set only by closing."
+  - id: priority
+    renders: true
+    ask: What is the priority scale, and who sets it?
+    why: An ordering is only meaningful if everyone reads the same scale the same way.
+    feeds: [priority]
+    example: "Urgent, Normal, Later. The owner sets it when filing, and anyone can change it."
+  - id: references
+    renders: true
+    ask: How is an issue referenced in conversation and in a change record, and which references advance it?
+    why: A reference that only mentions an issue is not the same as one that advances it.
+    feeds: [identifier]
+    example: "A project prefix and a number, such as web-12. A line starting Fixes advances it."
+  - id: owner
+    renders: true
+    ask: Who is the default owner of a new issue?
+    why: An issue without an owner is invisible to whoever triages.
+    feeds: [owner, create]
+    example: "The person who files it."
+  - id: relations
+    ask: Which relations does the system support?
+    why: A system without parent links loses grouping, and the profile should know before binding it.
+    feeds: [relation, link]
+    example: "Parent and child, and blocks and blocked by."
+  - id: operations
+    ask: Which operations will this profile bind?
+    why: An unbound operation is reported as unavailable, never silently skipped.
+    feeds: [create, edit, query, comment, close, link, status, priority]
+    example: "All of them except link, because the system has no relations."

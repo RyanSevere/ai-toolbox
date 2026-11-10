@@ -1,0 +1,91 @@
+# An example profile: every top-level key the core accepts, with invented values.
+# Copy this folder as the start of a new profile and replace each value. Nothing
+# here names a real repository, owner, address or issue key.
+#
+# Render with:  python core/sync.py --profile .
+# The allowed top-level keys are fixed by sync.py PROFILE_KEYS; an unknown key refuses.
+
+source:
+  # The repository this profile lives in. It is also the name in every stamp:
+  # "generated from <repo>@<sha>". The profile's own render (--self) leaves the
+  # @<sha> off, so two branches never conflict on every stamp line.
+  repo: example-profile
+  # The prefix of an issue reference, such as ex-12.
+  key: ex
+  # The GitHub owner of every repository in this profile. The ticket tool builds
+  # owner/repo from it.
+  owner: example-owner
+
+# The commit identity for every target. sync.py sets it as each clone's local
+# user.name and user.email, so a machine's global git config never decides it.
+identity:
+  name: Example Owner
+  email: owner@example.invalid
+
+# Repositories deliberately left out, each with the reason. Explicit, so "does this
+# repository matter" is answered before anyone asks.
+not_onboarded:
+  example-archived: "Retired project. Not onboarded until it is revived."
+
+# Rules rendered into every target unless it excludes them. Each id names a
+# spec-<id>.md in the core's rules/ or in this profile's seeds/rules/.
+defaults:
+  tier1:
+    - personal
+  tier2:
+    - response-shape
+    - file-headers
+    - python
+    - shell
+    - typescript
+    - logging
+    - testing
+    - tangents
+    - tool-methods
+    - session-logging
+    - planning
+
+# How many targets --rollout pushes at once when the machine's capacity cannot be read.
+rollout:
+  parallel_default: 3
+
+# Where the repositories' Actions jobs run: hosted | self-hosted.
+actions:
+  runner: hosted
+
+# Where each repo keeps its hand-owned gate configuration: test-roots, doc-paths and
+# lint-baseline/. Required - there is no default.
+gate_config_dir: .gates
+
+# Gate flags, written with profile.lock by `python core/consent.py --profile . --init` at an interactive
+# console, and changed only by `consent.py --set`. sync.py refuses to render without the lock.
+features: {}
+
+# Which skill provides each capability named under capabilities/ in the core, as
+# `tracker.query: {skill: <name>}`. A seed that `requires:` an unbound capability is not
+# rendered, and the render lists it. Empty binds nothing.
+capabilities: {}
+
+# The setup answers, as `tracker.system: <prose>` - one per question in a capability
+# file's setup: section. Kept apart from capabilities:, which says what implements them.
+# An answer that names a system nothing above binds is reported unbuilt by render.
+answers: {}
+
+targets:
+
+  example-app:
+    key: app
+    estate: true
+    notes: >
+      A target with the common options: `estate: true` opts in to the estate map,
+      `exclude:` drops rules by id, `remote:` names a GitHub repository whose name
+      differs from its folder, `branch:` names a working branch that is not main,
+      and `hooks: true` opts in to the agent hooks.
+
+  example-scratch:
+    key: scr
+    exclude:
+      - planning
+      - session-logging
+    notes: >
+      A target that opts out of two rules.

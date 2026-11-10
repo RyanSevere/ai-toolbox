@@ -1,0 +1,105 @@
+################################################################################
+# File: one-way-gates.yml
+# Path: {PROJECT_ROOT}/.github/workflows/one-way-gates.yml
+# Created by: Ryan Severe
+# Created: 2026-11-08
+# Last Updated: 2026-11-08
+# Description: One-way gates 1 and 4 in CI. Refuses a change whose added lines
+#              match the secret leak denylist, and a tree that names anything
+#              on the secret core-names list. Both lists come from repository
+#              secrets, which GitHub withholds from fork pull requests, so the
+#              gates run there only after the change reaches dev or main.
+################################################################################
+# ===========================================================================
+#
+#
+#            "~,
+#                *m,
+#                   *9m;
+#                       *%pg
+#                          "YRWu
+#                              *9$&w
+#                                  *R$&w
+#   ;j]@@W;                   *w,      79&&w;
+#   :|*%MT"                     7&&w,      ?78BWw
+# . ,|*       -p     ~            *R$$$gw,     '*MU@m,
+#            =W/?*%NMWgw             *T&$F ,@w;     "*4[%m,
+#              7R$$$$$$$$g          yg$$Gg$@@Hh!j ,w     "*w|j=,
+#       ..     ]K@ww[T$Fff            >*MB&&@@Hh ]hk{!!~^     "*v'
+#          '|;, *M@@&&$P                 $$&@HHH\  ` ;w,,   ,~""
+#            "|jj]]%@F"                  ]$@@H, ;*M%P)a$$C  c
+#           . :|j[M"                     ]@@HHr TfR4&$NE*,/~<'
+#             `!||j]@@@A`                ]@@Hh~ *TT"" "* ^ r  '~
+#                *ojKM"                  l@Hh~  "*|"'   /        `
+#                                        @HHkC ,;!"
+#                                       ]HHhr/|!"'
+#                                       #Hhr!||"
+#                             ,@r       hkr!||'
+#                                      [k{|!"
+#                                     (r!!"        r
+#                                     !!"        r
+#                                      ";      /
+#                                             '
+#                                            '
+# ===========================================================================
+
+
+name: one-way-gates
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Require both secrets
+        env:
+          LEAK_DENYLIST: ${{ secrets.LEAK_DENYLIST }}
+          CORE_NAMES: ${{ secrets.CORE_NAMES }}
+        run: |
+          set -euo pipefail
+          missing=0
+          if [ -z "$LEAK_DENYLIST" ]; then
+            echo "::error::The LEAK_DENYLIST secret is missing or empty, so gate 1 cannot run."
+            missing=1
+          fi
+          if [ -z "$CORE_NAMES" ]; then
+            echo "::error::The CORE_NAMES secret is missing or empty, so gate 4 cannot run."
+            missing=1
+          fi
+          exit "$missing"
+      - name: Gate 1, leak denylist
+        env:
+          LEAK_DENYLIST: ${{ secrets.LEAK_DENYLIST }}
+          LOCAL: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.after }}
+          REMOTE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$LEAK_DENYLIST" > "$RUNNER_TEMP/leak-denylist"
+          sh githooks/one-way/leak-denylist.sh "$RUNNER_TEMP/leak-denylist" "$LOCAL" "$REMOTE"
+      - name: Gate 4, core names no profile
+        env:
+          CORE_NAMES: ${{ secrets.CORE_NAMES }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$CORE_NAMES" > "$RUNNER_TEMP/core-names"
+          sh githooks/one-way/core-names-no-profile.sh "$RUNNER_TEMP/core-names" .
+
+  fork-notice:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say that the gates do not run here
+        run: |
+          set -euo pipefail
+          echo "::warning::The one-way gates do not run on fork pull requests, because GitHub withholds secrets from them. They run on the push to dev and on the dev to main pull request."

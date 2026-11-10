@@ -1,0 +1,514 @@
+{
+ "test_answers.Conventions": [
+  "consent.py",
+  "sync.py",
+  "tests/test_answers.py"
+ ],
+ "test_answers.ProfileKey": [
+  "sync.py",
+  "tests/test_answers.py"
+ ],
+ "test_answers.SetupQuestions": [
+  "sync.py",
+  "tests/test_answers.py"
+ ],
+ "test_answers.Unbuilt": [
+  "consent.py",
+  "sync.py",
+  "tests/test_answers.py"
+ ],
+ "test_answers.ValidateAnswers": [
+  "sync.py",
+  "tests/test_answers.py"
+ ],
+ "test_capabilities.NamesNothingSpecific": [
+  "tests/test_capabilities.py"
+ ],
+ "test_capabilities.SetupQuestions": [
+  "tests/test_capabilities.py"
+ ],
+ "test_capabilities.Wireframe": [
+  "tests/test_capabilities.py"
+ ],
+ "test_check_response.AbandonedTurn": [
+  "responses/copilot.py",
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.Arrears": [
+  "responses/copilot.py",
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.CursorLocate": [
+  "responses/check_response.py",
+  "responses/copilot.py",
+  "responses/cursor.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.CursorMain": [
+  "responses/check_response.py",
+  "responses/copilot.py",
+  "responses/cursor.py",
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.CursorRealTranscript": [
+  "responses/check_response.py",
+  "responses/cursor.py",
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.CursorTurns": [
+  "responses/cursor.py",
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.EntryIds": [
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.ExampleFormat": [
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.ExemptionNeedsTheCommand": [
+  "responses/check_response.py",
+  "responses/copilot.py",
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.Grading": [
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.NothingToGrade": [
+  "responses/check_response.py",
+  "responses/copilot.py",
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.OnlyASeenVerdictSpendsTheRun": [
+  "responses/check_response.py",
+  "responses/copilot.py",
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.Pointers": [
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.RestartedSession": [
+  "responses/check_response.py",
+  "responses/copilot.py",
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.ResurfacedItems": [
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.SessionStarters": [
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.SplitTurns": [
+  "responses/check_response.py",
+  "responses/copilot.py",
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.ToolDetection": [
+  "responses/check_response.py",
+  "responses/copilot.py",
+  "responses/cursor.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.VerdictlessRunsAreFree": [
+  "responses/check_response.py",
+  "responses/copilot.py",
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_check_response.WhichTranscript": [
+  "responses/check_response.py",
+  "responses/copilot.py",
+  "responses/shape.py",
+  "tests/test_check_response.py"
+ ],
+ "test_consent.Check": [
+  "consent.py",
+  "tests/test_consent.py"
+ ],
+ "test_consent.CheckCommand": [
+  "consent.py",
+  "tests/test_consent.py"
+ ],
+ "test_consent.Command": [
+  "consent.py",
+  "tests/test_consent.py"
+ ],
+ "test_consent.LockFormat": [
+  "consent.py",
+  "tests/test_consent.py"
+ ],
+ "test_consent.NoConsole": [
+  "consent.py",
+  "tests/test_consent.py"
+ ],
+ "test_consent.YamlBooleanNames": [
+  "consent.py",
+  "tests/test_consent.py"
+ ],
+ "test_hooks.HookInput": [
+  "hooks/no-shell-file-edits/hook.py",
+  "tests/test_hooks.py"
+ ],
+ "test_hooks.HookLib": [
+  "hooks/lib/hookio.py",
+  "tests/test_hooks.py"
+ ],
+ "test_hooks.SecretDefaults": [
+  "hooks/no-secret-defaults/check.py",
+  "tests/test_hooks.py"
+ ],
+ "test_hooks.ShellFileEdits": [
+  "hooks/no-shell-file-edits/hook.py",
+  "tests/test_hooks.py"
+ ],
+ "test_one_way_gates.AuthorDomains": [
+  "tests/test_one_way_gates.py"
+ ],
+ "test_one_way_gates.CoreNamesNoProfile": [
+  "tests/test_one_way_gates.py"
+ ],
+ "test_one_way_gates.LeakDenylist": [
+  "tests/test_one_way_gates.py"
+ ],
+ "test_one_way_gates.NoCoreRemote": [
+  "tests/test_one_way_gates.py"
+ ],
+ "test_prime.Isolation": [
+  "prime.py",
+  "tests/test_prime.py"
+ ],
+ "test_prime.Steps": [
+  "prime.py",
+  "tests/test_prime.py"
+ ],
+ "test_run_shard.Assignment": [
+  "tests/run_shard.py",
+  "tests/test_run_shard.py"
+ ],
+ "test_run_shard.DeclaredShards": [
+  "tests/run_shard.py",
+  "tests/test_run_shard.py"
+ ],
+ "test_run_shard.SelectedLine": [
+  "tests/run_shard.py",
+  "tests/test_run_shard.py"
+ ],
+ "test_run_shard.SlowestClasses": [
+  "tests/run_shard.py",
+  "tests/test_run_shard.py"
+ ],
+ "test_select_tests.ChangedFiles": [
+  "tests/select_tests.py",
+  "tests/test_select_tests.py"
+ ],
+ "test_select_tests.Declared": [
+  "tests/select_tests.py",
+  "tests/test_select_tests.py"
+ ],
+ "test_select_tests.RepoRelative": [
+  "tests/select_tests.py",
+  "tests/test_select_tests.py"
+ ],
+ "test_select_tests.Select": [
+  "tests/select_tests.py",
+  "tests/test_select_tests.py"
+ ],
+ "test_setup_profile.AnswersFile": [
+  "consent.py",
+  "setup_profile.py",
+  "sync.py",
+  "tests/test_setup_profile.py"
+ ],
+ "test_setup_profile.FromEmpty": [
+  "consent.py",
+  "setup_profile.py",
+  "sync.py",
+  "tests/test_setup_profile.py"
+ ],
+ "test_setup_profile.PostCreate": [
+  "consent.py",
+  "setup_profile.py",
+  "sync.py",
+  "tests/test_setup_profile.py"
+ ],
+ "test_setup_profile.ReRun": [
+  "consent.py",
+  "setup_profile.py",
+  "sync.py",
+  "tests/test_setup_profile.py"
+ ],
+ "test_setup_profile.Unbuilt": [
+  "consent.py",
+  "setup_profile.py",
+  "sync.py",
+  "tests/test_setup_profile.py"
+ ],
+ "test_sync.BuildPlan": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.CapabilityBindings": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.CursorHooks": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.CursorTracked": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.ExampleProfile": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.FactoryBundle": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.FactorySkills": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.Frontmatter": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.GateConfig": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.GateConfigDir": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.GateFlags": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.GateWireframe": [
+  "tests/test_sync.py"
+ ],
+ "test_sync.HiddenPlanPaths": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.HookInterpreter": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.HookLaunchCheck": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.HookSchema": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.HooksJsonLocal": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.Identity": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.IssueKeys": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.MainArgv": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.MainWithAnotherProfile": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.ModeBlocks": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.OrphansAndForeign": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.ProbeCapacity": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.ProfileLoader": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.ProfileModules": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.ProfileSeeds": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.PycacheIgnored": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.RenderAgent": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.RenderAsset": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.RenderPrompt": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.RequiresBlocks": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.Rollout": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.ScratchIgnored": [
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.SeedSessions": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.SourceSha": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_sync.StampSource": [
+  "consent.py",
+  "sync.py",
+  "tests/test_sync.py"
+ ],
+ "test_toolboxctl.Arguments": [
+  "tests/test_toolboxctl.py",
+  "toolboxctl.py",
+  "vendor.py"
+ ],
+ "test_toolboxctl.Check": [
+  "tests/test_toolboxctl.py",
+  "toolboxctl.py",
+  "vendor.py"
+ ],
+ "test_toolboxctl.PassThrough": [
+  "tests/test_toolboxctl.py",
+  "toolboxctl.py",
+  "vendor.py"
+ ],
+ "test_toolboxctl.Preview": [
+  "sync.py",
+  "tests/test_toolboxctl.py",
+  "toolboxctl.py"
+ ],
+ "test_toolboxctl.Refusal": [
+  "tests/test_toolboxctl.py",
+  "toolboxctl.py",
+  "vendor.py"
+ ],
+ "test_toolboxctl.UpdateFlow": [
+  "tests/test_toolboxctl.py",
+  "toolboxctl.py",
+  "vendor.py"
+ ],
+ "test_toolboxctl.UpdatePreconditions": [
+  "tests/test_toolboxctl.py",
+  "toolboxctl.py",
+  "vendor.py"
+ ],
+ "test_toolboxctl.Version": [
+  "tests/test_toolboxctl.py",
+  "toolboxctl.py",
+  "vendor.py"
+ ],
+ "test_vendor.CheckCore": [
+  "tests/test_vendor.py",
+  "vendor.py"
+ ],
+ "test_vendor.CheckCoreCommand": [
+  "sync.py",
+  "tests/test_vendor.py",
+  "vendor.py"
+ ],
+ "test_vendor.CheckUpdates": [
+  "tests/test_vendor.py",
+  "vendor.py"
+ ],
+ "test_vendor.CheckUpdatesCommand": [
+  "sync.py",
+  "tests/test_vendor.py",
+  "vendor.py"
+ ],
+ "test_vendor.ContentHash": [
+  "tests/test_vendor.py",
+  "vendor.py"
+ ],
+ "test_vendor.HttpGet": [
+  "tests/test_vendor.py",
+  "vendor.py"
+ ],
+ "test_vendor.ParseSource": [
+  "tests/test_vendor.py",
+  "vendor.py"
+ ],
+ "test_vendor.ReadRecord": [
+  "tests/test_vendor.py",
+  "vendor.py"
+ ],
+ "test_vendor.VendorCore": [
+  "tests/test_vendor.py",
+  "vendor.py"
+ ],
+ "test_vendor.VendorCoreCommand": [
+  "sync.py",
+  "tests/test_vendor.py",
+  "vendor.py"
+ ]
+}
