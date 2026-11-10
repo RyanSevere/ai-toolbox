@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_toolboxctl.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-09
+# Last Updated: 2026-11-10
 # Description: Tests for toolboxctl.py - the one entry point a
 #              profile's owner runs against its vendored core. Covers the
 #              refusal outside a vendored core, version, check's ordering, the
@@ -370,7 +370,10 @@ def shutil_rmtree_git(profile: Path) -> None:
     def writable(func, path, _):
         os.chmod(path, 0o700)
         func(path)
-    shutil.rmtree(profile / ".git", onexc=writable)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(profile / ".git", onexc=writable)
+    else:
+        shutil.rmtree(profile / ".git", onerror=writable)
 
 
 class Preview(unittest.TestCase):
