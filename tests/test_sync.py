@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-09
+# Last Updated: 2026-11-10
 # Description: Tests for sync.py - the renderer that decides what every AI
 #              session in the estate reads. Covers build_plan over every real
 #              manifest target, exclude validation, the hand-owned guard, stamp
@@ -2911,6 +2911,41 @@ def run(*args, timeout):
 '''
 
 
+def path_without_a_real_gh(entries: list[str]) -> list[str]:
+    """PATH entries with every directory that holds a Windows gh.exe left out. A gh with no
+    extension is not left out: the fixture's stub gh comes first on PATH and answers instead,
+    and on Linux the real gh lives beside git, so dropping its directory would lose git."""
+    return [d for d in entries if d and not (Path(d) / "gh.exe").is_file()]
+
+
+class PathWithoutAGh(unittest.TestCase):
+    """Intent: the Rollout fixture hides a real gh from the run, and keeps the rest of PATH.
+    On Linux gh and git share /usr/bin, so dropping that directory leaves no git to find."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name)
+
+    def folder(self, name: str, *files: str) -> str:
+        directory = self.base / name
+        directory.mkdir()
+        for file in files:
+            (directory / file).write_text("", encoding="utf-8")
+        return str(directory)
+
+    def test_a_directory_holding_gh_and_git_is_kept(self):
+        shared = self.folder("usr-bin", "gh", "git")
+        self.assertEqual(path_without_a_real_gh([shared]), [shared])
+
+    def test_a_directory_holding_a_windows_gh_is_dropped(self):
+        self.assertEqual(path_without_a_real_gh([self.folder("cli", "gh.exe")]), [])
+
+    def test_a_directory_with_neither_is_kept_and_an_empty_entry_is_dropped(self):
+        plain = self.folder("plain", "git")
+        self.assertEqual(path_without_a_real_gh(["", plain]), [plain])
+
+
 class Rollout(unittest.TestCase):
     """`sync.py --rollout SUBJECT` renders and commits every live target.
 
@@ -3017,8 +3052,7 @@ class Rollout(unittest.TestCase):
         gh.chmod(0o755)
         # ghcli runs gh without PATHEXT, so on Windows it never finds gh.cmd, and a real gh
         # further down PATH would dispatch real workflow runs as the owner. Leave none to find.
-        path = [d for d in os.environ.get("PATH", "").split(os.pathsep)
-                if d and not any((Path(d) / exe).is_file() for exe in ("gh", "gh.exe"))]
+        path = path_without_a_real_gh(os.environ.get("PATH", "").split(os.pathsep))
         self.env = clean_env(PATH=os.pathsep.join([str(bin_dir), *path]))
 
     def make_target(self, name: str, branch: str) -> None:
