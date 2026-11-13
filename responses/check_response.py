@@ -68,6 +68,10 @@ import shape  # noqa: E402
 
 ADAPTERS = {adapter.NAME: adapter for adapter in (copilot, cursor)}
 RUN_LIMIT = 2
+# Look-back grades a reply that is already posted, so a re-run cannot start a
+# check-and-revise loop. One run per turn kept refusing a re-run the operator could not
+# use (air-295, operator 2026-11-13).
+PREVIOUS_RUN_LIMIT = 3
 # A transcript that has not caught up is re-read for up to BEHIND_POLLS x BEHIND_SECONDS
 # before giving up.
 BEHIND_POLLS = 10

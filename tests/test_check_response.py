@@ -1224,11 +1224,13 @@ class CursorMain(TranscriptCase):
         self.assertEqual(code, 3)
         self.assertIn("--previous", err)
 
-    def test_one_graded_run_per_turn_without_a_terminal(self):
-        """Intent: "1 successful run per turn". Cursor's shell is never
-        a TTY, and the current turn's runs are not in the transcript, so the ledger counts."""
+    def test_three_graded_runs_per_turn_without_a_terminal(self):
+        """Intent: "3 successful runs per turn" (air-295, operator 2026-11-13). Cursor's shell
+        is never a TTY, and the current turn's runs are not in the transcript, so the
+        ledger counts."""
         path = self.clean()
-        self.assertEqual(self.run_main(path, "--previous")[0], 0)
+        for _ in range(3):
+            self.assertEqual(self.run_main(path, "--previous")[0], 0)
         code, out, _ = self.run_main(path, "--previous")
         self.assertEqual(code, 2, out)
         self.assertIn("REFUSED", out)
@@ -1346,8 +1348,26 @@ class CursorMain(TranscriptCase):
         self.assertIn("CURSOR_CONVERSATION_ID", err.getvalue())
 
 
-class CondensedShape(unittest.TestCase):
+class CondensedShape(TranscriptCase):
     """air-295: the condensed shape is the default; the full shape is inferred from its headings."""
+
+    def setUp(self):
+        ledger = tempfile.TemporaryDirectory()
+        self.addCleanup(ledger.cleanup)
+        patcher = mock.patch.object(cr.tempfile, "gettempdir", return_value=ledger.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_previous(self, path: Path) -> tuple[int, str]:
+        out = io.StringIO()
+        argv = ["check_response.py", "--tool", "cursor", "--transcript", str(path), "--previous"]
+        with mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.stderr", new=io.StringIO()):
+            return cr.main(), out.getvalue()
+
+    def previous_clean(self) -> Path:
+        return self.transcript(c_user("one"), c_assistant(SHAPED_CLEAN), C_ENDED,
+                               c_user("two - in progress"))
 
     PARAGRAPH = (
         'The live state matches the seed: `git status -sb` printed "## main...origin/main", '
@@ -1463,6 +1483,38 @@ class CondensedShape(unittest.TestCase):
             shape.grade("previous reply", CONDENSED_CLEAN)
         self.assertIn("shape=condensed", out.getvalue())
         self.assertIn("Compliance: PASS", out.getvalue())
+
+    def test_grade_prints_the_ledger_file_line(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", new=out):
+            shape.grade("previous reply", CONDENSED_CLEAN)
+        self.assertIn("Ledger file: not checked", out.getvalue())
+        self.assertNotIn("Ledger file: PASS", out.getvalue())
+
+    def test_a_failing_reply_still_prints_the_ledger_file_line(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", new=out):
+            shape.grade("previous reply", CONDENSED_CLEAN.replace("## Summary\n", ""))
+        self.assertIn("Compliance: FAIL", out.getvalue())
+        self.assertIn("Ledger file: not checked", out.getvalue())
+
+    def test_previous_allows_three_runs(self):
+        path = self.previous_clean()
+        self.assertEqual(self.run_previous(path)[0], 0)
+        self.assertEqual(self.run_previous(path)[0], 0)
+        code, out = self.run_previous(path)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("REFUSED", out)
+        self.assertIn("run 3 of 3", out)
+
+    def test_previous_refuses_the_fourth(self):
+        path = self.previous_clean()
+        for _ in range(3):
+            self.assertEqual(self.run_previous(path)[0], 0)
+        code, out = self.run_previous(path)
+        self.assertEqual(code, 2, out)
+        self.assertIn("REFUSED", out)
+        self.assertIn("limit is 3", out)
 
 
 if __name__ == "__main__":
