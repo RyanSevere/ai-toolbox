@@ -1950,7 +1950,7 @@ def ensure_claude_local_ignored(repo: Path, write: bool) -> int:
                           "Claude Code's per-machine settings - kept out of commits.")
 
 
-CURSOR_BLANKET ={".cursor/", ".cursor", "/.cursor/", "/.cursor"}
+CURSOR_BLANKET = {".cursor/", ".cursor", "/.cursor/", "/.cursor"}
 CURSOR_RULES = (
     "# Cursor: rendered output is tracked. Anything else Cursor writes here stays local -",
     "# cli.json and mcp.json carry machine and credential state.",
