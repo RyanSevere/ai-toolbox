@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_check_response.py
 # Created by: Ryan Severe
 # Created: 2026-09-23
-# Last Updated: 2026-11-08
+# Last Updated: 2026-11-13
 # Description: Transcript fixtures for responses/check_response.py, its shared
 #              shape core and its per-tool adapters. Every case here was
 #              found by using the script and verified by hand first; the tests
@@ -106,6 +106,37 @@ SHAPED_TAGGED_RULING = SHAPED_UNTAGGED_RULING.replace(
     '**P1 "refinement needs no ticket"**',
     '**P1 "refinement needs no ticket"** [ruling]',
 )
+
+CONDENSED_CLEAN = """Mode: Planning
+Needs from you: 1 decision, 1 operator step
+Changed: nothing
+
+## Summary
+
+The live state matches the seed: `git status -sb` printed "## main...origin/main", and the gate passed the draft.
+
+## Decisions and clarifications
+
+- DC1 Pick the next ticket
+  - Use case: decides what the next session builds
+  - Options:
+    - a. example-1 first (recommended)
+    - b. example-2 first
+  - Recommendation: (a), because it unblocks example-2
+
+## Operator steps
+
+- OS1 Run `python tools/probe.py --host example` and paste the output back
+
+## Recommended next
+
+- R1 Once OS1's output is back, decide whether example-1 can run on that host
+  - Reasoning: the probe is the only unknown
+
+## Came up while doing it
+
+None.
+"""
 
 
 def user(content: str) -> str:
@@ -1313,6 +1344,125 @@ class CursorMain(TranscriptCase):
             code = cr.main()
         self.assertEqual(code, 3)
         self.assertIn("CURSOR_CONVERSATION_ID", err.getvalue())
+
+
+class CondensedShape(unittest.TestCase):
+    """air-295: the condensed shape is the default; the full shape is inferred from its headings."""
+
+    PARAGRAPH = (
+        'The live state matches the seed: `git status -sb` printed "## main...origin/main", '
+        "and the gate passed the draft."
+    )
+    RECOMMENDED_NEXT = (
+        "## Recommended next\n\n"
+        "- R1 Once OS1's output is back, decide whether example-1 can run on that host\n"
+        "  - Reasoning: the probe is the only unknown\n\n"
+    )
+
+    def findings(self, text: str) -> list[str]:
+        return shape.check(*shape.parse(text))[0]
+
+    def test_condensed_reply_passes(self):
+        self.assertEqual(self.findings(CONDENSED_CLEAN), [])
+
+    def test_missing_summary_fails(self):
+        text = CONDENSED_CLEAN.replace(f"## Summary\n\n{self.PARAGRAPH}\n\n", "")
+        self.assertIn("condensed: section missing: summary", self.findings(text))
+
+    def test_missing_recommended_next_fails(self):
+        text = CONDENSED_CLEAN.replace(self.RECOMMENDED_NEXT, "")
+        self.assertIn("condensed: section missing: recommendednext", self.findings(text))
+
+    def test_missing_came_up_fails(self):
+        text = CONDENSED_CLEAN.replace("## Came up while doing it\n\nNone.\n", "")
+        self.assertIn("condensed: section missing: cameupwhiledoingit", self.findings(text))
+
+    def test_empty_came_up_fails(self):
+        text = CONDENSED_CLEAN.replace("\nNone.\n", "\n")
+        self.assertIn(
+            "cameupwhiledoingit: empty - list an item or write 'None.'", self.findings(text)
+        )
+
+    def test_summary_without_a_pointer_fails(self):
+        text = CONDENSED_CLEAN.replace(self.PARAGRAPH, "The live state matches the seed.")
+        found = self.findings(text)
+        self.assertTrue(
+            any(f.startswith("summary: no pointer a reader could follow") for f in found), found
+        )
+
+    def test_summary_of_two_paragraphs_fails(self):
+        text = CONDENSED_CLEAN.replace(
+            self.PARAGRAPH,
+            self.PARAGRAPH + '\n\nA second paragraph quotes "the gate passed the draft".',
+        )
+        self.assertIn("summary: 2 paragraphs, exactly 1 allowed", self.findings(text))
+
+    def test_summary_wrapped_over_two_lines_passes(self):
+        text = CONDENSED_CLEAN.replace(
+            self.PARAGRAPH, self.PARAGRAPH.replace(", and the gate", ",\nand the gate")
+        )
+        self.assertEqual(self.findings(text), [])
+
+    def test_summary_none_this_turn_passes(self):
+        text = CONDENSED_CLEAN.replace(self.PARAGRAPH, "None this turn.")
+        self.assertEqual(self.findings(text), [])
+
+    def test_operator_step_is_an_item(self):
+        steps = shape.parse(CONDENSED_CLEAN)[1]["operatorsteps"]
+        self.assertEqual(len(steps), 1)
+        self.assertTrue(steps[0]["title"].startswith("OS1"), steps)
+
+    def test_decision_with_no_recommended_option_fails(self):
+        text = CONDENSED_CLEAN.replace(" (recommended)", "")
+        self.assertIn(
+            "decisions: 'DC1 Pick the next ticket' marks 0 options recommended, "
+            "exactly one is required",
+            self.findings(text),
+        )
+
+    def test_decision_with_two_recommended_options_fails(self):
+        text = CONDENSED_CLEAN.replace("b. example-2 first", "b. example-2 first (recommended)")
+        self.assertIn(
+            "decisions: 'DC1 Pick the next ticket' marks 2 options recommended, "
+            "exactly one is required",
+            self.findings(text),
+        )
+
+    def test_half_opened_block_is_graded_full(self):
+        claim = (
+            "\n## My claims\n\n"
+            "- C1 The probe exists\n"
+            "  - Verdict: confirmed\n"
+            "  - Evidence for: `ls tools/probe.py` printed the file\n"
+            "  - Evidence against: none\n"
+            "  - Would have falsified it: the file missing\n"
+            "  - Looked for it: yes\n"
+        )
+        found = self.findings(CONDENSED_CLEAN + claim)
+        self.assertIn("section missing for planning mode: yourpremises", found)
+
+    def test_full_reply_decision_needs_one_recommended(self):
+        decision = (
+            "\n## Decisions and clarifications\n\n"
+            "- DC1 Pick the next ticket\n"
+            "  - Use case: decides what the next session builds\n"
+            "  - Options:\n"
+            "    - a. example-1 first\n"
+            "    - b. example-2 first\n"
+        )
+        found = self.findings(SHAPED_CLEAN + decision)
+        self.assertIn(
+            "decisions: 'DC1 Pick the next ticket' marks 0 options recommended, "
+            "exactly one is required",
+            found,
+        )
+
+    def test_grade_line_names_the_shape(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", new=out):
+            shape.grade("previous reply", CONDENSED_CLEAN)
+        self.assertIn("shape=condensed", out.getvalue())
+        self.assertIn("Compliance: PASS", out.getvalue())
 
 
 if __name__ == "__main__":
