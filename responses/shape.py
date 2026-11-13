@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/shape.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-06
+# Last Updated: 2026-11-13
 # Description: The tool-neutral half of the response checker.
 #              Parses a reply against the response shape, grades it, and walks
 #              back over finished turns to collect replies whose turn never ran
@@ -73,6 +73,23 @@ REQUIRED = {
     "execution": ["askeddoneresult", "premisesactedon"],
 }
 
+# The condensed shape is the default. A reply is full only if it carries a heading that
+# belongs to the full shape alone; the headings both shapes use are left out on purpose.
+# Logic and approach is one of them: design replies keep it in the condensed shape
+# (operator, 2026-11-13). It is optional there, and the full shape still requires it.
+FULL_SECTIONS = {
+    "yourpremises", "myclaims", "recommendations",
+    "askeddoneresult", "premisesactedon", "notdonenotchecked",
+}
+CONDENSED_REQUIRED = ["summary", "recommendednext", "cameupwhiledoingit"]
+RECOMMENDED = re.compile(r"\(recommended\)", re.IGNORECASE)
+NONE_THIS_TURN = "None this turn."
+LINES = "#lines"  # suffix: a section's raw lines outside fences, blank lines kept
+# The ledger file holds what the condensed reply no longer prints. Checking it is a
+# separate piece of work; until it exists the line says so and never reads as a pass -
+# unknown is not zero.
+LEDGER_FILE_LINE = "Ledger file: not checked - no ledger exists yet"
+
 CAPS = {"cameupwhiledoingit": 3, "recommendednext": 4}  # decisions deliberately uncapped
 
 FIELD = re.compile(
@@ -88,7 +105,7 @@ VERDICT = re.compile(r"^(confirmed|contradicted|not checked)(?![\w-])", re.IGNOR
 # never used it, so from 2026-09-23 every reply that followed the examples parsed
 # to zero items and passed on its header alone. Q is excluded: a question attaches
 # to an item, it is not one.
-ITEM_START = re.compile(r"^(?:P|C|LA|DC|A|ND|CU|R)\d+\b")
+ITEM_START = re.compile(r"^(?:P|C|LA|DC|A|ND|CU|R|OS)\d+\b")
 
 # Re-surfaced items are answered by reference, so each needs an ID - spec rule 16.
 # Entries here are top-level list lines, not items, and are collected separately.
@@ -202,6 +219,7 @@ def parse(text: str) -> tuple[list[str], dict[str, list[dict]]]:
         if heading:
             section = norm(heading.group(1))
             sections.setdefault(section, [])
+            sections.setdefault(section + LINES, [])
             item = None
             field = None
             continue
@@ -211,14 +229,18 @@ def parse(text: str) -> tuple[list[str], dict[str, list[dict]]]:
             continue
 
         body = strip_md(line)
+        if not in_fence:
+            sections[section + LINES].append(line)
         if not in_fence and re.match(r"^[-*]\s", line):
             sections.setdefault(section + ENTRIES, []).append(body)
         match = FIELD.match(body)
         if ITEM_START.match(body) and not match:
-            item = {"title": body, "fields": {}, "raw": {}}
+            item = {"title": body, "fields": {}, "raw": {}, "lines": [line]}
             sections[section].append(item)
             field = None
             continue
+        if item is not None:
+            item["lines"].append(line)
         if match and item is not None:
             field = norm(match.group(1))
             item["fields"][field] = body[match.end():].strip()
@@ -248,6 +270,54 @@ def session_starter(text: str) -> str | None:
     return None
 
 
+def shape_of(sections: dict) -> str:
+    """'full' if any heading belongs to the full shape alone, else 'condensed'.
+
+    There is no marker to forget: a half-opened block, a lone '## My claims', is graded
+    as full and fails on the sections its mode requires.
+    """
+    return "full" if FULL_SECTIONS & set(sections) else "condensed"
+
+
+def paragraphs(lines: list[str]) -> list[str]:
+    """Runs of non-empty lines, split by blank lines. The lines are already outside fences."""
+    found: list[str] = []
+    run: list[str] = []
+    for line in lines:
+        if line.strip():
+            run.append(line.strip())
+        elif run:
+            found.append(" ".join(run))
+            run = []
+    if run:
+        found.append(" ".join(run))
+    return found
+
+
+def condensed_findings(sections: dict) -> list[str]:
+    """Findings that apply only to the condensed shape."""
+    findings: list[str] = []
+    for name in CONDENSED_REQUIRED:
+        if name not in sections:
+            findings.append(f"condensed: section missing: {name}")
+
+    if "summary" in sections:
+        found = paragraphs(sections.get("summary" + LINES, []))
+        if len(found) != 1:
+            findings.append(f"summary: {len(found)} paragraphs, exactly 1 allowed")
+        elif found[0] != NONE_THIS_TURN and not has_pointer(found[0]):
+            kinds = ", ".join(kind for kind, _ in POINTERS)
+            findings.append(f"summary: no pointer a reader could follow ({kinds})")
+
+    for name in ("recommendednext", "cameupwhiledoingit"):
+        if name not in sections:
+            continue
+        stated_empty = any(strip_md(line).lower() == "none." for line in sections[name + LINES])
+        if not sections[name] and not stated_empty:
+            findings.append(f"{name}: empty - list an item or write 'None.'")
+    return findings
+
+
 def check(header: list[str], sections: dict[str, list[dict]]) -> tuple[list[str], str | None]:
     """Structural findings for one parsed reply, and the mode it declared."""
     findings: list[str] = []
@@ -264,11 +334,14 @@ def check(header: list[str], sections: dict[str, list[dict]]) -> tuple[list[str]
     if "changed" not in blob:
         findings.append("header: 'Changed' line missing")
 
-    for part, names in REQUIRED.items():
-        if mode and part in mode:
-            for name in names:
-                if name not in sections:
-                    findings.append(f"section missing for {part} mode: {name}")
+    if shape_of(sections) == "full":
+        for part, names in REQUIRED.items():
+            if mode and part in mode:
+                for name in names:
+                    if name not in sections:
+                        findings.append(f"section missing for {part} mode: {name}")
+    else:
+        findings.extend(condensed_findings(sections))
 
     for name, limit in CAPS.items():
         count = len(sections.get(name, []))
@@ -325,6 +398,10 @@ def check(header: list[str], sections: dict[str, list[dict]]) -> tuple[list[str]
     for item in sections.get("decisionsandclarifications", []):
         if "usecase" not in item["fields"]:
             findings.append(f"decisions: '{item['title'][:60]}' missing 'Use case'")
+        marked = len(RECOMMENDED.findall("\n".join(item["lines"])))
+        if marked != 1:
+            findings.append(f"decisions: '{item['title'][:60]}' marks {marked} options "
+                            "recommended, exactly one is required")
 
     # Spec rule 9: every entity carries an ID. A top-level entry without one used to be
     # dropped, or merged into the field above it, so the reply passed.
@@ -360,12 +437,15 @@ def grade(label: str, text: str, interrupted: bool = False, invoked: str | None 
 
     header, sections = parse(text)
     findings, mode = check(header, sections)
-    count = sum(not name.endswith(ENTRIES) for name in sections)
-    print(f"\n{label}: mode={mode} | {len(text)} chars | {count} sections")
+    count = sum(not name.endswith((ENTRIES, LINES)) for name in sections)
+    print(f"\n{label}: mode={mode} | shape={shape_of(sections)} | {len(text)} chars | "
+          f"{count} sections")
     if findings:
         print(f"Compliance: FAIL - {len(findings)} finding(s)")
         for f in findings:
             print(f"  - {f}")
+        print(LEDGER_FILE_LINE)
         return 1
     print("Compliance: PASS")
+    print(LEDGER_FILE_LINE)
     return 0

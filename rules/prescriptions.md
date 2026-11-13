@@ -42,9 +42,7 @@ spec files and load when they are needed.
 - No emojis, anywhere, unless explicitly requested and confirmed.
 <!-- mode: interactive -->
 - Bottom line up front. Outcome before supporting detail.
-- End every reply with recommended next steps, split into what finishes the
-  request and what was found along the way. Where there are none, say so
-  explicitly - an omitted section and an empty one must not look alike.
+- End every reply with Recommended next - the work that comes next - and Came up - what was found along the way. Where either has none, say so explicitly - an omitted section and an empty one must not look alike.
 - Qualify every reference on first use in a reply. Issues are `<key>-<number>`
   with the profile's issue keys, and a repo without a key uses its own name. A
   bare number resolves only inside your own context.
@@ -249,7 +247,7 @@ Not advertised - this table is the only thing that points at them:
 
 | Spec | Open it when |
 |---|---|
-| `.github/rules/response-shape.md` | Writing any reply. It is the estate's reply format - header, planning and execution blocks, per-entity IDs, evidence for and against. Run `python .github/scripts/responses/check_response.py --previous` first - in Cursor that is the whole command; in Copilot add `--session <id>`, where `<id>` is the last segment of `VSCODE_TARGET_SESSION_LOG`. Both are rendered into every repo, so neither depends on the profile repository being open |
+| `.github/rules/response-shape.md` | Writing any reply. It is the estate's reply format - a condensed default (header, summary with pointers, decisions and questions, operator steps, recommended next, came up) with the full planning and execution blocks, per-entity IDs, and evidence for and against on demand. Run `python .github/scripts/responses/check_response.py --previous` first - in Cursor that is the whole command; in Copilot add `--session <id>`, where `<id>` is the last segment of `VSCODE_TARGET_SESSION_LOG`. Both are rendered into every repo, so neither depends on the profile repository being open |
 | `.github/rules/tangents.md` | Weighing whether a finding is worth following now, or a rule seems to ask you to withhold one |
 | `.github/rules/tool-methods.md` | Before any shell command that writes, deletes, or reaches the network - which method does the job without an approval card, in Cursor and in Copilot |
 | `.github/rules/logging.md` | Adding or changing any log line, in any language |
