@@ -9,6 +9,7 @@ description: >-
   deciding before it can be built. Replaces planner.
 tools: [read, search, edit, execute, agent]
 requires: [tracker.create, tracker.edit, tracker.status]
+model: inherit
 ---
 
 # Design partner

@@ -8,6 +8,7 @@ description: >-
   or after a change that may have made an instruction false.
 tools: [read, search, agent]
 agents: [Explore]
+model: sonnet
 ---
 
 # Fact keeper
