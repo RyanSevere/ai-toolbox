@@ -9,6 +9,7 @@ description: >-
 tools: [read, search, edit, execute, agent]
 sessions: [interactive, factory]
 skills: [edge-cases]
+model: sonnet
 ---
 
 # Test writer

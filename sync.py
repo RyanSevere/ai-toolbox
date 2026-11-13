@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-14
-# Last Updated: 2026-11-09
+# Last Updated: 2026-11-13
 # Description: Renders the core and a profile's seeds into a consuming repository's
 #              per-tool formats and stamps each output with the source SHA.
 #              Dry-run by default; --write applies. Never writes Tier 3.
@@ -200,13 +200,16 @@ SELF_RENDERED = (
     ".github/gates",
     ".githooks/",
     ".cursor/",
+    ".claude/rules/",
+    ".claude/skills/",
+    ".claude/agents/",
     ".agents/skills/",
 )
 
-# Not .agents/skills/: OpenCode is the factory's tool and loads it even with project config
-# disabled, so a skill there reaches a headless role. Reverted 2026-11-05.
-# It stays in RENDER_DIRS and SELF_RENDERED so the copies rendered before are orphans.
-SKILL_ROOTS = (".cursor/skills", ".github/skills")
+# Skill roots are rows of TOOLS, below render_agent. Not .agents/skills/: OpenCode is the
+# factory's tool and loads it even with project config disabled, so a skill there reaches a
+# headless role. Reverted 2026-11-05. It stays in RENDER_DIRS and SELF_RENDERED so the
+# copies rendered before are orphans.
 
 # Hand-owned in every repo. never_write() adds the profile's gate config files.
 NEVER_WRITE = {
@@ -251,10 +254,12 @@ class Plan(dict):
     `dropped_sections` does the same for a `<!-- requires: -->` block, with its line.
     `unbuilt` holds each answer that declares a system no binding implements yet.
     `unanswered` holds each convention a rendered conventions rule states as missing.
+    `warnings` holds what a render for one tool could not carry over, one line each.
     """
 
     def __init__(self) -> None:
         super().__init__()
+        self.warnings: list[str] = []
         self.dropped: list[tuple[Path, list[str]]] = []
         self.dropped_sections: list[tuple[Path, int, list[str]]] = []
         self.unbuilt: list[str] = []
@@ -787,6 +792,104 @@ def render_agent(meta: dict, body: str, sha: str, skills: tuple[str, ...] = ()) 
     return f"{fm(fields)}\n{stamp(sha)}\n\n{body}"
 
 
+# Claude Code's tool names for each source tool name. An empty entry is a source tool the
+# shell tools already cover; any name not here is dropped with a warning.
+CLAUDE_TOOLS = {
+    "read": ("Read",),
+    "search": ("Grep", "Glob"),
+    "edit": ("Edit", "Write"),
+    "execute": ("Bash", "PowerShell"),
+    "execute/runInTerminal": ("Bash", "PowerShell"),
+    "execute/getTerminalOutput": (),
+    "execute/killTerminal": (),
+    "execute/testFailure": (),
+    "agent": ("Agent",),
+}
+# What an agent seed's optional `model:` may say. Only Claude Code's agent file carries it.
+AGENT_MODELS = ("sonnet", "opus", "haiku", "fable", "inherit")
+
+
+def check_agent_model(meta: dict, path: Path) -> None:
+    """Refuse a `model:` that Claude Code would not take, on every target."""
+    if "model" in meta and meta["model"] not in AGENT_MODELS:
+        raise SyncError(f"{path}: model: {meta['model']!r} is not one of "
+                        f"{', '.join(AGENT_MODELS)}")
+
+
+def render_claude_agent(meta: dict, body: str, sha: str, warn) -> str:
+    """Claude Code's subagent file. `tools` is a comma-separated allowlist mapped from the
+    source names; omitted in the source, it is omitted here and the agent inherits."""
+    name = meta["name"]
+    fields = [("name", name), ("description", quoted(meta["description"]))]
+    if meta.get("tools") is not None:
+        tools: list[str] = []
+        for source in meta["tools"]:
+            if source not in CLAUDE_TOOLS:
+                warn(f"agent {name}: tool {source!r} has no Claude Code equivalent, so it is "
+                     "dropped from the rendered tools")
+                continue
+            tools.extend(t for t in CLAUDE_TOOLS[source] if t not in tools)
+        if not tools:
+            # An omitted tools: key means every tool, so an empty result must not render as one.
+            raise SyncError(f"agent {name}: none of its tools map to Claude Code, and an empty "
+                            "allowlist would render as every tool")
+        fields.append(("tools", ", ".join(tools)))
+    if meta.get("agents") is not None:
+        warn(f"agent {name}: agents: is not rendered for Claude Code, whose subagents cannot "
+             "be restricted that way")
+    fields.append(("model", meta.get("model") or "inherit"))
+    return f"{fm(fields)}\n{stamp(sha)}\n\n{body}"
+
+
+def render_claude_rule(meta: dict, body: str, sha: str) -> str | None:
+    """.claude/rules/<id>.md. A file with no `paths` loads at launch, so only an always-on
+    rule goes without one; an on-demand rule is not rendered at all."""
+    scope = meta.get("scope", "*")
+    if meta.get("alwaysApply", False):
+        return f"{stamp(sha)}\n\n{body}"
+    if scope == "*":
+        return None
+    return f"---\npaths:\n  - {json.dumps(scope)}\n---\n\n{stamp(sha)}\n\n{body}"
+
+
+def render_copilot_rule(meta: dict, body: str, sha: str) -> str | None:
+    """None for an on-demand rule: a scope of '*' here would be resident. See ON_DEMAND_DIR."""
+    if meta.get("scope", "*") == "*" and not meta.get("alwaysApply", False):
+        return None
+    return render_copilot(meta, body, sha)
+
+
+def render_copilot_agent(meta: dict, body: str, sha: str, warn) -> str:
+    return render_agent(meta, body, sha)
+
+
+@dataclass(frozen=True)
+class Tool:
+    """One interactive tool's output for rules, skills and agents. A new tool is a new row.
+
+    `rule_path` takes {id}; `rule` returns the file, or None when the tool does not render
+    that rule. `skill_root` and `agent_path` (takes {name}) are None for a tool without them,
+    and `agent` takes (meta, body, sha, warn). Hooks are not here.
+    """
+    name: str
+    rule_path: str
+    rule: object
+    skill_root: str | None
+    agent_path: str | None
+    agent: object
+
+
+TOOLS = (
+    Tool("copilot", ".github/instructions/{id}.instructions.md", render_copilot_rule,
+         ".github/skills", ".github/agents/{name}.agent.md", render_copilot_agent),
+    Tool("cursor", ".cursor/rules/{id}.mdc", render_cursor, ".cursor/skills", None, None),
+    Tool("claude", ".claude/rules/{id}.md", render_claude_rule, ".claude/skills",
+         ".claude/agents/{name}.md", render_claude_agent),
+)
+# Derived, for what reads the roots without the rest of a row.
+SKILL_ROOTS = tuple(t.skill_root for t in TOOLS if t.skill_root)
+
+
 def repo_list(manifest: dict) -> dict:
     """The estate as data: owner, every repository with its GitHub name and issue key, and
     the repositories deliberately left out. Rendered to REPO_LIST, and used in memory by
@@ -1207,6 +1310,8 @@ def report_drops(plan: Plan) -> None:
     for key in plan.unanswered:
         stem = key.partition(".")[0]
         print(f"[INFO] unanswered: {key} is stated as missing in {stem}-conventions")
+    for line in plan.warnings:
+        print(f"[WARN] {line}")
 
 
 def never_write(manifest: dict) -> set[str]:
@@ -1233,6 +1338,14 @@ def render_enabled_gates(manifest: dict, profile_dir: Path, sha: str) -> str:
                                             if on)
 
 
+def add_rules(plan: Plan, rule_id: str, meta: dict, body: str, sha: str | None) -> None:
+    """One rule into every tool's rule path that renders it."""
+    for tool in TOOLS:
+        text = tool.rule(meta, body, sha)
+        if text is not None:
+            plan[tool.rule_path.format(id=rule_id)] = text
+
+
 def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest: dict,
                profile_dir: Path) -> Plan:
     """Map repo-relative path -> rendered content.
@@ -1257,8 +1370,7 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
     for stem, rule, missing in rules:
         plan[f"{ON_DEMAND_DIR}/{stem}-conventions.md"] = render_ondemand(
             conventions_meta(stem), rule, sha)
-        plan[f".cursor/rules/{stem}-conventions.mdc"] = render_cursor(
-            conventions_meta(stem), rule, sha)
+        add_rules(plan, f"{stem}-conventions", conventions_meta(stem), rule, sha)
         plan.unanswered += missing
 
     source = RULES_DIR / "prescriptions.md"
@@ -1282,8 +1394,7 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
         refuse_requires(meta, source)
         body = render_body(body, source, meta, known, bound, plan)
         body = body.replace("<!-- KEYS -->", issue_keys(manifest))
-        plan[".github/instructions/estate.instructions.md"] = render_copilot(meta, body, sha)
-        plan[".cursor/rules/estate.mdc"] = render_cursor(meta, body, sha)
+        add_rules(plan, "estate", meta, body, sha)
         # Same opt-in: it names the personal repos too.
         plan[REPO_LIST] = render_repo_list(manifest, sha)
 
@@ -1311,9 +1422,7 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
 
         if scope == "*" and not always:
             plan[f"{ON_DEMAND_DIR}/{rule_id}.md"] = render_ondemand(meta, body, sha)
-        else:
-            plan[f".github/instructions/{rule_id}.instructions.md"] = render_copilot(meta, body, sha)
-        plan[f".cursor/rules/{rule_id}.mdc"] = render_cursor(meta, body, sha)
+        add_rules(plan, rule_id, meta, body, sha)
 
     # An exclusion that matches nothing is not a no-op, it is a silent failure to
     # drop the rule that was meant to be dropped.
@@ -1351,7 +1460,7 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
             check_body(body, source, meta, known)
             continue
         rendered = render_skill(meta, render_body(body, source, meta, known, bound, plan), sha)
-        for root in SKILL_ROOTS:
+        for root in (t.skill_root for t in TOOLS if t.skill_root):
             plan[f"{root}/{skill_dir.name}/SKILL.md"] = rendered
             for rel, content in assets.items():
                 plan[f"{root}/{skill_dir.name}/{rel}"] = content
@@ -1399,6 +1508,7 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
         if not source.exists():
             continue
         meta, body = load_doc(source, "name", "description")
+        check_agent_model(meta, source)
         sessions = seed_sessions(meta, source)
         unbound = unbound_requirements(meta, source, known, bound)
         if unbound:
@@ -1415,8 +1525,11 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
             raise SyncError(f"{source}: agents: names {gone}, which is dropped for an "
                             "unbound capability")
         if INTERACTIVE in sessions:
-            plan[f".github/agents/{name}.agent.md"] = render_agent(
-                meta, render_body(body, source, meta, known, bound, plan), sha)
+            rendered = render_body(body, source, meta, known, bound, plan)
+            for tool in TOOLS:
+                if tool.agent_path and tool.agent:
+                    plan[tool.agent_path.format(name=name)] = tool.agent(
+                        meta, rendered, sha, plan.warnings.append)
     factory = cfg.get("factory", False)
     if not isinstance(factory, bool):
         raise SyncError(f"target {target}: factory: must be true or false, not {factory!r}")
@@ -1529,6 +1642,9 @@ RENDER_DIRS = (
     ".cursor/rules",
     ".cursor/skills",
     ".cursor/hooks",
+    ".claude/rules",
+    ".claude/skills",
+    ".claude/agents",
     ".agents/skills",
     FACTORY_DIR,
     FACTORY_SKILLS_DIR,
@@ -1826,7 +1942,15 @@ def ensure_pycache_ignored(repo: Path, write: bool) -> int:
                           "__pycache__/", "Bytecode from rendered scripts.")
 
 
-CURSOR_BLANKET = {".cursor/", ".cursor", "/.cursor/", "/.cursor"}
+def ensure_claude_local_ignored(repo: Path, write: bool) -> int:
+    """Claude Code writes its own permission grants to .claude/settings.local.json. It is
+    never rendered, never an orphan and never removed here - only kept out of commits."""
+    return ensure_ignored(repo, write, ".claude/settings.local.json",
+                          ".claude/settings.local.json",
+                          "Claude Code's per-machine settings - kept out of commits.")
+
+
+CURSOR_BLANKET ={".cursor/", ".cursor", "/.cursor/", "/.cursor"}
 CURSOR_RULES = (
     "# Cursor: rendered output is tracked. Anything else Cursor writes here stays local -",
     "# cli.json and mcp.json carry machine and credential state.",
@@ -2029,6 +2153,7 @@ def rollout_target(name: str, cfg: dict, root: Path, defaults: dict, sha: str,
     verify_identity(repo, ident)
     ensure_scratch_ignored(repo, True)
     ensure_pycache_ignored(repo, True)
+    ensure_claude_local_ignored(repo, True)
     ensure_cursor_tracked(repo, True)
     ensure_hooks_local(repo, True)
     orphans = find_orphans(repo, plan)
@@ -2439,6 +2564,7 @@ def main(argv: list[str] | None = None) -> int:
         changed = emit(repo, plan, write, ident=ident)
         changed += ensure_scratch_ignored(repo, write)
         changed += ensure_pycache_ignored(repo, write)
+        changed += ensure_claude_local_ignored(repo, write)
         changed += ensure_cursor_tracked(repo, write)
         changed += ensure_hooks_local(repo, write)
 

@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/README.md
 # Created by: Ryan Severe
 # Created: 2026-11-08
-# Last Updated: 2026-11-09
+# Last Updated: 2026-11-13
 # Description: The front page of the ai-toolbox repository - what the core is,
 #              how a private profile builds on it, how to run it, and what the
 #              one-way gates are for.
@@ -84,7 +84,8 @@ A seed is a source file: a rule, a skill, a context file, an agent, a hook. It
 sits in a `seeds/` folder (or, for the core's own, in `rules/`, `skills/` and
 so on) and no tool loads it from there. The rendered output is what tools load:
 `AGENTS.md`, `.github/instructions/`, `.github/rules/`, `.github/skills/`,
-`.cursor/rules/`, `.cursor/skills/`, `.githooks/` and the rest. You edit seeds.
+`.cursor/rules/`, `.cursor/skills/`, `.claude/rules/`, `.claude/skills/`,
+`.claude/agents/`, `.githooks/` and the rest. You edit seeds.
 You never edit rendered files; the next render overwrites them.
 
 ### The core and a profile

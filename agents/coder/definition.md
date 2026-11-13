@@ -8,6 +8,7 @@ description: >-
 tools: [read, search, edit, execute, agent]
 agents: [Explore]
 sessions: [interactive, factory]
+model: sonnet
 ---
 
 # Coder

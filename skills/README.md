@@ -35,7 +35,7 @@ Body carries the procedure: preconditions, steps, outputs, failure modes.
 
 **`sessions:` is optional** and names the kinds of session the skill is rendered
 for, as on an agent seed. Absent, it is `[interactive]`: the skill renders to
-`.cursor/skills/` and `.github/skills/` and nowhere else. A skill that lists
+`.cursor/skills/`, `.github/skills/` and `.claude/skills/` and nowhere else. A skill that lists
 `factory` also renders to `factory/skills/<name>/` on a `factory: true` target,
 in factory mode, and reaches a role only if that role's agent seed lists it under
 `skills:`. A skill without `interactive` is not rendered for interactive tools at
