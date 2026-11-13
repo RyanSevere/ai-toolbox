@@ -5,7 +5,9 @@ scope: "*"
 alwaysApply: false
 description: >-
   Response shape SPECIFICATION - the format every reply takes. Covers the mode
-  header, the planning and execution blocks and what each section is for, the
+  header, the condensed default shape (summary with pointers, decisions,
+  operator steps, recommended next, came up), the full planning and execution
+  blocks printed on demand and what each section is for, the
   per-entity ID prefixes the operator answers with, why evidence for and evidence
   against are separate lines, the falsification line and its known weakness, and
   the look-back compliance check that grades the previous reply before this one
@@ -39,11 +41,11 @@ check them. That ordering was the flaw in the previous draft.
 
 ## Rules that hold regardless of mode
 
-1. **Mode never reduces obligations.** It reorders and renames them. If
-   declaring a mode let a section be skipped, the mode label would become a
-   difficulty selector operated by the party whose reliability is in question.
+1. **Verify always, print on demand.** Every claim is verified, and the tool call behind it can be named, in every reply, whatever its shape. The shape changes only what is printed: the condensed shape prints a summary with a pointer for each result, and the full shape prints every premise and claim with its evidence for and against. Mode still never reduces obligations; it reorders and renames them.
 2. **An empty section is omitted, never padded.** Filler to satisfy a shape is
-   the content that gets skipped, and skipping trains skipping.
+   the content that gets skipped, and skipping trains skipping. The stated-empty
+   exception: Recommended next and Came up with the line `None.`, and a Summary of
+   `None this turn.`, are written out, like `## Your premises` with `none new this turn.`
 3. **An omitted section is a signal, not a gap.** No `Evidence` on a turn full
    of claims means nothing was checked. That is the reading.
 4. **Sub-items are nested list items, not bolded prose and not indented
@@ -87,6 +89,7 @@ check them. That ordering was the flaw in the previous draft.
    | `ND1`, `ND2` | Something not done or not checked | execution |
    | `CU1`, `CU2` | Something that came up while doing it | execution |
    | `R1`, `R2` | A recommended next step. Listed, not asked | both |
+   | `OS1`, `OS2` | A step only the operator can take | condensed |
    | `Q1`, `Q2` | A question, attached to the item it is about | both |
 
    **The ID is the default, not a marker of significance.** Earlier drafts
@@ -219,6 +222,98 @@ alone.
 before the body exists, so a compliance line in it could only describe intent.
 It goes immediately above or below the header instead, reporting the **previous**
 reply - see Compliance.
+
+---
+
+## Condensed shape
+
+The default. Operator rulings of 2026-11-08, 2026-11-10 and 2026-11-12, under
+air-295. The operator reads the decisions and the next steps about nine times in
+ten and mostly takes the recommended option; the full blocks are paid for in
+every reply and mostly unread. The shape exists to make agents show their work,
+to show when a context has grown so large it is dropping things, and to say what
+the operator has to do. The condensed shape keeps all three.
+
+In this order:
+
+- **The header**, unchanged, with the compliance line beside it. `Needs from you`
+  counts decisions, questions and operator steps.
+- **`## Summary`**: one paragraph of prose - no blank line inside it, no list
+  bullets. It says what happened this turn. Every result it claims carries an
+  inline pointer: a `path:line`, a backticked command or its output, a URL, or a
+  quotation. The checker requires at least one pointer in the paragraph, which is
+  the floor, not the obligation. A reply that claims no result writes the single
+  line `None this turn.`
+- **`## Decisions and clarifications`**, only when there is something to ask. `DC`
+  items and standalone `Q` items. Each carries the full context needed to answer it
+  in place, because the premises and claims it would once have been attached to
+  are no longer printed. Each `DC` keeps its `Use case:` line and marks exactly one
+  option `(recommended)`.
+- **`## Operator steps`**, only when the operator has something to do: run a
+  command, review a page, paste a result back. Items are `OS1`, `OS2`, and so on.
+- **`## Recommended next`**: the work that comes next - not things for the
+  operator to do. An item may depend on an operator step ("once OS1's output is
+  back, decide whether X is viable"). `R` items, cap 4, or the single prose line
+  `None.`
+- **`## Came up while doing it`**: what was found along the way. `CU` items, cap
+  3, or the single prose line `None.`
+- The queue line where one applies. It is not checked.
+
+Recommended next and Came up are both required, so an omitted section and an
+empty one never look alike. A nested line never starts with an ID-like token:
+options are `a.`, `b.`, because the checker reads any line opening with an ID as a
+new item.
+
+### The full shape, on demand
+
+The planning and execution blocks below, printed as they always were. They are
+owed when:
+
+- the operator asks for it ("expand"); or
+- the reply proposes a state change the operator has not already approved. That is
+  the agent's judgement, and the checker cannot detect it.
+
+### Inferring the shape
+
+There is no marker to forget. A reply containing any heading from this set is
+graded as full: Your premises, My claims, Logic and approach, Recommendations,
+Asked done result, Premises acted on, Not done not checked. Any other reply is
+graded as condensed. Decisions and clarifications, Operator steps, Recommended
+next and Came up are left out because both shapes use them.
+
+A reply graded as full gets the full checks, unchanged, so a half-opened block -
+a lone `## My claims` - fails on the sections its mode requires. A reply graded as
+condensed gets the condensed checks and none of the mode-required sections. The
+header checks, the item-ID check and the caps apply to both.
+
+| Condition | Finding |
+|---|---|
+| `## Summary` absent | `condensed: section missing: summary` |
+| `## Recommended next` absent | `condensed: section missing: recommendednext` |
+| `## Came up while doing it` absent | `condensed: section missing: cameupwhiledoingit` |
+| Summary has no paragraph, or more than one | `summary: <n> paragraphs, exactly 1 allowed` |
+| Summary carries no pointer and is not exactly `None this turn.` | `summary: no pointer a reader could follow` |
+| Recommended next or Came up has no item and no `None.` line | `<section>: empty - list an item or write 'None.'` |
+
+In both shapes every `DC` item marks exactly one option `(recommended)`, on any of
+its lines, case-insensitive. Otherwise it fails with `decisions: '<title>' marks
+<n> options recommended, exactly one is required`. The `Recommendation:` line in
+the full shape is the reasoning and is not counted.
+
+The grade line names the inferred shape: `previous reply: mode=<mode> |
+shape=<full|condensed> | <n> chars | <n> sections`.
+
+---
+
+## "aria"
+
+- "aria", as an explicit one-word reply, takes every option marked `(recommended)`
+  in the immediately previous reply, and nothing else.
+- It is never a silent default. A reply that is not exactly "aria" (case and
+  trailing punctuation aside) is not one.
+- It approves a recommended option that is a write only if that reply printed the
+  plan, which under the trigger above means it was in the full shape.
+- Queue items are unchanged: their verdict is the queue service's to judge.
 
 ---
 
@@ -808,11 +903,11 @@ line:
 ```
 run 1 of 1 | grading 2 reply(s), 1 in arrears - their turn never ran the check
 
-previous reply: mode=execution | 113 chars | 1 sections
+previous reply: mode=execution | shape=full | 113 chars | 1 sections
 Compliance: FAIL - 1 finding(s)
   - section missing for execution mode: premisesactedon
 
-1 turn(s) back, UNGRADED: mode=execution | 96 chars | 1 sections
+1 turn(s) back, UNGRADED: mode=execution | shape=full | 96 chars | 1 sections
 Compliance: FAIL - 2 finding(s)
   - header: 'Changed' line missing
   - section missing for execution mode: premisesactedon
@@ -957,10 +1052,17 @@ Mechanically decidable:
 - `Evidence for` containing a fenced block or a `path:line` where the verdict is
   `confirmed`
 - Every claim carrying a falsification line and a `Looked for it` line
-- Every decision item carrying a use-case line
+- Every decision item carrying a use-case line, and exactly one `(recommended)` option
 - Every premise tagged `[factual]` or `[ruling]`
+- In the condensed shape: Summary, Recommended next and Came up present; the Summary
+  one paragraph with at least one pointer, or exactly `None this turn.`; the two
+  closing sections holding an item or `None.`
 
 **Not decidable, and the script must say so in its own output:**
+
+- Whether a reply proposes a state change the operator has not approved, and so owes
+  the full shape
+- Whether each result in the Summary has its own pointer
 
 - Whether evidence actually supports the claim it sits under
 - Whether a stated verdict is correct
