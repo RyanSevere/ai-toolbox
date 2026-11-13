@@ -294,12 +294,17 @@ def paragraphs(lines: list[str]) -> list[str]:
     return found
 
 
-def condensed_findings(sections: dict) -> list[str]:
+def condensed_findings(sections: dict, mode: str | None = None) -> list[str]:
     """Findings that apply only to the condensed shape."""
     findings: list[str] = []
     for name in CONDENSED_REQUIRED:
         if name not in sections:
             findings.append(f"condensed: section missing: {name}")
+    # A planning reply owes its reasoning. Whether the section was needed is the agent's
+    # to judge when this fires, but an unchecked requirement would simply be dropped
+    # (operator, 2026-11-13).
+    if mode and "planning" in mode and "logicandapproach" not in sections:
+        findings.append("condensed: section missing for planning mode: logicandapproach")
 
     if "summary" in sections:
         found = paragraphs(sections.get("summary" + LINES, []))
@@ -341,7 +346,7 @@ def check(header: list[str], sections: dict[str, list[dict]]) -> tuple[list[str]
                     if name not in sections:
                         findings.append(f"section missing for {part} mode: {name}")
     else:
-        findings.extend(condensed_findings(sections))
+        findings.extend(condensed_findings(sections, mode))
 
     for name, limit in CAPS.items():
         count = len(sections.get(name, []))

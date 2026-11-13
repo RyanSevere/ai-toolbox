@@ -259,13 +259,16 @@ In this order:
   quotation. The checker requires at least one pointer in the paragraph, which is
   the floor, not the obligation. A reply that claims no result writes the single
   line `None this turn.`
-- **`## Logic and approach`**, optional, for a design reply: the reasoning behind
-  an approach, in `LA` items with a verdict, as in the full shape. Operator ruling
-  2026-11-13: on design messages it is the most useful section, so the condensed
-  shape keeps it. It sits after the Summary and before the decisions it leads to.
-  The checker does not require it, because whether a reply is a design reply is a
-  judgement; a design reply that leaves it out is a reviewer's finding. Writing it
+- **`## Logic and approach`**, required when the Mode contains Planning (Planning,
+  or Planning + Execution), optional otherwise: the reasoning behind an approach,
+  in `LA` items with a verdict, as in the full shape. Operator ruling 2026-11-13:
+  on design messages it is the most useful section, so the condensed shape keeps
+  it. It sits after the Summary and before the decisions it leads to. Writing it
   does not make the reply full.
+  The checker fails a Planning reply that omits it, even when the reply did not
+  need it. That is deliberate (operator, 2026-11-13): the agent sees the
+  finding, judges whether it was right, and may leave the reply uncorrected if it
+  was not. An unchecked requirement would be dropped without anyone noticing.
 - **`## Decisions and clarifications`**, only when there is something to ask. `DC`
   items and standalone `Q` items. Each carries the full context needed to answer it
   in place, because the premises and claims it would once have been attached to
@@ -313,6 +316,7 @@ header checks, the item-ID check and the caps apply to both.
 | `## Summary` absent | `condensed: section missing: summary` |
 | `## Recommended next` absent | `condensed: section missing: recommendednext` |
 | `## Came up while doing it` absent | `condensed: section missing: cameupwhiledoingit` |
+| Mode contains Planning and `## Logic and approach` absent | `condensed: section missing for planning mode: logicandapproach` |
 | Summary has no paragraph, or more than one | `summary: <n> paragraphs, exactly 1 allowed` |
 | Summary carries no pointer and is not exactly `None this turn.` | `summary: no pointer a reader could follow` |
 | Recommended next or Came up has no item and no `None.` line | `<section>: empty - list an item or write 'None.'` |
