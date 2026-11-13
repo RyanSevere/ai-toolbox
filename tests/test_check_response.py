@@ -442,7 +442,7 @@ class OnlyASeenVerdictSpendsTheRun(TranscriptCase):
             handle.write(invocation() + "\n")
 
     def test_a_verdict_seen_on_a_terminal_spends_the_run(self):
-        """Intent: "3 successful runs per turn" (air-295)."""
+        """Intent: "3 successful runs per turn" (operator 2026-11-13)."""
         for _ in range(3):
             self.assertEqual(self.run_on(Terminal()), 0)
             self.ran_once()
@@ -1228,7 +1228,7 @@ class CursorMain(TranscriptCase):
         self.assertIn("--previous", err)
 
     def test_three_graded_runs_per_turn_without_a_terminal(self):
-        """Intent: "3 successful runs per turn" (air-295, operator 2026-11-13). Cursor's shell
+        """Intent: "3 successful runs per turn" (operator 2026-11-13). Cursor's shell
         is never a TTY, and the current turn's runs are not in the transcript, so the
         ledger counts."""
         path = self.clean()
@@ -1352,7 +1352,7 @@ class CursorMain(TranscriptCase):
 
 
 class CondensedShape(TranscriptCase):
-    """air-295: the condensed shape is the default; the full shape is inferred from its headings."""
+    """The condensed shape is the default; the full shape is inferred from its headings."""
 
     def setUp(self):
         ledger = tempfile.TemporaryDirectory()
@@ -1486,6 +1486,31 @@ class CondensedShape(TranscriptCase):
             shape.grade("previous reply", CONDENSED_CLEAN)
         self.assertIn("shape=condensed", out.getvalue())
         self.assertIn("Compliance: PASS", out.getvalue())
+
+    LOGIC = (
+        "## Logic and approach\n\n"
+        "- LA1 Keep the question rules where they are\n"
+        "  - Verdict: holds, because both shapes already use them\n\n"
+    )
+
+    def test_logic_and_approach_is_allowed_in_a_condensed_reply(self):
+        """Design replies keep this section (operator 2026-11-13); it must not flip the shape."""
+        text = CONDENSED_CLEAN.replace("## Decisions and clarifications", self.LOGIC +
+                                       "## Decisions and clarifications")
+        header, sections = shape.parse(text)
+        self.assertEqual(shape.shape_of(sections), "condensed")
+        self.assertEqual(shape.check(header, sections)[0], [])
+
+    def test_logic_and_approach_is_not_required_in_a_condensed_reply(self):
+        self.assertEqual(self.findings(CONDENSED_CLEAN), [])
+
+    def test_logic_and_approach_entry_still_needs_an_id(self):
+        text = CONDENSED_CLEAN.replace(
+            "## Decisions and clarifications",
+            "## Logic and approach\n\n- Keep the question rules where they are\n\n"
+            "## Decisions and clarifications")
+        found = self.findings(text)
+        self.assertTrue(any("no item ID" in f for f in found), found)
 
     def test_grade_prints_the_ledger_file_line(self):
         out = io.StringIO()
