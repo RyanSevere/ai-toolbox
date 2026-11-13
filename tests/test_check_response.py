@@ -115,6 +115,11 @@ Changed: nothing
 
 The live state matches the seed: `git status -sb` printed "## main...origin/main", and the gate passed the draft.
 
+## Logic and approach
+
+- LA1 Rank by what unblocks the most work
+  - Verdict: holds, because example-2 waits on example-1
+
 ## Decisions and clarifications
 
 - DC1 Pick the next ticket
@@ -1487,28 +1492,36 @@ class CondensedShape(TranscriptCase):
         self.assertIn("shape=condensed", out.getvalue())
         self.assertIn("Compliance: PASS", out.getvalue())
 
-    LOGIC = (
-        "## Logic and approach\n\n"
-        "- LA1 Keep the question rules where they are\n"
-        "  - Verdict: holds, because both shapes already use them\n\n"
-    )
+    WITHOUT_LOGIC = CONDENSED_CLEAN.replace(
+        "## Logic and approach\n\n- LA1 Rank by what unblocks the most work\n"
+        "  - Verdict: holds, because example-2 waits on example-1\n\n", "")
 
-    def test_logic_and_approach_is_allowed_in_a_condensed_reply(self):
+    def test_logic_and_approach_does_not_make_a_reply_full(self):
         """Design replies keep this section (operator 2026-11-13); it must not flip the shape."""
-        text = CONDENSED_CLEAN.replace("## Decisions and clarifications", self.LOGIC +
-                                       "## Decisions and clarifications")
-        header, sections = shape.parse(text)
+        header, sections = shape.parse(CONDENSED_CLEAN)
+        self.assertIn("logicandapproach", sections)
         self.assertEqual(shape.shape_of(sections), "condensed")
         self.assertEqual(shape.check(header, sections)[0], [])
 
-    def test_logic_and_approach_is_not_required_in_a_condensed_reply(self):
-        self.assertEqual(self.findings(CONDENSED_CLEAN), [])
+    def test_the_fixture_without_logic_really_lacks_it(self):
+        self.assertNotIn("logicandapproach", shape.parse(self.WITHOUT_LOGIC)[1])
+
+    def test_planning_mode_requires_logic_and_approach(self):
+        """Operator 2026-11-13: a visible FAIL the agent can judge is better than no check."""
+        self.assertIn("condensed: section missing for planning mode: logicandapproach",
+                      self.findings(self.WITHOUT_LOGIC))
+
+    def test_planning_plus_execution_requires_logic_and_approach(self):
+        text = self.WITHOUT_LOGIC.replace("Mode: Planning", "Mode: Planning + Execution")
+        self.assertIn("condensed: section missing for planning mode: logicandapproach",
+                      self.findings(text))
+
+    def test_execution_mode_does_not_require_logic_and_approach(self):
+        text = self.WITHOUT_LOGIC.replace("Mode: Planning", "Mode: Execution")
+        self.assertEqual(self.findings(text), [])
 
     def test_logic_and_approach_entry_still_needs_an_id(self):
-        text = CONDENSED_CLEAN.replace(
-            "## Decisions and clarifications",
-            "## Logic and approach\n\n- Keep the question rules where they are\n\n"
-            "## Decisions and clarifications")
+        text = CONDENSED_CLEAN.replace("- LA1 Rank", "- Rank")
         found = self.findings(text)
         self.assertTrue(any("no item ID" in f for f in found), found)
 
