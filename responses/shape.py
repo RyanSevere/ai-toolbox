@@ -83,6 +83,9 @@ CONDENSED_REQUIRED = ["summary", "recommendednext", "cameupwhiledoingit"]
 RECOMMENDED = re.compile(r"\(recommended\)", re.IGNORECASE)
 NONE_THIS_TURN = "None this turn."
 LINES = "#lines"  # suffix: a section's raw lines outside fences, blank lines kept
+# The ledger file holds what the condensed reply no longer prints. Checking it is air-333;
+# until it exists the line says so and never reads as a pass - unknown is not zero.
+LEDGER_FILE_LINE = "Ledger file: not checked - no ledger exists yet (air-333)"
 
 CAPS = {"cameupwhiledoingit": 3, "recommendednext": 4}  # decisions deliberately uncapped
 
@@ -438,6 +441,8 @@ def grade(label: str, text: str, interrupted: bool = False, invoked: str | None 
         print(f"Compliance: FAIL - {len(findings)} finding(s)")
         for f in findings:
             print(f"  - {f}")
+        print(LEDGER_FILE_LINE)
         return 1
     print("Compliance: PASS")
+    print(LEDGER_FILE_LINE)
     return 0

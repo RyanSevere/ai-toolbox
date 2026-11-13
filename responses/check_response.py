@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/check_response.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-06
+# Last Updated: 2026-11-13
 # Description: Checks assistant replies against the response shape in
 #              rules/spec-response-shape.md, rendered into each repo as
 #              .github/rules/response-shape.md. The entry point of a shared
@@ -121,7 +121,7 @@ def record_verdictless(transcript: Path, key: str) -> None:
 
 
 def run_ledger(transcript: Path) -> Path:
-    """--previous runs started and delivered, per turn. One successful run per turn, so a
+    """--previous runs started and delivered, per turn. PREVIOUS_RUN_LIMIT successful runs per turn, so a
     run whose verdict was never seen does not spend it."""
     return Path(tempfile.gettempdir()) / "check_response" / f"{transcript.stem}.runs.json"
 
@@ -285,8 +285,7 @@ def main() -> int:
 
     turns = adapter.turns(path)
     current = turns[-1]
-    # Look-back grades finished replies, so one run answers them.
-    limit = 1 if args.previous else RUN_LIMIT
+    limit = PREVIOUS_RUN_LIMIT if args.previous else RUN_LIMIT
 
     if not args.previous:
         runs = max(0, current.runs - verdictless_runs(path, current.key))

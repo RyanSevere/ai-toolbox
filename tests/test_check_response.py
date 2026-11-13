@@ -406,7 +406,8 @@ class VerdictlessRunsAreFree(TranscriptCase):
         self.assertEqual(self.run_on(path), 3, "second run was refused, not re-attempted")
 
     def test_a_graded_run_still_spends_the_budget(self):
-        path = self.transcript(user("one"), reply("m1", SHAPED_CLEAN), user("two"), invocation())
+        path = self.transcript(user("one"), reply("m1", SHAPED_CLEAN), user("two"),
+                               invocation(), invocation(), invocation())
         self.assertEqual(self.run_on(path), 2)
 
 
@@ -441,10 +442,11 @@ class OnlyASeenVerdictSpendsTheRun(TranscriptCase):
             handle.write(invocation() + "\n")
 
     def test_a_verdict_seen_on_a_terminal_spends_the_run(self):
-        """Intent: "1 successful run per turn"."""
-        self.assertEqual(self.run_on(Terminal()), 0)
-        self.ran_once()
-        self.assertEqual(self.run_on(Terminal()), 2, "a second successful run was allowed")
+        """Intent: "3 successful runs per turn" (air-295)."""
+        for _ in range(3):
+            self.assertEqual(self.run_on(Terminal()), 0)
+            self.ran_once()
+        self.assertEqual(self.run_on(Terminal()), 2, "a fourth successful run was allowed")
 
     def test_piped_output_does_not_spend_the_run(self):
         """Intent: a run cut off before its verdict was read can be re-run."""
@@ -462,7 +464,8 @@ class OnlyASeenVerdictSpendsTheRun(TranscriptCase):
 
     def test_an_unreadable_ledger_falls_back_to_counting_every_run(self):
         """Intent: a broken ledger must never widen the budget."""
-        self.ran_once()
+        for _ in range(3):
+            self.ran_once()
         folder = self.ledger_dir / "check_response"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / f"{self.path.stem}.runs.json").write_text("{not json", encoding="utf-8")
