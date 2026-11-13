@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/.github/scripts/exchange/exchange.py
 # Created by: Cursor agent, for Ryan Severe
 # Created: 2026-11-07
-# Last Updated: 2026-11-09
+# Last Updated: 2026-11-13
 # Description: Appends an entry to a cross-chat exchange log under a lock, so
 #              no concurrent entry is lost, and lists the entries since a
 #              time for the start-of-turn check. Watches a log and prints a
@@ -388,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     add = commands.add_parser("append", help="append one entry under the lock")
     add.add_argument("log", type=Path)
-    add.add_argument("--chat", required=True, help="who is writing, as other chats address you")
+    add.add_argument("--chat", required=True, help="who is writing, not who it is for; name the recipient in the body")
     body = add.add_mutually_exclusive_group(required=True)
     body.add_argument("--body")
     body.add_argument("--body-file", type=Path)

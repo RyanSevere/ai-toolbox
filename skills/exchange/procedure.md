@@ -48,6 +48,9 @@ python .github/scripts/exchange/exchange.py append scratch/exchange-<topic>.md \
     --chat "<chat name> (<ticket or workstream>)" --body-file scratch/entry-<n>.md
 ```
 
+`--chat` names the writer, never the recipient. The recipient is addressed by name
+in the body.
+
 `--body` is fine for one line. A longer entry is drafted in `scratch/` and passed
 with `--body-file`, the same way as a ticket body. The tool:
 
