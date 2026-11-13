@@ -151,7 +151,7 @@ check them. That ordering was the flaw in the previous draft.
     first.
 
     **In the condensed shape the same rule holds, with different homes.** (Operator
-    ruling 2026-11-13, air-295.) A `DC` carries its own context in its `Use case:`
+    ruling 2026-11-13.) A `DC` carries its own context in its `Use case:`
     line, so it is never a pointer to the Summary. A standalone `Q` states in the
     same entry what it is about and what the ask is. A `Came up while doing it`
     item is informative by default; **one that needs the operator to rule carries a
@@ -242,8 +242,8 @@ reply - see Compliance.
 
 ## Condensed shape
 
-The default. Operator rulings of 2026-11-08, 2026-11-10 and 2026-11-12, under
-air-295. The operator reads the decisions and the next steps about nine times in
+The default. Operator rulings of 2026-11-08, 2026-11-10, 2026-11-12 and
+2026-11-13. The operator reads the decisions and the next steps about nine times in
 ten and mostly takes the recommended option; the full blocks are paid for in
 every reply and mostly unread. The shape exists to make agents show their work,
 to show when a context has grown so large it is dropping things, and to say what
@@ -259,6 +259,13 @@ In this order:
   quotation. The checker requires at least one pointer in the paragraph, which is
   the floor, not the obligation. A reply that claims no result writes the single
   line `None this turn.`
+- **`## Logic and approach`**, optional, for a design reply: the reasoning behind
+  an approach, in `LA` items with a verdict, as in the full shape. Operator ruling
+  2026-11-13: on design messages it is the most useful section, so the condensed
+  shape keeps it. It sits after the Summary and before the decisions it leads to.
+  The checker does not require it, because whether a reply is a design reply is a
+  judgement; a design reply that leaves it out is a reviewer's finding. Writing it
+  does not make the reply full.
 - **`## Decisions and clarifications`**, only when there is something to ask. `DC`
   items and standalone `Q` items. Each carries the full context needed to answer it
   in place, because the premises and claims it would once have been attached to
@@ -291,9 +298,9 @@ owed when:
 ### Inferring the shape
 
 There is no marker to forget. A reply containing any heading from this set is
-graded as full: Your premises, My claims, Logic and approach, Recommendations,
-Asked done result, Premises acted on, Not done not checked. Any other reply is
-graded as condensed. Decisions and clarifications, Operator steps, Recommended
+graded as full: Your premises, My claims, Recommendations, Asked done result,
+Premises acted on, Not done not checked. Any other reply is graded as condensed.
+Logic and approach, Decisions and clarifications, Operator steps, Recommended
 next and Came up are left out because both shapes use them.
 
 A reply graded as full gets the full checks, unchanged, so a half-opened block -
@@ -712,14 +719,14 @@ A reply with no compliance line did not run the check. That absence is the
 signal.
 
 **The compliance section carries two results, and shows both.** (Operator ruling
-2026-11-13, air-295.) The condensed reply no longer prints premises, claims or
+2026-11-13.) The condensed reply no longer prints premises, claims or
 evidence; they go to a ledger file the check also reads. So the section reports
 the chat reply and the file separately - the reply's result with its findings,
 then the file's result:
 
 ```
 Compliance (previous reply): PASS
-Ledger file: not checked - no ledger exists yet (air-333)
+Ledger file: not checked - no ledger exists yet
 ```
 
 Either line dropping out of the section is the signal, as an absent compliance
@@ -781,7 +788,7 @@ existing; the script only tells you when you failed to meet them.
 write-check-fix loop that the reframe removed. The text being graded is already
 posted, so a re-run cannot revise it; the cap of three is there so a re-run after
 a fix, or to see the result again, is not refused (it was one, and kept
-refusing a check the operator wanted - ruling 2026-11-13, air-295). The in-flight
+refusing a check the operator wanted - ruling 2026-11-13). The in-flight
 mode keeps its cap of two for the rare case where it is used at all.
 
 **Grading starts at the header block and covers the whole reply from there** -

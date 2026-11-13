@@ -75,17 +75,20 @@ REQUIRED = {
 
 # The condensed shape is the default. A reply is full only if it carries a heading that
 # belongs to the full shape alone; the headings both shapes use are left out on purpose.
+# Logic and approach is one of them: design replies keep it in the condensed shape
+# (operator, 2026-11-13). It is optional there, and the full shape still requires it.
 FULL_SECTIONS = {
-    "yourpremises", "myclaims", "logicandapproach", "recommendations",
+    "yourpremises", "myclaims", "recommendations",
     "askeddoneresult", "premisesactedon", "notdonenotchecked",
 }
 CONDENSED_REQUIRED = ["summary", "recommendednext", "cameupwhiledoingit"]
 RECOMMENDED = re.compile(r"\(recommended\)", re.IGNORECASE)
 NONE_THIS_TURN = "None this turn."
 LINES = "#lines"  # suffix: a section's raw lines outside fences, blank lines kept
-# The ledger file holds what the condensed reply no longer prints. Checking it is air-333;
-# until it exists the line says so and never reads as a pass - unknown is not zero.
-LEDGER_FILE_LINE = "Ledger file: not checked - no ledger exists yet (air-333)"
+# The ledger file holds what the condensed reply no longer prints. Checking it is a
+# separate piece of work; until it exists the line says so and never reads as a pass -
+# unknown is not zero.
+LEDGER_FILE_LINE = "Ledger file: not checked - no ledger exists yet"
 
 CAPS = {"cameupwhiledoingit": 3, "recommendednext": 4}  # decisions deliberately uncapped
 
