@@ -8,6 +8,7 @@ description: >-
   becomes something other systems depend on.
 tools: [read, search, agent]
 agents: [Explore]
+model: inherit
 ---
 
 # Auditor

@@ -37,9 +37,14 @@ tools: [read, search]
 Two optional keys decide where else a role runs:
 
 - **`sessions:`** names the kinds of session it is rendered for. Absent, it is
-  `[interactive]`, rendered to `.github/agents/`. A role that lists `factory` is
+  `[interactive]`, rendered to `.github/agents/` and `.claude/agents/`. A role that lists `factory` is
   also rendered, in factory mode, to `factory/rules/<name>.agent.md` on a
   `factory: true` target.
+- **`model:`** is one of `sonnet`, `opus`, `haiku`, `fable` or `inherit`, and
+  is written into the Claude Code agent file only. Absent, it renders as
+  `inherit`, the session's model. Any other value refuses on every target. For
+  Claude Code, `tools:` is mapped to its tool names, a tool with no equivalent
+  is dropped with a warning, and `agents:` is not rendered (also with a warning).
 - **`skills:`** names the factory skills the role is given, each a skill seed
   whose `sessions:` lists `factory`. It is written into the factory agent file
   only, where the harness reads it and grants those skills and no others. A name

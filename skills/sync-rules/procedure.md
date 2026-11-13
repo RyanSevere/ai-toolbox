@@ -30,9 +30,9 @@ slower tempo.
 | Source | Target | Notes |
 |---|---|---|
 | `prescriptions.md` | `AGENTS.md` | Always-on. Cross-vendor |
-| `spec-*.md` where scope is file-type | `.github/instructions/<id>.instructions.md` + `.cursor/rules/<id>.mdc` | Frontmatter translated |
+| `spec-*.md` where scope is file-type | `.github/instructions/<id>.instructions.md` + `.cursor/rules/<id>.mdc` + `.claude/rules/<id>.md` | Frontmatter translated; Claude Code gets `paths:` |
 | `spec-*.md` where scope is a subtree | `<subtree>/AGENTS.md` | Prefer this - no glob dialect involved |
-| `skills/*/SKILL.md` | `.cursor/skills/<name>/SKILL.md` | Copied, not translated |
+| `skills/*/SKILL.md` | `.cursor/skills/<name>/SKILL.md` + `.github/skills/` + `.claude/skills/` | Copied, not translated |
 
 Frontmatter translation:
 

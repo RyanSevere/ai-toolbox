@@ -9,6 +9,7 @@ description: >-
 tools: [read, search, execute/runInTerminal, execute/getTerminalOutput, execute/killTerminal, execute/testFailure, agent]
 agents: [Explore]
 sessions: [interactive, factory]
+model: inherit
 ---
 
 # QA
