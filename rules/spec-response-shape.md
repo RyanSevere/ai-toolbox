@@ -149,6 +149,16 @@ check them. That ordering was the flaw in the previous draft.
     that runs off the side and cannot be read. Write it as
     a plain list item beside the item's other lines - same level, no bold, `Q<n>`
     first.
+
+    **In the condensed shape the same rule holds, with different homes.** (Operator
+    ruling 2026-11-13, air-295.) A `DC` carries its own context in its `Use case:`
+    line, so it is never a pointer to the Summary. A standalone `Q` states in the
+    same entry what it is about and what the ask is. A `Came up while doing it`
+    item is informative by default; **one that needs the operator to rule carries a
+    nested `Q<n>` line, and an item with no `Q` is read as informative.** The
+    `Q` is how the operator tells "needs a ruling" from "FYI" without reading the
+    item. The checker does not test this: whether a `CU` needs a ruling is a
+    judgement it cannot make, so the reviewer reads for it.
 11. **A question goes where the context that answers it is.** This is not a
     rule about restating versus referencing. It is about distance.
 
@@ -172,6 +182,11 @@ check them. That ordering was the flaw in the previous draft.
 
     Acceptable: "Both premises acted on this turn are in `Your premises` above."
     Not acceptable: "See P1 and P2."
+
+    **In the condensed shape the premises and claims are not in the reply, so a
+    question cannot point at them.** What a ruling depends on is stated in the
+    `DC`, `Q` or `CU` itself, in words. A pointer to the ledger file does not
+    count as context: the operator does not read it in the moment.
 12. **Emoji are barred from documentation, not from chat.** The rule exists
     because display systems render them badly. Chat is not one of those
     systems, so the compliance check does not test for them - it was producing
@@ -696,6 +711,22 @@ Compliance (previous reply): FAIL - 2 findings, both addressed below
 A reply with no compliance line did not run the check. That absence is the
 signal.
 
+**The compliance section carries two results, and shows both.** (Operator ruling
+2026-11-13, air-295.) The condensed reply no longer prints premises, claims or
+evidence; they go to a ledger file the check also reads. So the section reports
+the chat reply and the file separately - the reply's result with its findings,
+then the file's result:
+
+```
+Compliance (previous reply): PASS
+Ledger file: not checked - no ledger exists yet (air-333)
+```
+
+Either line dropping out of the section is the signal, as an absent compliance
+line is. The checker prints the second line itself, after `Compliance:`, and
+reads `not checked` rather than `PASS` until the ledger is built: an unchecked
+file must never read as a passing one.
+
 ### Four verdicts, and one of them is only ever the result of a failed attempt
 
 The compliance line is mandatory and says exactly one of these:
@@ -746,10 +777,12 @@ existing; the script only tells you when you failed to meet them.
 
 ### One run, and what it grades
 
-**Look-back runs once.** The two-run cap belonged to the write-check-fix loop
-that the reframe removed; there is nothing to re-run when the text being graded
-is already posted. The in-flight mode keeps its cap of two for the rare case
-where it is used at all.
+**Look-back runs up to three times per turn.** The two-run cap belonged to the
+write-check-fix loop that the reframe removed. The text being graded is already
+posted, so a re-run cannot revise it; the cap of three is there so a re-run after
+a fix, or to see the result again, is not refused (it was one, and kept
+refusing a check the operator wanted - ruling 2026-11-13, air-295). The in-flight
+mode keeps its cap of two for the rare case where it is used at all.
 
 **Grading starts at the header block and covers the whole reply from there** -
 every message block of the previous turn, including anything written after a
@@ -901,7 +934,7 @@ Each reply is reported under its own label, with the arrears named in the first
 line:
 
 ```
-run 1 of 1 | grading 2 reply(s), 1 in arrears - their turn never ran the check
+run 1 of 3 | grading 2 reply(s), 1 in arrears - their turn never ran the check
 
 previous reply: mode=execution | shape=full | 113 chars | 1 sections
 Compliance: FAIL - 1 finding(s)
@@ -987,13 +1020,15 @@ Two consequences:
   itself. That is correct - a checker that graded its own output would be the
   self-certifying problem this whole document exists to avoid.
 
-### One run in look-back, two in the vestigial in-flight mode
+### Three runs in look-back, two in the vestigial in-flight mode
 
-With the move to look-back, the old run count no longer applies: the check runs
-once, on the previous reply only.
+With the move to look-back, the old run count no longer applies: the check
+grades the previous reply only, and may run up to three times per turn.
 
-**Look-back runs once.** There is nothing to re-run when the text being graded
-is already posted, and the write-check-fix loop that needed two runs is gone.
+**Look-back runs up to three times.** The text being graded is already posted,
+so a re-run cannot start a check-and-revise loop; the write-check-fix loop that
+needed two runs is gone. One run per turn was the first cut and kept refusing
+a re-run that was legitimate (`PREVIOUS_RUN_LIMIT` in `check_response.py`).
 
 **A run that produced no verdict does not count.** An `UNKNOWN` used to spend
 the turn's one run, so fixing its cause and re-running was refused and the turn
@@ -1003,8 +1038,8 @@ temp directory and subtracts it. An unreadable tally counts as zero, which
 restores the old limit rather than widening it.
 
 **In look-back, a run counts only once its verdict has reached a terminal.**
-One successful run per turn; a run that errors or is cancelled may be re-run to
-complete.
+Three successful runs per turn; a run that errors or is cancelled may be re-run to
+complete and does not count.
 
 A reply that day piped the check through `Select-Object -First 4`, cut off the
 verdict line, and could not re-run. So each look-back run records `started` in
