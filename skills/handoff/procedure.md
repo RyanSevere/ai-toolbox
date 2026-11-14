@@ -5,8 +5,9 @@ description: >-
   tool or AI service can continue a workstream without the conversation that built
   it. Use when the user says any of: "hand this off", "write a seed", "write a
   handoff", "new chat for this", "I'm switching to X", "pick up where that left
-  off", "read the seed", or when a session is about to end mid-workstream - context
-  degrading, the compliance arrears cap reached, a service's usage running out.
+  off", "read the seed", or when a session is about to end mid-workstream - the
+  conversation has been summarised, context degrading, the compliance arrears cap
+  reached, a service's usage running out.
   Also use when a scratch/<objective>/handoff.md file exists for the work in front of you, and
   when the operator declares a workstream's objective complete - its scratch cleanup
   is the last step.
@@ -27,6 +28,18 @@ them, while a milestone on GitHub held all fifteen in order (2026-10-09). The ru
 that follows from it: **state comes from a live query, never from memory.**
 
 ## Writing a seed
+
+### When the conversation has been summarised
+
+- Hand off at the next clean stopping point: nothing uncommitted, and no approval
+  half-acted on.
+- Time spent waiting before the handoff can happen - a push, a review, a suite - may
+  go on refining other tickets in the workstream. That does not break the trigger.
+  Building does.
+- The seed names the summarisation as its reason, on the `Reason:` line of `## Written`.
+- The compliance arrears cap is the same kind of signal and takes the same path.
+- Verified in Cursor only, where a summarised context opens with a summary block.
+  Whether Copilot shows the agent that it was summarised is not known.
 
 ### Before writing
 
@@ -61,6 +74,7 @@ Fixed sections, in this order. An empty one says `none`, never disappears.
 
 ## Written
 <date and time>, by <tool or service>. Parent transcript: <id, or none>.
+Reason: <why this session ended - the conversation was summarised, the arrears cap was reached, or the operator's call>.
 Repositories in scope: <list>.
 Workstream directory: `scratch/<objective>/`, in each repository in scope.
 

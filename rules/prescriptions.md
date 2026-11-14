@@ -83,6 +83,8 @@ spec files and load when they are needed.
   before starting. Design needs the operator; execution of a finished design
   should not need them, and comes back only when something comes up or goes
   sideways.
+- After the conversation is first summarised, write a handoff seed (handoff
+  skill) at the next clean stopping point and end the session there.
 - Commit as often as the work needs; push at meaningful points, or when work has
   to cross machines. The pre-push gates make every push expensive.
 - Anything arriving mid-task - a finding, or review feedback - gets a verdict
