@@ -1889,5 +1889,71 @@ class ClaudeCodeMain(TranscriptCase):
         self.assertEqual(shape.Turn(shape.OPERATOR, "x", "t0").findings, [])
 
 
+class StopHook(unittest.TestCase):
+    """--stop: a Claude Code Stop hook. Hook JSON on stdin, findings on stderr, exit 2 to
+    send the turn back once, and never a block on the checker's own failure."""
+
+    def run_stop(self, stdin: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", ["check_response.py", "--stop"]), \
+                mock.patch("sys.stdin", new=io.StringIO(stdin)), \
+                mock.patch("sys.stdout", new=out), mock.patch("sys.stderr", new=err), \
+                mock.patch.object(cr, "record_run") as run, \
+                mock.patch.object(cr, "record_verdictless") as verdictless:
+            code = cr.main()
+        run.assert_not_called()
+        verdictless.assert_not_called()
+        return code, out.getvalue(), err.getvalue()
+
+    def hook(self, message, **extra) -> str:
+        return json.dumps({"last_assistant_message": message, **extra})
+
+    def test_a_malformed_reply_exits_2_with_findings_on_stderr(self):
+        code, out, err = self.run_stop(self.hook(K_MARKER + "\nLooks fine to me."))
+        self.assertEqual(code, 2)
+        self.assertIn("Compliance: FAIL", err)
+        self.assertEqual(out, "")
+
+    def test_a_clean_reply_exits_0_silently(self):
+        code, out, err = self.run_stop(self.hook(K_MARKER + "\n" + CONDENSED_CLEAN))
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_findings_with_stop_hook_active_exit_0_but_still_report(self):
+        code, out, err = self.run_stop(
+            self.hook(K_MARKER + "\nLooks fine to me.", stop_hook_active=True))
+        self.assertEqual(code, 0)
+        self.assertIn("Compliance: FAIL", err)
+
+    def test_stop_hook_active_false_still_blocks(self):
+        code, _, _ = self.run_stop(
+            self.hook(K_MARKER + "\nLooks fine to me.", stop_hook_active=False))
+        self.assertEqual(code, 2)
+
+    def test_the_reply_starts_at_the_last_marker(self):
+        message = f"{K_MARKER}\nLooks fine to me.\nmore\n{K_MARKER}\n{CONDENSED_CLEAN}"
+        self.assertEqual(self.run_stop(self.hook("Working.\n" + message)), (0, "", ""))
+
+    def test_progress_text_before_the_marker_is_not_graded(self):
+        code, out, err = self.run_stop(self.hook("Working on it.\n" + K_MARKER + "\n"
+                                                 + CONDENSED_CLEAN))
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_no_marker_grades_the_whole_message_and_adds_the_finding(self):
+        code, _, err = self.run_stop(self.hook(CONDENSED_CLEAN))
+        self.assertEqual(code, 2)
+        self.assertIn("  - reply marker missing", err)
+
+    def test_unparseable_stdin_exits_0_with_a_one_line_note(self):
+        code, out, err = self.run_stop("not json")
+        self.assertEqual((code, out), (0, ""))
+        self.assertEqual(len(err.strip().splitlines()), 1)
+
+    def test_a_missing_message_field_exits_0_with_a_one_line_note(self):
+        for stdin in ("{}", json.dumps({"last_assistant_message": None}), "[]", ""):
+            code, out, err = self.run_stop(stdin)
+            self.assertEqual((code, out), (0, ""), stdin)
+            self.assertEqual(len(err.strip().splitlines()), 1, stdin)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
