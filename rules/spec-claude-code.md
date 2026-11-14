@@ -39,6 +39,12 @@ If a UI is not mirrored in the remote session, do not use it.
 - One workspace per session, opened in the repository the session mostly writes to.
 - A step that reads or writes outside it raises a prompt. Name the step before the turn reaches it, and run those steps last.
 
+## Handing off
+
+- In the desktop app, once the seed is written, start the next session with the app's session tool, using the pickup prompt as its prompt and the same workspace folders. Ask the operator before archiving this session.
+- Outside the desktop app, end with the pickup prompt in chat, as the handoff skill says.
+- On the first use, check that the new session received the prompt and the folders, and report it if not.
+
 ## Main session and subagents
 
 - The main session designs, decides, drafts for review and verifies.

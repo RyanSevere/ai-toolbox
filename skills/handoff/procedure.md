@@ -6,7 +6,7 @@ description: >-
   it. Use when the user says any of: "hand this off", "write a seed", "write a
   handoff", "new chat for this", "I'm switching to X", "pick up where that left
   off", "read the seed", or when a session is about to end mid-workstream - the
-  conversation has been summarised, context degrading, the compliance arrears cap
+  conversation summarised a second time or drifting, context degrading, the compliance arrears cap
   reached, a service's usage running out.
   Also use when a scratch/<objective>/handoff.md file exists for the work in front of you, and
   when the operator declares a workstream's objective complete - its scratch cleanup
@@ -31,8 +31,12 @@ that follows from it: **state comes from a live query, never from memory.**
 
 ### When the conversation has been summarised
 
-- Hand off at the next clean stopping point: nothing uncommitted, and no approval
-  half-acted on.
+- After any summary, the session re-checks its state from live queries - the
+  coordination log, its tickets, its memory - and carries on.
+- It hands off at the next clean stopping point - nothing uncommitted, and no approval
+  half-acted on - when any of these happens: the conversation is summarised a second
+  time; the look-back check fails on structure the session used to pass; the compliance
+  arrears cap is reached; the operator corrects a ruling the session should have known.
 - Time spent waiting before the handoff can happen - a push, a review, a suite - may
   go on refining other tickets in the workstream. That does not break the trigger.
   Building does.
@@ -149,6 +153,8 @@ It carries nothing but those fields. Anything else belongs in the seed, which is
 source; state copied into the prompt goes stale the way a hand-listed ticket set does.
 Session-specific conduct - "refine tickets only, no code" - goes in the seed's
 `First, before acting`.
+
+Where the tool can start a session itself, its own rule says how; the prompt is still written.
 
 ## Picking up a seed
 

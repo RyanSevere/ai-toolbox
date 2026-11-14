@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_claude_render.py
 # Created by: Ryan Severe
 # Created: 2026-11-13
-# Last Updated: 2026-11-13
+# Last Updated: 2026-11-14
 # Description: Tests for Claude Code as a render target - rules, skills and agents -
 #              and for the tool table Copilot, Cursor and Claude Code share. Covers
 #              rule scope rendering, the skill root, agent frontmatter, a fake

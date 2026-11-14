@@ -283,7 +283,7 @@ class BuildPlan(unittest.TestCase):
                       " ".join(description.split()))
         self.assertNotIn("the conversation has been summarised", " ".join(description.split()))
         self.assertIn("### When the conversation has been summarised", skill)
-        self.assertIn("re-check its state from live queries", " ".join(skill.split()))
+        self.assertIn("re-checks its state from live queries", " ".join(skill.split()))
         self.assertIn("Reason: <why this session ended", skill)
 
     def test_repo_list_replaces_the_file_beside_the_ticket_tool(self):
