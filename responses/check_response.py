@@ -12,7 +12,7 @@
 #              which tool is running, has that adapter read the live transcript,
 #              and owns the run budget. Structural only - it never judges
 #              whether a claim is true. Replaces the single-file checker of
-#              2026-09-22.
+#              2026-09-22. --stop is the mode for a Claude Code Stop hook.
 ################################################################################
 # ===========================================================================
 #
