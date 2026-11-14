@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/check_response.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-13
+# Last Updated: 2026-11-14
 # Description: Checks assistant replies against the response shape in
 #              rules/spec-response-shape.md, rendered into each repo as
 #              .github/rules/response-shape.md. The entry point of a shared
@@ -220,6 +220,20 @@ def spent_runs(path: Path, current: shape.Turn, adapter) -> int:
     return max(0, current.runs - discount)
 
 
+def continuation_for(adapter, turns: list[shape.Turn], back: int) -> list[str]:
+    """Continuation findings for a --previous reply, `back` finished turns behind the
+    current one. Claude Code only: its hand-backs and task notifications are the turns
+    that open with no operator message. Cursor marks a canned notification prompt the same
+    kind but is not graded here; Copilot has no notification turns.
+
+    --stop never calls this: the hook sees only last_assistant_message, with no previous
+    turn to compare against, so the check is skipped there.
+    """
+    if adapter is not claude:
+        return []
+    return shape.continuation_findings(turns, len(turns) - 2 - back)
+
+
 def stop_hook() -> int:
     """A Claude Code Stop hook: grade the reply about to end the turn.
 
@@ -245,14 +259,16 @@ def stop_hook() -> int:
         text, extra = "\n".join(lines[marks[-1]:]), []
     else:
         text, extra = message, [claude.MARKER_MISSING]
+    # The continuation check is skipped here: it compares with the previous turn, which
+    # the hook does not have (only last_assistant_message). --previous reports it.
     report = io.StringIO()
     with contextlib.redirect_stdout(report):
         result = shape.grade("reply", text, extra=extra)
     if result != 1:
         return 0
     # The ledger line is about --previous's run ledgers, which this mode never touches.
-    print("\n".join(l for l in report.getvalue().strip().splitlines()
-                    if l != shape.LEDGER_FILE_LINE), file=sys.stderr)
+    print("\n".join(line for line in report.getvalue().strip().splitlines()
+                    if line != shape.LEDGER_FILE_LINE), file=sys.stderr)
     return 0 if data.get("stop_hook_active") is True else 2
 
 
@@ -378,7 +394,8 @@ def main() -> int:
         print(f", {arrears} in arrears - their turn never ran the check" if arrears else "")
         results = [
             shape.grade("previous reply" if back == 0 else f"{back} turn(s) back, UNGRADED",
-                        turn.text, turn.cut_short, turn.invoked, turn.findings)
+                        turn.text, turn.cut_short, turn.invoked,
+                        turn.findings + continuation_for(adapter, walked, back))
             for back, turn in picked
         ]
 

@@ -253,12 +253,16 @@ In this order:
 
 - **The header**, unchanged, with the compliance line beside it. `Needs from you`
   counts decisions, questions and operator steps.
-- **`## Summary`**: one paragraph of prose - no blank line inside it, no list
-  bullets. It says what happened this turn. Every result it claims carries an
+- **`## Summary`**: what happened this turn, one topic at a time. Each topic is its
+  own paragraph of prose that opens with a bold lead-in, and there are no list
+  markers (`- `, `* `, `1. `) anywhere in it. A Summary of one topic is one
+  paragraph with no blank line inside it. Every result it claims carries an
   inline pointer: a `path:line`, a backticked command or its output, a URL, or a
-  quotation. The checker requires at least one pointer in the paragraph, which is
-  the floor, not the obligation. A reply that claims no result writes the single
-  line `None this turn.`
+  quotation. The checker requires at least one pointer across the whole Summary,
+  which is the floor, not the obligation. A reply that claims no result writes the
+  single line `None this turn.` These limits are the constants
+  `SUMMARY_MULTI_PARAGRAPH_WITH_BOLD` and `SUMMARY_LIST_MARKERS_FORBIDDEN` at the top
+  of `shape.py`; a profile that wants another layout changes them there.
 - **`## Logic and approach`**, required when the Mode contains Planning (Planning,
   or Planning + Execution), optional otherwise: the reasoning behind an approach,
   in `LA` items with a verdict, as in the full shape. Operator ruling 2026-11-13:
@@ -272,8 +276,11 @@ In this order:
 - **`## Decisions and clarifications`**, only when there is something to ask. `DC`
   items and standalone `Q` items. Each carries the full context needed to answer it
   in place, because the premises and claims it would once have been attached to
-  are no longer printed. Each `DC` keeps its `Use case:` line and marks exactly one
-  option `(recommended)`.
+  are no longer printed. Each `DC` keeps its `Use case:` line, marks exactly one
+  option `(recommended)`, and carries two nested lines: `Recommendation:`, saying
+  why and the premise the reasoning rests on, and `Would change my answer:`. The
+  reasoning is owed because a recommendation can rest on a false premise, and the
+  second line names the fact that would show it.
 - **`## Operator steps`**, only when the operator has something to do: run a
   command, review a page, paste a result back. Items are `OS1`, `OS2`, and so on.
 - **`## Recommended next`**: the work that comes next - not things for the
@@ -317,14 +324,44 @@ header checks, the item-ID check and the caps apply to both.
 | `## Recommended next` absent | `condensed: section missing: recommendednext` |
 | `## Came up while doing it` absent | `condensed: section missing: cameupwhiledoingit` |
 | Mode contains Planning and `## Logic and approach` absent | `condensed: section missing for planning mode: logicandapproach` |
-| Summary has no paragraph, or more than one | `summary: <n> paragraphs, exactly 1 allowed` |
+| Summary has no paragraph | `summary: 0 paragraphs, at least 1 required` |
+| Summary has several paragraphs and one lacks a bold lead-in | `summary: paragraph <n> ('<start>') has no bold lead-in - several paragraphs each open with one` |
+| Summary has a line opening with a list marker | `summary: list marker on '<start>' - one topic at a time as paragraphs, no list` |
 | Summary carries no pointer and is not exactly `None this turn.` | `summary: no pointer a reader could follow` |
+| A condensed `DC` has no `Recommendation:` line | `decisions: '<title>' missing 'recommendation'` |
+| A condensed `DC` has no `Would change my answer:` line | `decisions: '<title>' missing 'would change my answer'` |
 | Recommended next or Came up has no item and no `None.` line | `<section>: empty - list an item or write 'None.'` |
 
 In both shapes every `DC` item marks exactly one option `(recommended)`, on any of
 its lines, case-insensitive. Otherwise it fails with `decisions: '<title>' marks
 <n> options recommended, exactly one is required`. The `Recommendation:` line in
-the full shape is the reasoning and is not counted.
+the full shape is the reasoning and is not counted. The two reasoning lines above
+are checked in the condensed shape only; the full shape's checks are unchanged.
+
+### A reply with no operator message before it
+
+A turn a background event opens, such as a subagent's hand-back or a task notification
+arriving right after a finished reply, has no operator message before it. Its reply
+opens, on the first line after the header, with:
+
+```
+Continues the previous reply - no operator message in between.
+```
+
+It continues the previous reply's ID counters, per prefix: if that reply ended at
+`DC1` and `R2`, this one starts at `DC2` and `R3`. The counters restart only when the
+operator replies with something other than steering. Without this, two replies in a row
+reuse `DC1`, and "DC1" no longer names one item.
+
+The checker reads `--previous` for this, on Claude Code turns of that kind only. It
+reports a missing continuation line, and any item ID whose number is not above the
+highest of the same prefix in the preceding reply. `--stop` has no previous turn and
+skips it. If the check misfires in use it is dropped and the rule stays.
+
+| Condition | Finding |
+|---|---|
+| Continuation line missing from the header | `continuation: header lacks the line '<line>'` |
+| An ID at or below the previous reply's highest of its prefix | `continuation: <ID> reuses an ID - the previous reply already reached <ID>` |
 
 The grade line names the inferred shape: `previous reply: mode=<mode> |
 shape=<full|condensed> | <n> chars | <n> sections`.
@@ -1125,7 +1162,8 @@ Mechanically decidable:
 - Every decision item carrying a use-case line, and exactly one `(recommended)` option
 - Every premise tagged `[factual]` or `[ruling]`
 - In the condensed shape: Summary, Recommended next and Came up present; the Summary
-  one paragraph with at least one pointer, or exactly `None this turn.`; the two
+  paragraphs each opening with a bold lead-in, no list markers, at least one pointer,
+  or exactly `None this turn.`; every `DC` with its two reasoning lines; the two
   closing sections holding an item or `None.`
 
 **Not decidable, and the script must say so in its own output:**
