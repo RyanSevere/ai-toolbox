@@ -71,6 +71,10 @@ def plan_for(profile_dir: Path = EXAMPLE, manifest: dict = MANIFEST) -> sync.Pla
                            profile_dir=profile_dir)
 
 
+def plan_for_defaults(defaults: dict) -> sync.Plan:
+    return sync.build_plan("t", {"estate": True}, defaults, SHA, MANIFEST, profile_dir=EXAMPLE)
+
+
 def frontmatter(text: str) -> str:
     return text.split("---\n", 2)[1] if text.startswith("---\n") else ""
 
@@ -106,6 +110,51 @@ class ClaudeRules(unittest.TestCase):
         self.assertEqual(sync.TOOLS[0].rule(meta, "b", SHA), sync.render_copilot(meta, "b", SHA))
         self.assertEqual(sync.TOOLS[1].rule(meta, "b", SHA), sync.render_cursor(meta, "b", SHA))
         self.assertIsNone(sync.TOOLS[0].rule({"description": "d"}, "b", SHA))
+
+
+class RuleTools(unittest.TestCase):
+    """A rule's optional tools: key limits which rows of TOOLS render it."""
+
+    def setUp(self):
+        sync.set_stamp_source(MANIFEST)
+
+    def rendered(self, **meta) -> sync.Plan:
+        plan = sync.Plan()
+        sync.add_rules(plan, "x", {"description": "d", "alwaysApply": True, **meta}, "b", SHA)
+        return plan
+
+    def test_a_claude_only_rule_renders_to_claude_alone(self):
+        self.assertEqual(list(self.rendered(tools=["claude"])), [".claude/rules/x.md"])
+
+    def test_a_rule_without_tools_renders_to_every_tool(self):
+        self.assertEqual(
+            set(self.rendered()),
+            {t.rule_path.format(id="x") for t in sync.TOOLS})
+
+    def test_an_unknown_tool_name_is_refused(self):
+        with self.assertRaises(sync.SyncError) as caught:
+            self.rendered(tools=["claude", "emacs"])
+        self.assertIn("emacs", str(caught.exception))
+
+    def test_tools_on_an_on_demand_rule_is_refused(self):
+        with self.assertRaises(sync.SyncError):
+            self.rendered(tools=["claude"], alwaysApply=False)
+
+    def test_the_claude_code_rule_renders_for_claude_only(self):
+        defaults = {**DEFAULTS, "tier2": list(DEFAULTS.get("tier2", [])) + ["claude-code"]}
+        plan = plan_for_defaults(defaults)
+        self.assertIn(".claude/rules/claude-code.md", plan)
+        self.assertNotIn(".cursor/rules/claude-code.mdc", plan)
+        self.assertNotIn(".github/instructions/claude-code.instructions.md", plan)
+        self.assertFalse([p for p in plan if "claude-code" in p and not p.startswith(".claude/")])
+
+    def test_the_claude_code_rule_quotes_the_reply_marker_exactly(self):
+        sys.path.insert(0, str(sync.ROOT / "responses"))
+        import claude
+        text = (sync.RULES_DIR / "spec-claude-code.md").read_text(encoding="utf-8")
+        self.assertIn(claude.REPLY_MARKER, text)
+        # Every mention of the marker is the whole constant, never a paraphrase of it.
+        self.assertEqual(text.count(claude.REPLY_MARKER), text.upper().count("REPLY STARTS HERE"))
 
 
 class ClaudeSkills(unittest.TestCase):
@@ -152,11 +201,10 @@ class ClaudeAgents(unittest.TestCase):
     def test_omitted_tools_stay_omitted(self):
         self.assertNotIn("tools:", frontmatter(self.render()))
 
-    def test_agents_key_is_not_rendered_and_warns(self):
+    def test_agents_key_is_not_rendered_and_does_not_warn(self):
         head = frontmatter(self.render(tools=["read"], agents=["Explore"]))
         self.assertNotIn("agents:", head)
-        self.assertEqual(len(self.warnings), 1)
-        self.assertIn("agents:", self.warnings[0])
+        self.assertEqual(self.warnings, [])
 
     def test_model_defaults_to_inherit_and_is_rendered_when_set(self):
         self.assertIn("model: inherit\n", frontmatter(self.render()))
@@ -177,12 +225,12 @@ class ClaudeAgents(unittest.TestCase):
         self.assertEqual(copilot, sync.render_agent(meta, "b", SHA))
         self.assertNotIn("model", copilot)
 
-    def test_plan_has_claude_agents_for_interactive_roles_and_warns(self):
+    def test_plan_has_claude_agents_for_interactive_roles_without_an_agents_warning(self):
         plan = plan_for()
         self.assertIn(".claude/agents/coder.md", plan)
         self.assertIn("model: sonnet\n", frontmatter(plan[".claude/agents/coder.md"]))
         self.assertIn("model: inherit\n", frontmatter(plan[".claude/agents/auditor.md"]))
-        self.assertTrue(any("agent coder" in w for w in plan.warnings))
+        self.assertFalse([w for w in plan.warnings if "agents:" in w], plan.warnings)
         self.assertFalse([p for p in plan if p.startswith(".cursor/agents")])
 
     def test_core_models_follow_the_split(self):
