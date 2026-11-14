@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_check_response.py
 # Created by: Ryan Severe
 # Created: 2026-09-23
-# Last Updated: 2026-11-08
+# Last Updated: 2026-11-13
 # Description: Transcript fixtures for responses/check_response.py, its shared
 #              shape core and its per-tool adapters. Every case here was
 #              found by using the script and verified by hand first; the tests
@@ -106,6 +106,42 @@ SHAPED_TAGGED_RULING = SHAPED_UNTAGGED_RULING.replace(
     '**P1 "refinement needs no ticket"**',
     '**P1 "refinement needs no ticket"** [ruling]',
 )
+
+CONDENSED_CLEAN = """Mode: Planning
+Needs from you: 1 decision, 1 operator step
+Changed: nothing
+
+## Summary
+
+The live state matches the seed: `git status -sb` printed "## main...origin/main", and the gate passed the draft.
+
+## Logic and approach
+
+- LA1 Rank by what unblocks the most work
+  - Verdict: holds, because example-2 waits on example-1
+
+## Decisions and clarifications
+
+- DC1 Pick the next ticket
+  - Use case: decides what the next session builds
+  - Options:
+    - a. example-1 first (recommended)
+    - b. example-2 first
+  - Recommendation: (a), because it unblocks example-2
+
+## Operator steps
+
+- OS1 Run `python tools/probe.py --host example` and paste the output back
+
+## Recommended next
+
+- R1 Once OS1's output is back, decide whether example-1 can run on that host
+  - Reasoning: the probe is the only unknown
+
+## Came up while doing it
+
+None.
+"""
 
 
 def user(content: str) -> str:
@@ -375,7 +411,8 @@ class VerdictlessRunsAreFree(TranscriptCase):
         self.assertEqual(self.run_on(path), 3, "second run was refused, not re-attempted")
 
     def test_a_graded_run_still_spends_the_budget(self):
-        path = self.transcript(user("one"), reply("m1", SHAPED_CLEAN), user("two"), invocation())
+        path = self.transcript(user("one"), reply("m1", SHAPED_CLEAN), user("two"),
+                               invocation(), invocation(), invocation())
         self.assertEqual(self.run_on(path), 2)
 
 
@@ -410,10 +447,11 @@ class OnlyASeenVerdictSpendsTheRun(TranscriptCase):
             handle.write(invocation() + "\n")
 
     def test_a_verdict_seen_on_a_terminal_spends_the_run(self):
-        """Intent: "1 successful run per turn"."""
-        self.assertEqual(self.run_on(Terminal()), 0)
-        self.ran_once()
-        self.assertEqual(self.run_on(Terminal()), 2, "a second successful run was allowed")
+        """Intent: "3 successful runs per turn" (operator 2026-11-13)."""
+        for _ in range(3):
+            self.assertEqual(self.run_on(Terminal()), 0)
+            self.ran_once()
+        self.assertEqual(self.run_on(Terminal()), 2, "a fourth successful run was allowed")
 
     def test_piped_output_does_not_spend_the_run(self):
         """Intent: a run cut off before its verdict was read can be re-run."""
@@ -431,7 +469,8 @@ class OnlyASeenVerdictSpendsTheRun(TranscriptCase):
 
     def test_an_unreadable_ledger_falls_back_to_counting_every_run(self):
         """Intent: a broken ledger must never widen the budget."""
-        self.ran_once()
+        for _ in range(3):
+            self.ran_once()
         folder = self.ledger_dir / "check_response"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / f"{self.path.stem}.runs.json").write_text("{not json", encoding="utf-8")
@@ -1193,11 +1232,13 @@ class CursorMain(TranscriptCase):
         self.assertEqual(code, 3)
         self.assertIn("--previous", err)
 
-    def test_one_graded_run_per_turn_without_a_terminal(self):
-        """Intent: "1 successful run per turn". Cursor's shell is never
-        a TTY, and the current turn's runs are not in the transcript, so the ledger counts."""
+    def test_three_graded_runs_per_turn_without_a_terminal(self):
+        """Intent: "3 successful runs per turn" (operator 2026-11-13). Cursor's shell
+        is never a TTY, and the current turn's runs are not in the transcript, so the
+        ledger counts."""
         path = self.clean()
-        self.assertEqual(self.run_main(path, "--previous")[0], 0)
+        for _ in range(3):
+            self.assertEqual(self.run_main(path, "--previous")[0], 0)
         code, out, _ = self.run_main(path, "--previous")
         self.assertEqual(code, 2, out)
         self.assertIn("REFUSED", out)
@@ -1313,6 +1354,208 @@ class CursorMain(TranscriptCase):
             code = cr.main()
         self.assertEqual(code, 3)
         self.assertIn("CURSOR_CONVERSATION_ID", err.getvalue())
+
+
+class CondensedShape(TranscriptCase):
+    """The condensed shape is the default; the full shape is inferred from its headings."""
+
+    def setUp(self):
+        ledger = tempfile.TemporaryDirectory()
+        self.addCleanup(ledger.cleanup)
+        patcher = mock.patch.object(cr.tempfile, "gettempdir", return_value=ledger.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_previous(self, path: Path) -> tuple[int, str]:
+        out = io.StringIO()
+        argv = ["check_response.py", "--tool", "cursor", "--transcript", str(path), "--previous"]
+        with mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.stderr", new=io.StringIO()):
+            return cr.main(), out.getvalue()
+
+    def previous_clean(self) -> Path:
+        return self.transcript(c_user("one"), c_assistant(SHAPED_CLEAN), C_ENDED,
+                               c_user("two - in progress"))
+
+    PARAGRAPH = (
+        'The live state matches the seed: `git status -sb` printed "## main...origin/main", '
+        "and the gate passed the draft."
+    )
+    RECOMMENDED_NEXT = (
+        "## Recommended next\n\n"
+        "- R1 Once OS1's output is back, decide whether example-1 can run on that host\n"
+        "  - Reasoning: the probe is the only unknown\n\n"
+    )
+
+    def findings(self, text: str) -> list[str]:
+        return shape.check(*shape.parse(text))[0]
+
+    def test_condensed_reply_passes(self):
+        self.assertEqual(self.findings(CONDENSED_CLEAN), [])
+
+    def test_missing_summary_fails(self):
+        text = CONDENSED_CLEAN.replace(f"## Summary\n\n{self.PARAGRAPH}\n\n", "")
+        self.assertIn("condensed: section missing: summary", self.findings(text))
+
+    def test_missing_recommended_next_fails(self):
+        text = CONDENSED_CLEAN.replace(self.RECOMMENDED_NEXT, "")
+        self.assertIn("condensed: section missing: recommendednext", self.findings(text))
+
+    def test_missing_came_up_fails(self):
+        text = CONDENSED_CLEAN.replace("## Came up while doing it\n\nNone.\n", "")
+        self.assertIn("condensed: section missing: cameupwhiledoingit", self.findings(text))
+
+    def test_empty_came_up_fails(self):
+        text = CONDENSED_CLEAN.replace("\nNone.\n", "\n")
+        self.assertIn(
+            "cameupwhiledoingit: empty - list an item or write 'None.'", self.findings(text)
+        )
+
+    def test_summary_without_a_pointer_fails(self):
+        text = CONDENSED_CLEAN.replace(self.PARAGRAPH, "The live state matches the seed.")
+        found = self.findings(text)
+        self.assertTrue(
+            any(f.startswith("summary: no pointer a reader could follow") for f in found), found
+        )
+
+    def test_summary_of_two_paragraphs_fails(self):
+        text = CONDENSED_CLEAN.replace(
+            self.PARAGRAPH,
+            self.PARAGRAPH + '\n\nA second paragraph quotes "the gate passed the draft".',
+        )
+        self.assertIn("summary: 2 paragraphs, exactly 1 allowed", self.findings(text))
+
+    def test_summary_wrapped_over_two_lines_passes(self):
+        text = CONDENSED_CLEAN.replace(
+            self.PARAGRAPH, self.PARAGRAPH.replace(", and the gate", ",\nand the gate")
+        )
+        self.assertEqual(self.findings(text), [])
+
+    def test_summary_none_this_turn_passes(self):
+        text = CONDENSED_CLEAN.replace(self.PARAGRAPH, "None this turn.")
+        self.assertEqual(self.findings(text), [])
+
+    def test_operator_step_is_an_item(self):
+        steps = shape.parse(CONDENSED_CLEAN)[1]["operatorsteps"]
+        self.assertEqual(len(steps), 1)
+        self.assertTrue(steps[0]["title"].startswith("OS1"), steps)
+
+    def test_decision_with_no_recommended_option_fails(self):
+        text = CONDENSED_CLEAN.replace(" (recommended)", "")
+        self.assertIn(
+            "decisions: 'DC1 Pick the next ticket' marks 0 options recommended, "
+            "exactly one is required",
+            self.findings(text),
+        )
+
+    def test_decision_with_two_recommended_options_fails(self):
+        text = CONDENSED_CLEAN.replace("b. example-2 first", "b. example-2 first (recommended)")
+        self.assertIn(
+            "decisions: 'DC1 Pick the next ticket' marks 2 options recommended, "
+            "exactly one is required",
+            self.findings(text),
+        )
+
+    def test_half_opened_block_is_graded_full(self):
+        claim = (
+            "\n## My claims\n\n"
+            "- C1 The probe exists\n"
+            "  - Verdict: confirmed\n"
+            "  - Evidence for: `ls tools/probe.py` printed the file\n"
+            "  - Evidence against: none\n"
+            "  - Would have falsified it: the file missing\n"
+            "  - Looked for it: yes\n"
+        )
+        found = self.findings(CONDENSED_CLEAN + claim)
+        self.assertIn("section missing for planning mode: yourpremises", found)
+
+    def test_full_reply_decision_needs_one_recommended(self):
+        decision = (
+            "\n## Decisions and clarifications\n\n"
+            "- DC1 Pick the next ticket\n"
+            "  - Use case: decides what the next session builds\n"
+            "  - Options:\n"
+            "    - a. example-1 first\n"
+            "    - b. example-2 first\n"
+        )
+        found = self.findings(SHAPED_CLEAN + decision)
+        self.assertIn(
+            "decisions: 'DC1 Pick the next ticket' marks 0 options recommended, "
+            "exactly one is required",
+            found,
+        )
+
+    def test_grade_line_names_the_shape(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", new=out):
+            shape.grade("previous reply", CONDENSED_CLEAN)
+        self.assertIn("shape=condensed", out.getvalue())
+        self.assertIn("Compliance: PASS", out.getvalue())
+
+    WITHOUT_LOGIC = CONDENSED_CLEAN.replace(
+        "## Logic and approach\n\n- LA1 Rank by what unblocks the most work\n"
+        "  - Verdict: holds, because example-2 waits on example-1\n\n", "")
+
+    def test_logic_and_approach_does_not_make_a_reply_full(self):
+        """Design replies keep this section (operator 2026-11-13); it must not flip the shape."""
+        header, sections = shape.parse(CONDENSED_CLEAN)
+        self.assertIn("logicandapproach", sections)
+        self.assertEqual(shape.shape_of(sections), "condensed")
+        self.assertEqual(shape.check(header, sections)[0], [])
+
+    def test_the_fixture_without_logic_really_lacks_it(self):
+        self.assertNotIn("logicandapproach", shape.parse(self.WITHOUT_LOGIC)[1])
+
+    def test_planning_mode_requires_logic_and_approach(self):
+        """Operator 2026-11-13: a visible FAIL the agent can judge is better than no check."""
+        self.assertIn("condensed: section missing for planning mode: logicandapproach",
+                      self.findings(self.WITHOUT_LOGIC))
+
+    def test_planning_plus_execution_requires_logic_and_approach(self):
+        text = self.WITHOUT_LOGIC.replace("Mode: Planning", "Mode: Planning + Execution")
+        self.assertIn("condensed: section missing for planning mode: logicandapproach",
+                      self.findings(text))
+
+    def test_execution_mode_does_not_require_logic_and_approach(self):
+        text = self.WITHOUT_LOGIC.replace("Mode: Planning", "Mode: Execution")
+        self.assertEqual(self.findings(text), [])
+
+    def test_logic_and_approach_entry_still_needs_an_id(self):
+        text = CONDENSED_CLEAN.replace("- LA1 Rank", "- Rank")
+        found = self.findings(text)
+        self.assertTrue(any("no item ID" in f for f in found), found)
+
+    def test_grade_prints_the_ledger_file_line(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", new=out):
+            shape.grade("previous reply", CONDENSED_CLEAN)
+        self.assertIn("Ledger file: not checked", out.getvalue())
+        self.assertNotIn("Ledger file: PASS", out.getvalue())
+
+    def test_a_failing_reply_still_prints_the_ledger_file_line(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", new=out):
+            shape.grade("previous reply", CONDENSED_CLEAN.replace("## Summary\n", ""))
+        self.assertIn("Compliance: FAIL", out.getvalue())
+        self.assertIn("Ledger file: not checked", out.getvalue())
+
+    def test_previous_allows_three_runs(self):
+        path = self.previous_clean()
+        self.assertEqual(self.run_previous(path)[0], 0)
+        self.assertEqual(self.run_previous(path)[0], 0)
+        code, out = self.run_previous(path)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("REFUSED", out)
+        self.assertIn("run 3 of 3", out)
+
+    def test_previous_refuses_the_fourth(self):
+        path = self.previous_clean()
+        for _ in range(3):
+            self.assertEqual(self.run_previous(path)[0], 0)
+        code, out = self.run_previous(path)
+        self.assertEqual(code, 2, out)
+        self.assertIn("REFUSED", out)
+        self.assertIn("limit is 3", out)
 
 
 if __name__ == "__main__":
