@@ -61,6 +61,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "responses"))
 
 import shape  # noqa: E402
+import claude  # noqa: E402
 import copilot  # noqa: E402
 import cursor  # noqa: E402
 import check_response as cr  # noqa: E402
@@ -1556,6 +1557,336 @@ class CondensedShape(TranscriptCase):
         self.assertEqual(code, 2, out)
         self.assertIn("REFUSED", out)
         self.assertIn("limit is 3", out)
+
+
+# A Claude Code transcript is one JSONL line per content block. These builders write the
+# observed record format with made-up text: an operator prompt is a user record with a
+# string and origin.kind "human", a tool result is a user record with a tool_result list,
+# and injected context is an attachment or an isMeta user record.
+K_MARKER = "=== REPLY STARTS HERE ==="
+K_CHECK = "python .github/scripts/responses/check_response.py --previous"
+K_SESSION = "11111111-2222-3333-4444-555555555555"
+K_OTHER = "66666666-7777-8888-9999-000000000000"
+
+
+def k_user(text: str, kind: str = "human") -> str:
+    return json.dumps({"type": "user", "uuid": "u-" + text[:8], "isSidechain": False,
+                       "origin": {"kind": kind}, "promptId": "p-1", "turnPosition": 1,
+                       "message": {"role": "user", "content": text}})
+
+
+def k_result(text: str = "ok") -> str:
+    return json.dumps({"type": "user", "uuid": "r-1", "isSidechain": False,
+                       "toolUseResult": {"stdout": text},
+                       "message": {"role": "user", "content": [
+                           {"type": "tool_result", "tool_use_id": "t-1", "content": text}]}})
+
+
+def k_attachment(kind: str = "queued_command") -> str:
+    return json.dumps({"type": "attachment", "uuid": "a-1", "isSidechain": False,
+                       "attachment": {"type": kind, "prompt": "a message sent mid-turn"}})
+
+
+def k_meta() -> str:
+    return json.dumps({"type": "user", "uuid": "m-1", "isMeta": True, "isSidechain": False,
+                       "message": {"role": "user", "content": "injected context"}})
+
+
+def k_block(block: dict, stop: str | None = None, sidechain: bool = False) -> str:
+    return json.dumps({"type": "assistant", "uuid": "b-1", "isSidechain": sidechain,
+                       "requestId": "req-1", "apiBlockIndex": 0,
+                       "message": {"id": "msg-1", "role": "assistant", "content": [block],
+                                   "stop_reason": stop}})
+
+
+def k_text(text: str, stop: str | None = None, sidechain: bool = False) -> str:
+    return k_block({"type": "text", "text": text}, stop, sidechain)
+
+
+def k_final(text: str) -> str:
+    return k_text(text, "end_turn")
+
+
+def k_tool(command: str = "rg x", name: str = "Bash") -> str:
+    return k_block({"type": "tool_use", "id": "t-1", "name": name, "input": {"command": command}},
+                   "tool_use")
+
+
+K_METADATA = json.dumps({"type": "last-prompt", "lastPrompt": "made-up"})
+
+
+class ClaudeCodeAdapter(TranscriptCase):
+    def kturns(self, *lines: str) -> list[shape.Turn]:
+        return claude.turns(self.transcript(*lines))
+
+    def test_the_interface_matches_the_other_adapters(self):
+        self.assertEqual(claude.NAME, "claude")
+        self.assertIs(claude.IN_FLIGHT, True)
+        self.assertIs(claude.LEDGER_COUNTS, False)
+        self.assertIs(cr.ADAPTERS["claude"], claude)
+        path = self.transcript(k_user("one"))
+        self.assertFalse(claude.behind(path))
+        self.assertFalse(claude.first_turn(argparse.Namespace(session=None), {}))
+
+    def test_detection_is_claudecode_equal_to_one(self):
+        self.assertEqual(cr.detect({"CLAUDECODE": "1"}), "claude")
+        self.assertIsNone(cr.detect({"CLAUDECODE": "0"}))
+        self.assertIsNone(cr.detect({"CLAUDECODE": ""}))
+        self.assertIsNone(cr.detect({}))
+
+    def test_a_second_tools_marker_makes_detection_refuse(self):
+        self.assertIsNone(cr.detect({"CLAUDECODE": "1", "CURSOR_AGENT": "1"}))
+
+    def test_identity_comes_from_the_variable(self):
+        args = argparse.Namespace(session=None)
+        self.assertEqual(claude.identity(args, {"CLAUDE_CODE_SESSION_ID": K_SESSION}), K_SESSION)
+
+    def test_a_session_argument_overrides_the_variable(self):
+        args = argparse.Namespace(session=K_OTHER)
+        self.assertEqual(claude.identity(args, {"CLAUDE_CODE_SESSION_ID": K_SESSION}), K_OTHER)
+
+    def test_no_identity_is_none_and_never_the_newest_transcript(self):
+        self.assertIsNone(claude.identity(argparse.Namespace(session=None), {}))
+
+    def test_the_entry_point_refuses_without_an_identity(self):
+        err = io.StringIO()
+        with mock.patch.dict("os.environ", {"CLAUDECODE": "1"}, clear=True), \
+                mock.patch.object(sys, "argv", ["check_response.py", "--previous"]), \
+                mock.patch("sys.stdout", new=io.StringIO()), mock.patch("sys.stderr", new=err):
+            code = cr.main()
+        self.assertEqual(code, 3)
+        self.assertIn("CLAUDE_CODE_SESSION_ID", err.getvalue())
+
+
+class ClaudeCodeLocate(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name)
+        patcher = mock.patch.object(claude, "projects_base", return_value=self.base)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write(self, project: str, session: str, *parts: str) -> Path:
+        folder = self.base.joinpath(project, *parts)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{session}.jsonl"
+        path.write_text(k_user("x") + "\n", encoding="utf-8")
+        return path
+
+    def args(self, session: str | None = None):
+        return argparse.Namespace(session=session, nonce=None)
+
+    def test_exactly_one_match_across_project_folders_is_found(self):
+        mine = self.write("proj-one", K_SESSION)
+        self.write("proj-two", K_OTHER)
+        found = claude.locate(self.args(), {"CLAUDE_CODE_SESSION_ID": K_SESSION})
+        self.assertEqual(found, mine)
+
+    def test_workspace_is_the_project_folder_the_transcript_sits_in(self):
+        path = self.write("proj-one", K_SESSION)
+        self.assertEqual(claude.workspace(path), "proj-one")
+
+    def test_two_matches_are_refused_naming_both(self):
+        first = self.write("proj-one", K_SESSION)
+        second = self.write("proj-two", K_SESSION)
+        err = io.StringIO()
+        with mock.patch("sys.stderr", new=err):
+            found = claude.locate(self.args(), {"CLAUDE_CODE_SESSION_ID": K_SESSION})
+        self.assertIsNone(found)
+        self.assertIn(str(first), err.getvalue())
+        self.assertIn(str(second), err.getvalue())
+
+    def test_no_match_is_none(self):
+        self.write("proj-one", K_OTHER)
+        self.assertIsNone(claude.locate(self.args(), {"CLAUDE_CODE_SESSION_ID": K_SESSION}))
+
+    def test_a_session_argument_overrides_the_variable(self):
+        self.write("proj-one", K_SESSION)
+        mine = self.write("proj-two", K_OTHER)
+        self.assertEqual(claude.locate(self.args(K_OTHER), {"CLAUDE_CODE_SESSION_ID": K_SESSION}),
+                         mine)
+
+    def test_a_subagent_transcript_is_never_a_match(self):
+        mine = self.write("proj-one", K_SESSION)
+        self.write("proj-one", "agent-abc123", K_SESSION, "subagents")
+        self.write("proj-two", K_SESSION, "nested")
+        self.assertEqual(claude.locate(self.args(), {"CLAUDE_CODE_SESSION_ID": K_SESSION}), mine)
+
+    def test_unsafe_identifiers_are_refused(self):
+        self.write("proj-one", K_SESSION)
+        for bad in ("../../etc/passwd", "*", ""):
+            with self.subTest(session=bad):
+                self.assertIsNone(claude.locate(self.args(), {"CLAUDE_CODE_SESSION_ID": bad}))
+
+
+class ClaudeCodeTurns(TranscriptCase):
+    def kturns(self, *lines: str) -> list[shape.Turn]:
+        return claude.turns(self.transcript(*lines))
+
+    def test_tool_results_and_attachments_do_not_start_a_turn(self):
+        turns = self.kturns(
+            K_METADATA, k_user("one"), k_attachment("environment"),
+            k_text("Looking."), k_tool(), k_result(),
+            k_attachment("queued_command"), k_meta(), k_text("Still looking."), k_tool(), k_result(),
+            k_final("done one"),
+            k_user("two"), k_final("done two"))
+        self.assertEqual([t.kind for t in turns], [shape.OPERATOR, shape.OPERATOR])
+        self.assertEqual([t.key for t in turns], ["t0", "t1"])
+
+    def test_a_tool_result_alone_never_opens_a_turn(self):
+        turns = self.kturns(k_user("one"), k_tool(), k_result(), k_final("done"))
+        self.assertEqual(len(turns), 1)
+
+    def test_a_mid_turn_queued_command_does_not_start_a_turn(self):
+        turns = self.kturns(k_user("one"), k_text("Working."), k_tool(), k_result(),
+                            k_attachment("queued_command"), k_tool(), k_result(), k_final("done"))
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0].last, "done")
+
+    def test_a_background_task_opens_a_notification_turn(self):
+        turns = self.kturns(k_user("one"), k_final("done one"),
+                            k_user("<task-notification>finished</task-notification>",
+                                   kind="task-notification"),
+                            k_final("the task finished"),
+                            k_user("two"))
+        self.assertEqual([t.kind for t in turns],
+                         [shape.OPERATOR, shape.NOTIFICATION, shape.OPERATOR])
+        self.assertEqual(turns[1].last, "the task finished")
+
+    def test_a_peer_message_is_not_a_turn(self):
+        self.assertEqual(len(self.kturns(k_user("one"), k_user("hello", kind="peer"),
+                                         k_final("done"))), 1)
+
+    def test_a_turn_without_an_end_turn_text_is_cut_short_and_skipped(self):
+        turns = self.kturns(k_user("one"), k_text("Starting."), k_tool(),
+                            k_user("two"), k_final(CONDENSED_CLEAN),
+                            k_user("three - in progress"))
+        self.assertTrue(turns[0].cut_short)
+        self.assertEqual(turns[0].text, "")
+        self.assertFalse(turns[1].cut_short)
+        picked, _, _ = shape.lookback(turns)
+        self.assertEqual([(back, t.key) for back, t in picked], [(0, "t1")])
+
+    def test_a_cut_short_previous_turn_is_walked_past_to_the_reply_before(self):
+        turns = self.kturns(k_user("one"), k_final(CONDENSED_CLEAN),
+                            k_user("two"), k_text("Starting."), k_tool(),
+                            k_user("three - in progress"))
+        picked, _, _ = shape.lookback(turns)
+        self.assertEqual([(back, t.key) for back, t in picked], [(1, "t0")])
+
+    def test_a_bash_or_powershell_invocation_counts_as_a_run(self):
+        turns = self.kturns(k_user("one"), k_tool(K_CHECK), k_result(),
+                            k_tool(K_CHECK, name="PowerShell"), k_result(),
+                            k_tool("rg check_response"), k_result(), k_final("done"))
+        self.assertEqual(turns[0].runs, 2)
+
+    def test_a_subagent_record_in_the_file_is_ignored(self):
+        turns = self.kturns(k_user("one"), k_text("side", "end_turn", sidechain=True),
+                            k_tool(K_CHECK), k_final("done"))
+        self.assertEqual(turns[0].last, "done")
+
+    def test_a_session_command_is_recorded_as_invoked(self):
+        self.assertEqual(self.kturns(k_user("/sitrep"), k_final("x"))[0].invoked, "Sitrep")
+
+    def test_an_empty_transcript_still_has_a_current_turn(self):
+        self.assertEqual(len(self.kturns(K_METADATA)), 1)
+
+
+class ClaudeCodeReply(TranscriptCase):
+    def kturns(self, *lines: str) -> list[shape.Turn]:
+        return claude.turns(self.transcript(*lines))
+
+    def test_the_reply_starts_at_the_marker_and_runs_to_the_end(self):
+        turns = self.kturns(
+            k_user("one"), k_text("Checking the file."), k_tool(), k_result(),
+            k_text("Found it.\n" + K_MARKER + "\nMode: Execution"),
+            k_text("Needs from you: nothing"),
+            k_final("Changed: nothing"))
+        text = turns[0].last
+        self.assertTrue(text.startswith(K_MARKER))
+        self.assertNotIn("Found it.", text)
+        self.assertNotIn("Checking the file.", text)
+        self.assertIn("Mode: Execution\nNeeds from you: nothing\nChanged: nothing", text)
+        self.assertEqual(turns[0].text, text)
+        self.assertEqual(turns[0].findings, [])
+
+    def test_a_marker_before_a_later_tool_call_still_opens_the_reply(self):
+        turns = self.kturns(k_user("one"), k_text(K_MARKER + "\nMode: Execution"), k_tool(),
+                            k_result(), k_final("Changed: nothing"))
+        self.assertEqual(turns[0].last, K_MARKER + "\nMode: Execution\nChanged: nothing")
+        self.assertEqual(turns[0].findings, [])
+
+    def test_without_a_marker_the_text_after_the_last_tool_call_is_the_reply(self):
+        turns = self.kturns(
+            k_user("one"), k_text("Before any tool."), k_tool(), k_result(),
+            k_text("Between tools."), k_tool(), k_result(),
+            k_text("Mode: Execution"), k_final("Changed: nothing"))
+        self.assertEqual(turns[0].last, "Mode: Execution\nChanged: nothing")
+        self.assertEqual(turns[0].findings, ["reply marker missing"])
+
+    def test_a_turn_with_no_tool_call_and_no_marker_is_all_its_text(self):
+        turns = self.kturns(k_user("one"), k_text("Mode: Execution"), k_final("Changed: nothing"))
+        self.assertEqual(turns[0].last, "Mode: Execution\nChanged: nothing")
+        self.assertEqual(turns[0].findings, ["reply marker missing"])
+
+    def test_the_marker_is_one_constant(self):
+        self.assertEqual(claude.REPLY_MARKER, K_MARKER)
+
+    def test_a_marker_mentioned_inside_a_sentence_is_not_the_marker(self):
+        turns = self.kturns(k_user("one"), k_text(f"I will write {K_MARKER} soon."), k_tool(),
+                            k_result(), k_final("Mode: Execution"))
+        self.assertEqual(turns[0].last, "Mode: Execution")
+        self.assertEqual(turns[0].findings, ["reply marker missing"])
+
+
+class ClaudeCodeMain(TranscriptCase):
+    """The entry point end to end on a Claude Code transcript."""
+
+    def setUp(self):
+        ledger = tempfile.TemporaryDirectory()
+        self.addCleanup(ledger.cleanup)
+        patcher = mock.patch.object(cr.tempfile, "gettempdir", return_value=ledger.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_main(self, path: Path, *extra: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        argv = ["check_response.py", "--tool", "claude", "--transcript", str(path), *extra]
+        with mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.stderr", new=err):
+            return cr.main(), out.getvalue(), err.getvalue()
+
+    def test_a_marked_clean_reply_passes(self):
+        path = self.transcript(k_user("one"), k_text("Working."), k_tool(), k_result(),
+                               k_text(K_MARKER), k_final(CONDENSED_CLEAN),
+                               k_user("two - in progress"), k_tool(K_CHECK))
+        code, out, _ = self.run_main(path, "--previous")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Compliance: PASS", out)
+
+    def test_a_malformed_reply_fails(self):
+        path = self.transcript(k_user("one"), k_text(K_MARKER), k_final("Looks fine to me."),
+                               k_user("two - in progress"))
+        code, out, _ = self.run_main(path, "--previous")
+        self.assertEqual(code, 1, out)
+        self.assertIn("Compliance: FAIL", out)
+
+    def test_a_forgotten_marker_fails_with_its_finding_even_when_the_shape_is_clean(self):
+        path = self.transcript(k_user("one"), k_text("Working."), k_tool(), k_result(),
+                               k_final(CONDENSED_CLEAN), k_user("two - in progress"))
+        code, out, _ = self.run_main(path, "--previous")
+        self.assertEqual(code, 1, out)
+        self.assertIn("  - reply marker missing", out)
+
+    def test_the_reply_being_written_is_graded_in_flight(self):
+        path = self.transcript(k_user("one"), k_text(K_MARKER), k_text(CONDENSED_CLEAN))
+        code, out, _ = self.run_main(path)
+        self.assertEqual(code, 0, out)
+        self.assertIn("in-flight", out)
+
+    def test_other_adapters_carry_no_findings(self):
+        self.assertEqual(shape.Turn(shape.OPERATOR, "x", "t0").findings, [])
 
 
 if __name__ == "__main__":

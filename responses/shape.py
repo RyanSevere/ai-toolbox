@@ -48,7 +48,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # Matches an actual invocation. Matching the bare filename also counted commands that
 # merely mentioned it, such as copying it to a backup - which inflated the run count.
@@ -131,6 +131,8 @@ class Turn:
     text is the reply the shape applies to, which only the adapter can pick out:
     every assistant message of a Copilot turn, the last text block of a Cursor one.
     key names the turn in the run ledgers and must be stable as the transcript grows.
+    findings are extra findings the adapter raised about how the reply was found, such as
+    a missing reply marker; grade reports them with the structural ones.
     """
 
     kind: str
@@ -140,6 +142,7 @@ class Turn:
     runs: int = 0
     cut_short: bool = False
     last: str = ""
+    findings: list[str] = field(default_factory=list)
 
 
 def invoked_in(message: str) -> str | None:
@@ -425,8 +428,11 @@ def check(header: list[str], sections: dict[str, list[dict]]) -> tuple[list[str]
     return findings, mode
 
 
-def grade(label: str, text: str, interrupted: bool = False, invoked: str | None = None) -> int:
-    """Report one reply. Returns 0 clean, 1 findings, EXIT_NOT_APPLICABLE if unshaped."""
+def grade(label: str, text: str, interrupted: bool = False, invoked: str | None = None,
+          extra: list[str] | None = None) -> int:
+    """Report one reply. Returns 0 clean, 1 findings, EXIT_NOT_APPLICABLE if unshaped.
+
+    extra is a Turn's own findings, reported after the structural ones."""
     if interrupted:
         print(f"\n{label}: NOT APPLICABLE - cut short by a message sent mid-turn. The turn")
         print("carried on after it, so this slice is progress narration, not a reply.")
@@ -442,6 +448,7 @@ def grade(label: str, text: str, interrupted: bool = False, invoked: str | None 
 
     header, sections = parse(text)
     findings, mode = check(header, sections)
+    findings.extend(extra or [])
     count = sum(not name.endswith((ENTRIES, LINES)) for name in sections)
     print(f"\n{label}: mode={mode} | shape={shape_of(sections)} | {len(text)} chars | "
           f"{count} sections")

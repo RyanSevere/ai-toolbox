@@ -811,6 +811,16 @@ carries the shape. An earlier version of this paragraph exempted those turns, an
 nothing, or an older reply, for full replies written in them. Cursor also writes a
 turn to its transcript only when it ends, so in-flight mode is refused there.
 
+Claude Code writes each content block to its transcript as it is produced, so
+in-flight mode works there. A turn opens at an operator prompt, or at a background
+task's notification, which is graded like any other turn; tool results, attachments
+and a message sent mid-turn stay inside the current turn. The reply is the turn's
+text from the line `=== REPLY STARTS HERE ===` (the adapter's `REPLY_MARKER`) to the
+end of the turn, across text blocks. A turn with no marker line is graded on its
+text after its last tool call, with one extra finding, `reply marker missing`. A
+turn with no `end_turn` text was interrupted or is still being written, and the
+look-back skips it.
+
 **A Cursor transcript can lag the turn that reads it.** The check always runs
 inside a turn that has started, so the file should end at that turn's message. If
 any `turn_ended` record follows the last message - the last record, or one before
@@ -827,7 +837,10 @@ structure it was never meant to have.
 **Run it as `python .github/scripts/responses/check_response.py --previous`
 from the repository root.** It works out which tool is running from a marker
 only that tool sets, and refuses rather than guessing when it finds none or
-several; `--tool` overrides. In Cursor that is the whole command:
+several; `--tool` overrides. In Claude Code the marker is `CLAUDECODE=1`, and
+that is the whole command: `CLAUDE_CODE_SESSION_ID` is the transcript's name, found
+at `~/.claude/projects/<project folder>/<session id>.jsonl` (`--session` overrides
+it). In Cursor that is the whole command:
 `CURSOR_CONVERSATION_ID` is the transcript's name. In Copilot add
 `--session <id>`, where `<id>` is the last path segment of the
 `VSCODE_TARGET_SESSION_LOG` template variable every Copilot session is handed -
@@ -836,7 +849,9 @@ filename. The script is rendered into every repo in the manifest, so the path is
 correct wherever you are.
 
 **Without a session identity the script refuses with `UNKNOWN`** - in Copilot
-`--session` or `--nonce`, in Cursor `CURSOR_CONVERSATION_ID`. It used to
+`--session` or `--nonce`, in Cursor `CURSOR_CONVERSATION_ID`, in Claude Code
+`CLAUDE_CODE_SESSION_ID`. A session id found in two project folders is refused
+too. It used to
 grade the newest transcript across every workspace, which is whichever session
 wrote last. Once, a parallel session in the same workspace graded a
 session's reply in another workspace instead of its own, and reported the result

@@ -62,11 +62,12 @@ from typing import Mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import claude  # noqa: E402
 import copilot  # noqa: E402
 import cursor  # noqa: E402
 import shape  # noqa: E402
 
-ADAPTERS = {adapter.NAME: adapter for adapter in (copilot, cursor)}
+ADAPTERS = {adapter.NAME: adapter for adapter in (claude, copilot, cursor)}
 RUN_LIMIT = 2
 # Look-back grades a reply that is already posted, so a re-run cannot start a
 # check-and-revise loop. One run per turn kept refusing a re-run the operator could not
@@ -223,7 +224,8 @@ def main() -> int:
                         help="which tool wrote the transcript. Detected when omitted")
     parser.add_argument("--session", help="chat session id. Copilot: the last segment of "
                                           "VSCODE_TARGET_SESSION_LOG. Cursor: defaults to "
-                                          "CURSOR_CONVERSATION_ID")
+                                          "CURSOR_CONVERSATION_ID. Claude Code: defaults to "
+                                          "CLAUDE_CODE_SESSION_ID")
     parser.add_argument("--nonce", help="a fresh token unique to this invocation, for a tool "
                                         "that supplies no session id (Copilot)")
     parser.add_argument("--transcript", type=Path, help="explicit path, for test fixtures only")
@@ -262,7 +264,10 @@ def main() -> int:
         print(f"UNKNOWN: no single transcript matches {named!r}. This is not a pass.",
               file=sys.stderr)
         return 3
-    print(f"transcript: {path.parent.parent.parent.name}/{path.name} | tool: {tool}")
+    # An adapter whose transcripts sit at another depth names its own workspace folder.
+    where = (adapter.workspace(path) if hasattr(adapter, "workspace")
+             else path.parent.parent.parent.name)
+    print(f"transcript: {where}/{path.name} | tool: {tool}")
 
     if not args.previous and not adapter.IN_FLIGHT:
         print(f"UNKNOWN: {tool} writes a turn to its transcript only when the turn ends, so "
@@ -297,7 +302,7 @@ def main() -> int:
             record_verdictless(path, current.key)
             return 3
         print(f"run {runs + 1} of {limit} | in-flight")
-        results = [shape.grade("reply being written", current.last)]
+        results = [shape.grade("reply being written", current.last, extra=current.findings)]
         truncated = False
     else:
         walked = delivered_runs(path, turns) if adapter.LEDGER_COUNTS else turns
@@ -327,7 +332,7 @@ def main() -> int:
         print(f", {arrears} in arrears - their turn never ran the check" if arrears else "")
         results = [
             shape.grade("previous reply" if back == 0 else f"{back} turn(s) back, UNGRADED",
-                        turn.text, turn.cut_short, turn.invoked)
+                        turn.text, turn.cut_short, turn.invoked, turn.findings)
             for back, turn in picked
         ]
 
