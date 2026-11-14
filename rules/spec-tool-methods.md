@@ -65,13 +65,13 @@ These all raised cards for a job that was allowed:
 
 | Job | Cursor | Copilot (VS Code) | Claude Code | Raises a card |
 |---|---|---|---|---|
-| Delete a file or directory under `scratch/` | `cleanup.py --ws <objective> --apply`, once, at the end of the workstream | same | same `cleanup.py` call (verify live) | `Delete` per file; `Remove-Item`; a delete mid-task or per ticket |
+| Delete a file or directory under `scratch/` | `cleanup.py --ws <objective> --apply`, once, at the end of the workstream | same | same `cleanup.py` call - not confirmed live | `Delete` per file; `Remove-Item`; a delete mid-task or per ticket |
 | Delete anything outside `scratch/` | `Delete` - a card, deliberately | not confirmed: shell, expect a card | - | - |
 | Remove a worktree | inside `scratch/<objective>/`, the same `cleanup.py` call; elsewhere `git worktree remove`, one per call, at the end | same | - | - |
-| Create, edit or append to a file | `Write`, `StrReplace` | `createFile`, `editFiles` - not confirmed live | `Write`, `Edit` (verify live) | `Set-Content`, `Out-File`, `python -c "open(...).write(...)"` |
-| Back up a file before a batch edit | `Read`, then `Write` the copy to `scratch/` | same | `Read`, then `Write` the copy (verify live) | `Copy-Item` |
-| Commit | `git add`, then `git commit`, each its own call | same | `git add`, then `git commit`, each its own call (verify live) | `git hash-object`, `git update-ref`, a hand-rolled commit script |
-| Run a long script | `Write` it to `scratch/`, run the file | same | write it to scratch, run the file (verify live) | a multi-line `bash -c @'...'` - the classifier fails on it |
+| Create, edit or append to a file | `Write`, `StrReplace` | `createFile`, `editFiles` - not confirmed live | `Write`, `Edit` inside the workspace; outside it, a prompt | `Set-Content`, `Out-File`, `python -c "open(...).write(...)"` |
+| Back up a file before a batch edit | `Read`, then `Write` the copy to `scratch/` | same | `Read`, then `Write` the copy to `scratch/` | `Copy-Item` |
+| Commit | `git add`, then `git commit`, each its own call | same | `git add`, then `git commit`, each its own call | `git hash-object`, `git update-ref`, a hand-rolled commit script |
+| Run a long script | `Write` it to `scratch/`, run the file | same | `Write` it to `scratch/`, run the file - not confirmed live | a multi-line `bash -c @'...'` - the classifier fails on it |
 
 **`Delete` raises a card in Cursor.** Observed, three calls out of three. The transcript does
 not record it - that prompt is Cursor's own and leaves no Auto-review marker - so a
