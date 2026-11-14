@@ -267,8 +267,8 @@ def stop_hook() -> int:
     if result != 1:
         return 0
     # The ledger line is about --previous's run ledgers, which this mode never touches.
-    print("\n".join(l for l in report.getvalue().strip().splitlines()
-                    if l != shape.LEDGER_FILE_LINE), file=sys.stderr)
+    print("\n".join(line for line in report.getvalue().strip().splitlines()
+                    if line != shape.LEDGER_FILE_LINE), file=sys.stderr)
     return 0 if data.get("stop_hook_active") is True else 2
 
 

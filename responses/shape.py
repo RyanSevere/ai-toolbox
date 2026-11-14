@@ -343,7 +343,7 @@ def condensed_findings(sections: dict, mode: str | None = None) -> list[str]:
                     findings.append(f"summary: paragraph {number} ('{paragraph[:40]}') has no "
                                     "bold lead-in - several paragraphs each open with one")
         if SUMMARY_LIST_MARKERS_FORBIDDEN:
-            marked = [l.strip() for l in lines if LIST_MARKER.match(l)]
+            marked = [line.strip() for line in lines if LIST_MARKER.match(line)]
             if marked:
                 findings.append(f"summary: list marker on '{marked[0][:40]}' - one topic at a "
                                 "time as paragraphs, no list")
@@ -448,10 +448,10 @@ def check(header: list[str], sections: dict[str, list[dict]]) -> tuple[list[str]
         # Condensed only: the full shape carries its reasoning in its own blocks and its
         # checks are unchanged. The reasoning is owed so a false premise can be caught.
         if shape_of(sections) == "condensed":
-            nested = [strip_md(l).lower() for l in item["lines"][1:]]
+            nested = [strip_md(line).lower() for line in item["lines"][1:]]
             for key, label in (("recommendation:", "recommendation"),
                                ("would change my answer:", "would change my answer")):
-                if not any(l.startswith(key) for l in nested):
+                if not any(line.startswith(key) for line in nested):
                     findings.append(f"decisions: '{item['title'][:60]}' missing '{label}'")
 
     # Spec rule 9: every entity carries an ID. A top-level entry without one used to be
