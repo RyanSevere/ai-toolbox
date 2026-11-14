@@ -123,6 +123,12 @@ def behind(path: Path) -> bool:
     return False
 
 
+def workspace(path: Path) -> str:
+    """The project folder a transcript sits in, for the run's first line. Claude Code keeps
+    <project>/<session>.jsonl, one level shallower than the other tools."""
+    return path.parent.name
+
+
 def read_records(path: Path) -> list[dict]:
     out = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():

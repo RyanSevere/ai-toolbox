@@ -1683,6 +1683,10 @@ class ClaudeCodeLocate(unittest.TestCase):
         found = claude.locate(self.args(), {"CLAUDE_CODE_SESSION_ID": K_SESSION})
         self.assertEqual(found, mine)
 
+    def test_workspace_is_the_project_folder_the_transcript_sits_in(self):
+        path = self.write("proj-one", K_SESSION)
+        self.assertEqual(claude.workspace(path), "proj-one")
+
     def test_two_matches_are_refused_naming_both(self):
         first = self.write("proj-one", K_SESSION)
         second = self.write("proj-two", K_SESSION)

@@ -264,7 +264,10 @@ def main() -> int:
         print(f"UNKNOWN: no single transcript matches {named!r}. This is not a pass.",
               file=sys.stderr)
         return 3
-    print(f"transcript: {path.parent.parent.parent.name}/{path.name} | tool: {tool}")
+    # An adapter whose transcripts sit at another depth names its own workspace folder.
+    where = (adapter.workspace(path) if hasattr(adapter, "workspace")
+             else path.parent.parent.parent.name)
+    print(f"transcript: {where}/{path.name} | tool: {tool}")
 
     if not args.previous and not adapter.IN_FLIGHT:
         print(f"UNKNOWN: {tool} writes a turn to its transcript only when the turn ends, so "
