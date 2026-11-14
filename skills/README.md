@@ -70,5 +70,6 @@ Not everything is. A skill for something done once is overhead.
 | `handoff` | Write or pick up the note one session leaves so another can continue the work |
 | `spec-gate` | Check an agent-ready ticket or a factory `SPEC.md` against the spec format, refusing every rule it breaks |
 | `exchange` | Coordinate chats live in one repository at once through an exchange log, appending through a locked tool so no entry is lost |
+| `delegate` | Hand settled work to a subagent through a written brief, and review its result before anything ships |
 
 A profile documents its own skills in a `README.md` beside their seeds.
