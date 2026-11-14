@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-14
-# Last Updated: 2026-11-13
+# Last Updated: 2026-11-14
 # Description: Renders the core and a profile's seeds into a consuming repository's
 #              per-tool formats and stamps each output with the source SHA.
 #              Dry-run by default; --write applies. Never writes Tier 3.
@@ -85,7 +85,7 @@ CONSENT_SCRIPT = "core/consent.py"
 PROFILE_KEYS = {
     "source": dict, "identity": dict, "not_onboarded": dict, "defaults": dict,
     "rollout": dict, "actions": dict, "targets": dict, "features": dict, "capabilities": dict,
-    "answers": dict, "gate_config_dir": str,
+    "answers": dict, "gate_config_dir": str, "tracked": dict,
 }
 # Repo-relative, one or more plain segments. Rendered into gate-config as config-dir.
 CONFIG_DIR = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9._-]*(/[A-Za-z0-9_.][A-Za-z0-9._-]*)*")
@@ -346,7 +346,26 @@ def load_profile(folder: Path) -> dict:
                             f"Allowed: {', '.join(sorted(PROFILE_KEYS))}")
         if value is not None and not isinstance(value, PROFILE_KEYS[key]):
             raise SyncError(f"{path}: {key!r} must be a {PROFILE_KEYS[key].__name__}")
+    check_tracked(data, path)
     return data
+
+
+def check_tracked(data: dict, path: Path) -> None:
+    """Refuse a tracked entry with no reason, or one that is also a target, a repository
+    deliberately left out, or the source: a repository is rendered into, or never is."""
+    elsewhere = {
+        "targets": set(data.get("targets") or {}),
+        "not_onboarded": set(data.get("not_onboarded") or {}),
+        "source.repo": {(data.get("source") or {}).get("repo")} - {None},
+    }
+    for name, cfg in (data.get("tracked") or {}).items():
+        reason = cfg.get("reason") if isinstance(cfg, dict) else None
+        if not isinstance(reason, str) or not reason.strip():
+            raise SyncError(f"{path}: tracked: {name!r} needs a non-empty reason")
+        for place, names in elsewhere.items():
+            if name in names:
+                raise SyncError(f"{path}: {name!r} is under both tracked: and {place}:. "
+                                "A repository is rendered into or tracked, never both")
 
 
 class SyncError(Exception):
@@ -837,9 +856,9 @@ def render_claude_agent(meta: dict, body: str, sha: str, warn) -> str:
             raise SyncError(f"agent {name}: none of its tools map to Claude Code, and an empty "
                             "allowlist would render as every tool")
         fields.append(("tools", ", ".join(tools)))
-    if meta.get("agents") is not None:
-        warn(f"agent {name}: agents: is not rendered for Claude Code, whose subagents cannot "
-             "be restricted that way")
+    # `agents:` is known and not applicable here, so it is dropped without a warning: Claude
+    # Code ignores a type list in a subagent's Agent(...), and only a main-thread agent can
+    # restrict which subagents it starts.
     fields.append(("model", meta.get("model") or "inherit"))
     return f"{fm(fields)}\n{stamp(sha)}\n\n{body}"
 
@@ -909,6 +928,10 @@ def repo_list(manifest: dict) -> dict:
             continue
         repos.append({"name": name, "github": f"{owner}/{cfg.get('remote') or name}",
                       "key": cfg.get("key")})
+    for name, cfg in (manifest.get("tracked") or {}).items():
+        cfg = cfg or {}
+        repos.append({"name": name, "github": f"{owner}/{cfg.get('remote') or name}",
+                      "key": cfg.get("key"), "tracked": True})
     not_onboarded = [{"name": name, "reason": reason}
                      for name, reason in (manifest.get("not_onboarded") or {}).items()]
     return {"owner": owner, "repos": repos, "not_onboarded": not_onboarded}
@@ -930,6 +953,9 @@ def issue_keys(manifest: dict) -> str:
     for name, cfg in (manifest.get("targets") or {}).items():
         cfg = cfg or {}
         if not cfg.get("skip") and cfg.get("key"):
+            rows.append((name, cfg["key"]))
+    for name, cfg in (manifest.get("tracked") or {}).items():
+        if (cfg or {}).get("key"):
             rows.append((name, cfg["key"]))
     width = max((len(r) for r, _ in rows), default=4)
     lines = [f"| {'Repo'.ljust(width)} | Issue key |", f"|{'-' * (width + 2)}|---|"]
@@ -1342,8 +1368,28 @@ def render_enabled_gates(manifest: dict, profile_dir: Path, sha: str) -> str:
 
 
 def add_rules(plan: Plan, rule_id: str, meta: dict, body: str, sha: str | None) -> None:
-    """One rule into every tool's rule path that renders it."""
+    """One rule into every tool's rule path that renders it.
+
+    A rule's optional `tools:` names the rows of TOOLS that render it; absent, every row
+    does. An on-demand rule is shared across tools (ON_DEMAND_DIR), so it cannot be limited
+    to some of them, and `tools:` on one is refused rather than half-applied.
+    """
+    only = meta.get("tools")
+    if only is not None:
+        names = {t.name for t in TOOLS}
+        if not isinstance(only, list) or not only:
+            raise SyncError(f"rule {rule_id}: tools: must be a non-empty list of "
+                            f"{sorted(names)}")
+        unknown = sorted(str(n) for n in only if n not in names)
+        if unknown:
+            raise SyncError(f"rule {rule_id}: tools: names {unknown}, which no row of TOOLS "
+                            f"defines. Known: {sorted(names)}")
+        if meta.get("scope", "*") == "*" and not meta.get("alwaysApply", False):
+            raise SyncError(f"rule {rule_id}: tools: on an on-demand rule is not supported, "
+                            "because on-demand rules are shared across tools")
     for tool in TOOLS:
+        if only is not None and tool.name not in only:
+            continue
         text = tool.rule(meta, body, sha)
         if text is not None:
             plan[tool.rule_path.format(id=rule_id)] = text
@@ -2537,6 +2583,8 @@ def main(argv: list[str] | None = None) -> int:
             if not args.target:
                 raise SyncError("a target is required unless --self is given")
             targets = manifest.get("targets") or {}
+            if args.target in (manifest.get("tracked") or {}):
+                raise SyncError(f"{args.target} is tracked, not rendered")
             if args.target not in targets:
                 raise SyncError(f"'{args.target}' is not in {PROFILE_NAME}")
             cfg = targets[args.target] or {}

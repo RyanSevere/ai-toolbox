@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_check_response.py
 # Created by: Ryan Severe
 # Created: 2026-09-23
-# Last Updated: 2026-11-13
+# Last Updated: 2026-11-14
 # Description: Transcript fixtures for responses/check_response.py, its shared
 #              shape core and its per-tool adapters. Every case here was
 #              found by using the script and verified by hand first; the tests
@@ -253,6 +253,38 @@ class Arrears(TranscriptCase):
                     user("three - in progress"),
                 )
                 self.assertEqual([back for back, _ in picked], [0])
+
+    def test_quoted_path_with_spaces_counts_as_a_run(self):
+        for command in (
+            'python "C:\\Some Folder\\scripts\\responses\\check_response.py" --previous',
+            'python3 "/home/a b/scripts/check_response.py" --previous',
+            "python 'C:/Some Folder/scripts/check_response.py' --previous",
+            'python "C:\\NoSpaces\\check_response.py" --previous',
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(shape.INVOCATION.search(command))
+                picked, _, _ = self.lookback(
+                    user("one"),
+                    reply("m1", SHAPED_NO_CHANGED_LINE),
+                    user("two"),
+                    invocation(command),
+                    reply("m2", SHAPED_CLEAN),
+                    user("three - in progress"),
+                )
+                self.assertEqual([back for back, _ in picked], [0])
+
+    def test_commands_that_only_mention_the_file_are_not_runs(self):
+        for command in (
+            'cp "C:\\Some Folder\\check_response.py" backup.py',
+            "cat 'C:/Some Folder/check_response.py'",
+            'grep -n INVOCATION "C:\\Some Folder\\check_response.py"',
+            "git add .github/scripts/check_response.py",
+            'python -c "print(1)" "C:\\Some Folder\\check_response.py"',
+            'python "C:\\Some Folder\\other.py" "check_response.py"',
+            'python "C:\\Some Folder\\check_response.py.bak"',
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(shape.INVOCATION.search(command))
 
     def test_reply_spanning_several_message_ids_is_joined(self):
         picked, _, _ = self.lookback(
@@ -1575,6 +1607,13 @@ def k_user(text: str, kind: str = "human") -> str:
                        "message": {"role": "user", "content": text}})
 
 
+def k_peer(text: str) -> str:
+    """A subagent's hand-back: a peer user record, marked isMeta, with a string body."""
+    return json.dumps({"type": "user", "uuid": "h-" + text[:8], "isSidechain": False,
+                       "isMeta": True, "origin": {"kind": "peer"}, "turnOrigin": "peer",
+                       "message": {"role": "user", "content": "A made-up report: " + text}})
+
+
 def k_result(text: str = "ok") -> str:
     return json.dumps({"type": "user", "uuid": "r-1", "isSidechain": False,
                        "toolUseResult": {"stdout": text},
@@ -1758,6 +1797,37 @@ class ClaudeCodeTurns(TranscriptCase):
         self.assertEqual(len(self.kturns(k_user("one"), k_user("hello", kind="peer"),
                                          k_final("done"))), 1)
 
+    def test_a_peer_message_while_a_turn_runs_stays_inside_it(self):
+        turns = self.kturns(k_user("one"), k_text("Working."), k_tool(), k_result(),
+                            k_peer("a report"), k_tool(), k_result(), k_final("done"))
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0].last, "done")
+
+    def test_a_hand_back_after_a_finished_turn_opens_a_notification_turn(self):
+        turns = self.kturns(k_user("one"), k_final("reply one"),
+                            k_peer("a report"), k_final("reply two"),
+                            k_user("three - in progress"))
+        self.assertEqual([t.kind for t in turns],
+                         [shape.OPERATOR, shape.NOTIFICATION, shape.OPERATOR])
+        self.assertEqual([t.key for t in turns], ["t0", "t1", "t2"])
+        self.assertEqual(turns[0].last, "reply one")
+        self.assertEqual(turns[1].last, "reply two")
+
+    def test_the_look_back_grades_the_hand_back_turn_as_previous(self):
+        turns = self.kturns(k_user("one"), k_final(CONDENSED_CLEAN),
+                            k_peer("a report"), k_final(CONDENSED_CLEAN + "\nsecond"),
+                            k_user("three - in progress"))
+        picked, _, _ = shape.lookback(turns)
+        self.assertEqual([(back, t.key) for back, t in picked], [(0, "t1"), (1, "t0")])
+
+    def test_a_hand_back_that_follows_a_cut_short_turn_does_not_open_one(self):
+        turns = self.kturns(k_user("one"), k_text("Starting."), k_tool(), k_result(),
+                            k_peer("a report"), k_final("done"))
+        self.assertEqual(len(turns), 1)
+
+    def test_a_peer_message_before_any_turn_opens_nothing(self):
+        self.assertEqual(len(self.kturns(k_peer("a report"), k_final("done"))), 1)
+
     def test_a_turn_without_an_end_turn_text_is_cut_short_and_skipped(self):
         turns = self.kturns(k_user("one"), k_text("Starting."), k_tool(),
                             k_user("two"), k_final(CONDENSED_CLEAN),
@@ -1887,6 +1957,72 @@ class ClaudeCodeMain(TranscriptCase):
 
     def test_other_adapters_carry_no_findings(self):
         self.assertEqual(shape.Turn(shape.OPERATOR, "x", "t0").findings, [])
+
+
+class StopHook(unittest.TestCase):
+    """--stop: a Claude Code Stop hook. Hook JSON on stdin, findings on stderr, exit 2 to
+    send the turn back once, and never a block on the checker's own failure."""
+
+    def run_stop(self, stdin: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", ["check_response.py", "--stop"]), \
+                mock.patch("sys.stdin", new=io.StringIO(stdin)), \
+                mock.patch("sys.stdout", new=out), mock.patch("sys.stderr", new=err), \
+                mock.patch.object(cr, "record_run") as run, \
+                mock.patch.object(cr, "record_verdictless") as verdictless:
+            code = cr.main()
+        run.assert_not_called()
+        verdictless.assert_not_called()
+        return code, out.getvalue(), err.getvalue()
+
+    def hook(self, message, **extra) -> str:
+        return json.dumps({"last_assistant_message": message, **extra})
+
+    def test_a_malformed_reply_exits_2_with_findings_on_stderr(self):
+        code, out, err = self.run_stop(self.hook(K_MARKER + "\nLooks fine to me."))
+        self.assertEqual(code, 2)
+        self.assertIn("Compliance: FAIL", err)
+        self.assertEqual(out, "")
+
+    def test_a_clean_reply_exits_0_silently(self):
+        code, out, err = self.run_stop(self.hook(K_MARKER + "\n" + CONDENSED_CLEAN))
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_findings_with_stop_hook_active_exit_0_but_still_report(self):
+        code, out, err = self.run_stop(
+            self.hook(K_MARKER + "\nLooks fine to me.", stop_hook_active=True))
+        self.assertEqual(code, 0)
+        self.assertIn("Compliance: FAIL", err)
+
+    def test_stop_hook_active_false_still_blocks(self):
+        code, _, _ = self.run_stop(
+            self.hook(K_MARKER + "\nLooks fine to me.", stop_hook_active=False))
+        self.assertEqual(code, 2)
+
+    def test_the_reply_starts_at_the_last_marker(self):
+        message = f"{K_MARKER}\nLooks fine to me.\nmore\n{K_MARKER}\n{CONDENSED_CLEAN}"
+        self.assertEqual(self.run_stop(self.hook("Working.\n" + message)), (0, "", ""))
+
+    def test_progress_text_before_the_marker_is_not_graded(self):
+        code, out, err = self.run_stop(self.hook("Working on it.\n" + K_MARKER + "\n"
+                                                 + CONDENSED_CLEAN))
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_no_marker_grades_the_whole_message_and_adds_the_finding(self):
+        code, _, err = self.run_stop(self.hook(CONDENSED_CLEAN))
+        self.assertEqual(code, 2)
+        self.assertIn("  - reply marker missing", err)
+
+    def test_unparseable_stdin_exits_0_with_a_one_line_note(self):
+        code, out, err = self.run_stop("not json")
+        self.assertEqual((code, out), (0, ""))
+        self.assertEqual(len(err.strip().splitlines()), 1)
+
+    def test_a_missing_message_field_exits_0_with_a_one_line_note(self):
+        for stdin in ("{}", json.dumps({"last_assistant_message": None}), "[]", ""):
+            code, out, err = self.run_stop(stdin)
+            self.assertEqual((code, out), (0, ""), stdin)
+            self.assertEqual(len(err.strip().splitlines()), 1, stdin)
 
 
 if __name__ == "__main__":

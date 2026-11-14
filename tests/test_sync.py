@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-13
+# Last Updated: 2026-11-14
 # Description: Tests for sync.py - the renderer that decides what every AI
 #              session in the estate reads. Covers build_plan over every real
 #              manifest target, exclude validation, the hand-owned guard, stamp
@@ -259,6 +259,23 @@ class BuildPlan(unittest.TestCase):
         self.assertEqual(sorted(p.parent.name for p, _, _ in bare.dropped_sections),
                          ["context", "context", "handoff"])
 
+    def test_agents_md_says_to_hand_off_after_a_summary(self):
+        """Intent: an interactive render tells the session to write a handoff seed once its
+        conversation is first summarised, and to end the session there."""
+        plan = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)
+        self.assertIn("After the conversation is first summarised, write a handoff seed",
+                      " ".join(plan["AGENTS.md"].split()))
+
+    def test_the_handoff_skill_lists_summarisation_as_a_trigger(self):
+        """Intent: the handoff skill names a summarised conversation as a reason to hand
+        off, says how to do it, and has the seed record why the session ended."""
+        plan = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)
+        skill = plan[".github/skills/handoff/SKILL.md"]
+        description = skill.split("---", 2)[1]
+        self.assertIn("the conversation has been summarised", " ".join(description.split()))
+        self.assertIn("### When the conversation has been summarised", skill)
+        self.assertIn("Reason: <why this session ended", skill)
+
     def test_repo_list_replaces_the_file_beside_the_ticket_tool(self):
         """Intent: the core renders the repo list at a profile path, and the
         ticket tool's old copy is no longer rendered."""
@@ -277,6 +294,34 @@ class BuildPlan(unittest.TestCase):
         """Intent: unknown is not zero - no owner means no GitHub name, never a guessed one."""
         with self.assertRaises(sync.SyncError):
             sync.repo_list({**MANIFEST, "source": {**MANIFEST["source"], "owner": ""}})
+
+    def test_repo_list_includes_a_tracked_repo(self):
+        """Intent: a repository the profile tracks reaches the repo list, flagged, after the
+        targets, so the ticket tool can resolve it without sync ever rendering into it."""
+        manifest = {**MANIFEST, "tracked": {"t": {"key": "tk", "reason": "r"}}}
+        repos = sync.repo_list(manifest)["repos"]
+        owner = MANIFEST["source"]["owner"]
+        self.assertEqual(repos[-1], {"name": "t", "github": f"{owner}/t", "key": "tk",
+                                     "tracked": True})
+        self.assertEqual([r["name"] for r in repos[:-1]],
+                         [r["name"] for r in sync.repo_list(MANIFEST)["repos"]])
+
+    def test_tracked_repo_gets_no_plan(self):
+        """Intent: a tracked repository is never rendered into: no plan holds a path for
+        it, and naming it as the target is refused."""
+        manifest = {**MANIFEST, "tracked": {"t": {"key": "tk", "reason": "r"}}}
+        for name, cfg in live_targets().items():
+            plan = build_plan(name, cfg, DEFAULTS, SHA, manifest)
+            with self.subTest(target=name):
+                self.assertFalse([k for k in plan if "t" in Path(k).parts])
+        folder = example_copy(self)
+        with (folder / "profile.yaml").open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write("\ntracked:\n  t:\n    key: tk\n    reason: r\n")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = sync.main(["--profile", str(folder), "--no-fetch", "t"])
+        self.assertEqual(code, 1)
+        self.assertIn("tracked, not rendered", err.getvalue())
 
     def test_sync_imports_nothing_from_the_ticket_tool(self):
         """Intent: the core renders the ticket tool and never imports it."""
@@ -559,6 +604,11 @@ class IssueKeys(unittest.TestCase):
         table = sync.issue_keys(manifest)
         self.assertIn("`k-<n>`", table)
         self.assertNotIn("`g-<n>`", table)
+
+    def test_tracked_repo_has_a_key_row(self):
+        """Intent: a tracked repository with a key is in the issue-key table like a target."""
+        table = sync.issue_keys({**MANIFEST, "tracked": {"t": {"key": "tk", "reason": "r"}}})
+        self.assertRegex(table, r"\| t\s+\| `tk-<n>` \|")
 
 
 class OrphansAndForeign(unittest.TestCase):
@@ -1404,6 +1454,31 @@ class ProfileLoader(unittest.TestCase):
         self.assertEqual(sync.identity(profile),
                          {"name": "Example Owner", "email": "owner@example.invalid"})
 
+    def test_tracked_name_clashing_with_a_target_is_refused(self):
+        """Intent: one repository is not both rendered and never rendered, and the refusal
+        names both places."""
+        folder = self.tmp_dir()
+        (folder / "profile.yaml").write_text(
+            "source: {repo: s}\ntargets:\n  t: {key: k}\ntracked:\n  t: {key: tk, reason: r}\n",
+            encoding="utf-8")
+        with self.assertRaises(sync.SyncError) as ctx:
+            sync.load_profile(folder)
+        self.assertIn("'t'", str(ctx.exception))
+        self.assertIn("tracked:", str(ctx.exception))
+        self.assertIn("targets:", str(ctx.exception))
+
+    def test_tracked_entry_with_no_reason_is_refused(self):
+        """Intent: a tracked repository says why it is tracked, as not_onboarded does; a
+        missing or empty reason is a refusal."""
+        for entry in ("{key: tk}", "{key: tk, reason: ''}"):
+            folder = self.tmp_dir()
+            (folder / "profile.yaml").write_text(f"source: {{repo: s}}\ntracked:\n  t: {entry}\n",
+                                                 encoding="utf-8")
+            with self.subTest(entry=entry):
+                with self.assertRaises(sync.SyncError) as ctx:
+                    sync.load_profile(folder)
+                self.assertIn("reason", str(ctx.exception))
+
     def test_sync_names_manifest_yaml_nowhere_in_its_source(self):
         """Intent: a search for manifest.yaml in source returns nothing
         outside history. A reader still naming it is a reader that was not moved."""
@@ -1603,7 +1678,11 @@ class ExampleProfile(unittest.TestCase):
 
     def test_every_key_the_core_accepts_is_present(self):
         profile = sync.load_profile(sync.resolve_profile(self.FOLDER))
-        self.assertEqual(set(profile), set(sync.PROFILE_KEYS))
+        # A key the example leaves commented out, such as `tracked:`, is shown but not set.
+        text = (self.FOLDER / "profile.yaml").read_text(encoding="utf-8")
+        shown = {key for key in sync.PROFILE_KEYS if f"\n# {key}:" in text}
+        self.assertEqual(set(profile) | shown, set(sync.PROFILE_KEYS))
+        self.assertEqual(shown, {"tracked"})
 
     def test_every_example_target_renders(self):
         folder = locked_example(self)
@@ -2566,6 +2645,12 @@ class FactoryBundle(unittest.TestCase):
         self.assertIn("the spec this run was briefed with", role)
         self.assertNotIn("ask the operator for one case", role)
         self.assertNotIn("<!--", role.split("-->", 1)[1])
+
+    def test_the_bundle_does_not_say_to_hand_off_after_a_summary(self):
+        """Intent: the summarised-conversation handoff line is interactive only; the
+        factory bundle must not carry it."""
+        rules = " ".join(self.plan()[f"{sync.FACTORY_DIR}/prescriptions.md"].split())
+        self.assertNotIn("After the conversation is first summarised", rules)
 
     def test_factory_qa_judges_survivors_and_never_mutates(self):
         """Intent: factory QA never mutates and has no edit rights; it judges the survivors
