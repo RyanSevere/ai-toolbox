@@ -70,6 +70,23 @@ LOOKBACK_CAP = 5
 OPERATOR = "operator"
 NOTIFICATION = "notification"
 
+# Layout limits of the condensed Summary. They are named here so that a profile's fork
+# changes the shape in one place: the toolbox does not resist a different response shape.
+# True: several paragraphs are allowed when every one opens with a bold lead-in.
+# False: exactly one paragraph.
+SUMMARY_MULTI_PARAGRAPH_WITH_BOLD = True
+# True: a list marker (-, * or 1.) at the start of a Summary line is a finding.
+SUMMARY_LIST_MARKERS_FORBIDDEN = True
+BOLD_LEAD_IN = "**"
+LIST_MARKER = re.compile(r"^\s*(?:[-*]\s|\d+\.\s)")
+
+# A reply with no operator message before it opens with this line, right after the
+# header, and continues the previous reply's ID counters. The spec quotes it and a test
+# keeps the two in step.
+CONTINUATION_LINE = "Continues the previous reply - no operator message in between."
+ID_PREFIXES = ("LA", "DC", "ND", "CU", "OS", "P", "C", "A", "R", "Q")
+ID_AT_START = re.compile(r"^(" + "|".join(ID_PREFIXES) + r")(\d+)\b")
+
 MODES = {"planning", "execution", "planning + execution"}
 
 REQUIRED = {
@@ -314,10 +331,24 @@ def condensed_findings(sections: dict, mode: str | None = None) -> list[str]:
         findings.append("condensed: section missing for planning mode: logicandapproach")
 
     if "summary" in sections:
-        found = paragraphs(sections.get("summary" + LINES, []))
-        if len(found) != 1:
+        lines = sections.get("summary" + LINES, [])
+        found = paragraphs(lines)
+        if not found:
+            findings.append("summary: 0 paragraphs, at least 1 required")
+        elif len(found) > 1 and not SUMMARY_MULTI_PARAGRAPH_WITH_BOLD:
             findings.append(f"summary: {len(found)} paragraphs, exactly 1 allowed")
-        elif found[0] != NONE_THIS_TURN and not has_pointer(found[0]):
+        elif len(found) > 1:
+            for number, paragraph in enumerate(found, 1):
+                if not paragraph.startswith(BOLD_LEAD_IN):
+                    findings.append(f"summary: paragraph {number} ('{paragraph[:40]}') has no "
+                                    "bold lead-in - several paragraphs each open with one")
+        if SUMMARY_LIST_MARKERS_FORBIDDEN:
+            marked = [l.strip() for l in lines if LIST_MARKER.match(l)]
+            if marked:
+                findings.append(f"summary: list marker on '{marked[0][:40]}' - one topic at a "
+                                "time as paragraphs, no list")
+        joined = " ".join(found)
+        if found and joined != NONE_THIS_TURN and not has_pointer(joined):
             kinds = ", ".join(kind for kind, _ in POINTERS)
             findings.append(f"summary: no pointer a reader could follow ({kinds})")
 
@@ -414,6 +445,14 @@ def check(header: list[str], sections: dict[str, list[dict]]) -> tuple[list[str]
         if marked != 1:
             findings.append(f"decisions: '{item['title'][:60]}' marks {marked} options "
                             "recommended, exactly one is required")
+        # Condensed only: the full shape carries its reasoning in its own blocks and its
+        # checks are unchanged. The reasoning is owed so a false premise can be caught.
+        if shape_of(sections) == "condensed":
+            nested = [strip_md(l).lower() for l in item["lines"][1:]]
+            for key, label in (("recommendation:", "recommendation"),
+                               ("would change my answer:", "would change my answer")):
+                if not any(l.startswith(key) for l in nested):
+                    findings.append(f"decisions: '{item['title'][:60]}' missing '{label}'")
 
     # Spec rule 9: every entity carries an ID. A top-level entry without one used to be
     # dropped, or merged into the field above it, so the reply passed.
@@ -430,6 +469,54 @@ def check(header: list[str], sections: dict[str, list[dict]]) -> tuple[list[str]
                                 "entry opens with one, and fields are indented under it")
 
     return findings, mode
+
+
+def item_numbers(text: str) -> list[tuple[str, int]]:
+    """Every item ID a reply opens a line with, outside fences, as (prefix, number)."""
+    found: list[tuple[str, int]] = []
+    fence: str | None = None
+    for raw in text.splitlines():
+        marker = re.match(r"^\s*(`{3,}|~{3,})", raw)
+        if marker and (fence is None or marker.group(1).startswith(fence)):
+            fence = marker.group(1)[:3] if fence is None else None
+            continue
+        if fence is not None:
+            continue
+        match = ID_AT_START.match(strip_md(raw))
+        if match:
+            found.append((match.group(1), int(match.group(2))))
+    return found
+
+
+def continuation_findings(turns: list[Turn], index: int) -> list[str]:
+    """Findings for a reply opened by a background event right after a finished reply.
+
+    Only a NOTIFICATION turn whose immediately preceding turn has a reply is checked: no
+    operator message came between them, so the reply continues the previous one. It
+    must say so, and its IDs must carry on from the previous reply's counters. Any other
+    turn, or a preceding turn with no reply text, has nothing to continue.
+    """
+    if index < 1 or index >= len(turns) or turns[index].kind != NOTIFICATION:
+        return []
+    before = turns[index - 1]
+    if not before.text.strip():
+        return []
+    findings: list[str] = []
+    header, _ = parse(turns[index].text)
+    if CONTINUATION_LINE not in (strip_md(line) for line in header):
+        findings.append(f"continuation: header lacks the line '{CONTINUATION_LINE}'")
+    highest: dict[str, int] = {}
+    for prefix, number in item_numbers(before.text):
+        highest[prefix] = max(highest.get(prefix, 0), number)
+    reused: list[str] = []
+    for prefix, number in item_numbers(turns[index].text):
+        if number <= highest.get(prefix, 0) and f"{prefix}{number}" not in reused:
+            reused.append(f"{prefix}{number}")
+    for name in reused:
+        prefix = name.rstrip("0123456789")
+        findings.append(f"continuation: {name} reuses an ID - the previous reply already "
+                        f"reached {prefix}{highest[prefix]}")
+    return findings
 
 
 def grade(label: str, text: str, interrupted: bool = False, invoked: str | None = None,

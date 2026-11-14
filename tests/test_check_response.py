@@ -128,7 +128,8 @@ The live state matches the seed: `git status -sb` printed "## main...origin/main
   - Options:
     - a. example-1 first (recommended)
     - b. example-2 first
-  - Recommendation: (a), because it unblocks example-2
+  - Recommendation: (a), because it unblocks example-2, assuming example-2 is next
+  - Would change my answer: example-2 turning out to have no dependency on example-1
 
 ## Operator steps
 
@@ -1451,12 +1452,47 @@ class CondensedShape(TranscriptCase):
             any(f.startswith("summary: no pointer a reader could follow") for f in found), found
         )
 
-    def test_summary_of_two_paragraphs_fails(self):
+    SECOND = '**Gate.** The draft passed: "the gate passed the draft".'
+
+    def test_summary_of_bold_led_paragraphs_passes(self):
+        text = CONDENSED_CLEAN.replace(
+            self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n\n" + self.SECOND)
+        self.assertEqual(self.findings(text), [])
+
+    def test_summary_paragraph_without_a_bold_lead_in_fails(self):
         text = CONDENSED_CLEAN.replace(
             self.PARAGRAPH,
-            self.PARAGRAPH + '\n\nA second paragraph quotes "the gate passed the draft".',
-        )
-        self.assertIn("summary: 2 paragraphs, exactly 1 allowed", self.findings(text))
+            "**State.** " + self.PARAGRAPH + '\n\nA second paragraph quotes "the gate passed".')
+        found = self.findings(text)
+        self.assertTrue(any(f.startswith("summary: paragraph 2 (") and "no bold lead-in" in f
+                            for f in found), found)
+
+    def test_summary_list_marker_fails(self):
+        for marker in ("- ", "* ", "1. "):
+            with self.subTest(marker=marker):
+                text = CONDENSED_CLEAN.replace(self.PARAGRAPH, marker + self.PARAGRAPH)
+                found = self.findings(text)
+                self.assertTrue(any(f.startswith("summary: list marker") for f in found), found)
+
+    def test_summary_multi_paragraph_limit_is_a_constant(self):
+        text = CONDENSED_CLEAN.replace(
+            self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n\n" + self.SECOND)
+        with mock.patch.object(shape, "SUMMARY_MULTI_PARAGRAPH_WITH_BOLD", False):
+            self.assertIn("summary: 2 paragraphs, exactly 1 allowed", self.findings(text))
+
+    def test_condensed_decision_without_a_recommendation_line_fails(self):
+        text = CONDENSED_CLEAN.replace(
+            "  - Recommendation: (a), because it unblocks example-2, assuming example-2 is next\n",
+            "")
+        self.assertEqual(self.findings(text),
+                         ["decisions: 'DC1 Pick the next ticket' missing 'recommendation'"])
+
+    def test_condensed_decision_without_a_would_change_line_fails(self):
+        text = CONDENSED_CLEAN.replace(
+            "  - Would change my answer: example-2 turning out to have no dependency on "
+            "example-1\n", "")
+        self.assertEqual(self.findings(text),
+                         ["decisions: 'DC1 Pick the next ticket' missing 'would change my answer'"])
 
     def test_summary_wrapped_over_two_lines_passes(self):
         text = CONDENSED_CLEAN.replace(
@@ -1908,6 +1944,75 @@ class ClaudeCodeReply(TranscriptCase):
                             k_result(), k_final("Mode: Execution"))
         self.assertEqual(turns[0].last, "Mode: Execution")
         self.assertEqual(turns[0].findings, ["reply marker missing"])
+
+
+class ContinuationReplies(TranscriptCase):
+    """A reply opened by a hand-back or notification, with no operator message before it."""
+
+    LINE = "Continues the previous reply - no operator message in between."
+    CONTINUED = (CONDENSED_CLEAN.replace("Changed: nothing\n", f"Changed: nothing\n{LINE}\n", 1)
+                 .replace("LA1", "LA2").replace("DC1", "DC2")
+                 .replace("OS1", "OS2").replace("R1", "R2"))
+
+    def found(self, previous: str, current: str, opener=None) -> list[str]:
+        opener = opener or k_peer("a report")
+        turns = claude.turns(self.transcript(
+            k_user("one"), k_final(previous), opener, k_final(current), k_user("three")))
+        return shape.continuation_findings(turns, 1)
+
+    def test_the_line_in_the_spec_is_the_constant(self):
+        spec = (Path(__file__).resolve().parent.parent / "rules" / "spec-response-shape.md")
+        self.assertEqual(shape.CONTINUATION_LINE, self.LINE)
+        self.assertEqual(spec.read_text(encoding="utf-8").count(shape.CONTINUATION_LINE), 1)
+
+    def test_continued_counters_with_the_line_are_clean(self):
+        self.assertEqual(self.found(CONDENSED_CLEAN, self.CONTINUED), [])
+
+    def test_a_missing_continuation_line_is_a_finding(self):
+        text = self.CONTINUED.replace(self.LINE + "\n", "")
+        self.assertEqual(self.found(CONDENSED_CLEAN, text),
+                         [f"continuation: header lacks the line '{self.LINE}'"])
+
+    def test_a_reused_id_is_a_finding(self):
+        text = self.CONTINUED.replace("DC2", "DC1")
+        found = self.found(CONDENSED_CLEAN, text)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("DC1 reuses an ID", found[0])
+
+    def test_a_task_notification_turn_is_checked_too(self):
+        opener = k_user("<task-notification>finished</task-notification>",
+                        kind="task-notification")
+        self.assertEqual(self.found(CONDENSED_CLEAN, CONDENSED_CLEAN, opener).__len__(), 5)
+
+    def test_an_operator_turn_has_no_continuation_check(self):
+        turns = claude.turns(self.transcript(
+            k_user("one"), k_final(CONDENSED_CLEAN), k_user("two"), k_final(CONDENSED_CLEAN),
+            k_user("three")))
+        self.assertEqual(shape.continuation_findings(turns, 1), [])
+
+    def test_the_look_back_reports_it_for_the_previous_reply(self):
+        path = self.transcript(k_user("one"), k_final(CONDENSED_CLEAN), k_peer("a report"),
+                               k_final(CONDENSED_CLEAN), k_user("three - in progress"))
+        ledger = tempfile.TemporaryDirectory()
+        self.addCleanup(ledger.cleanup)
+        out = io.StringIO()
+        argv = ["check_response.py", "--tool", "claude", "--transcript", str(path), "--previous"]
+        with mock.patch.object(cr.tempfile, "gettempdir", return_value=ledger.name), \
+                mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.stderr", new=io.StringIO()):
+            code = cr.main()
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn("continuation: header lacks the line", out.getvalue())
+
+    def test_the_stop_hook_skips_it(self):
+        out, err = io.StringIO(), io.StringIO()
+        message = K_MARKER + "\n" + CONDENSED_CLEAN
+        with mock.patch.object(sys, "argv", ["check_response.py", "--stop"]), \
+                mock.patch("sys.stdin", new=io.StringIO(json.dumps(
+                    {"last_assistant_message": message}))), \
+                mock.patch("sys.stdout", new=out), mock.patch("sys.stderr", new=err):
+            self.assertEqual(cr.main(), 0)
+        self.assertEqual(err.getvalue(), "")
 
 
 class ClaudeCodeMain(TranscriptCase):
