@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/shape.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-13
+# Last Updated: 2026-11-14
 # Description: The tool-neutral half of the response checker.
 #              Parses a reply against the response shape, grades it, and walks
 #              back over finished turns to collect replies whose turn never ran
@@ -52,7 +52,11 @@ from dataclasses import dataclass, field
 
 # Matches an actual invocation. Matching the bare filename also counted commands that
 # merely mentioned it, such as copying it to a backup - which inflated the run count.
-INVOCATION = re.compile(r"python[\w.]*\s+[^\s|;]*check_response\.py")
+# A path may be quoted, single or double, which is the only way to run one that holds spaces.
+INVOCATION = re.compile(
+    r"""python[\w.]*\s+(?:"[^"|;]*check_response\.py"|'[^'|;]*check_response\.py'"""
+    r"""|[^\s|;]*check_response\.py)"""
+)
 
 # Session starters open their report with this line. It exempts a reply only when its
 # turn began with the command.

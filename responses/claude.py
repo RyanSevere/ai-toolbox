@@ -4,12 +4,13 @@
 # Path: {PROJECT_ROOT}/responses/claude.py
 # Created by: Ryan Severe
 # Created: 2026-11-13
-# Last Updated: 2026-11-13
+# Last Updated: 2026-11-14
 # Description: The Claude Code adapter for the response checker.
 #              Finds the session's transcript from CLAUDE_CODE_SESSION_ID and
 #              turns its one-line-per-content-block records into Turns. A turn
-#              opens at an operator prompt, or at a background task's
-#              notification; tool results, attachments and injected context stay
+#              opens at an operator prompt, at a background task's
+#              notification, or at a subagent's hand-back that arrives after the
+#              previous turn ended; tool results, attachments and injected context stay
 #              inside it. The reply is the text from the reply marker line to the
 #              end of the turn, or, with no marker, the text after the turn's
 #              last tool call, flagged. A turn with no end_turn text is cut short.
@@ -79,6 +80,8 @@ SESSION_ID = re.compile(r"[0-9A-Fa-f-]{8,64}")
 # A turn opens at a user record with one of these origins: the operator typing, or a
 # background task reporting back. Other user records are tool results or injected context.
 OPENERS = {"human": shape.OPERATOR, "task-notification": shape.NOTIFICATION}
+# A subagent's hand-back is a peer record. It opens a turn only after the previous one ended.
+PEER = "peer"
 
 
 def detect(env: Mapping[str, str]) -> bool:
@@ -155,6 +158,17 @@ def opener(record: dict) -> str | None:
     return OPENERS.get((record.get("origin") or {}).get("kind"))
 
 
+def handback(record: dict) -> bool:
+    """A peer message: a subagent's report arriving as a user record (origin.kind "peer",
+    marked isMeta). It opens a turn only when the previous turn had ended, which turns()
+    decides; one that arrives while a turn is still running stays inside it."""
+    if record.get("type") != "user" or "toolUseResult" in record:
+        return False
+    if any(b.get("type") == "tool_result" for b in blocks(record)):
+        return False
+    return (record.get("origin") or {}).get("kind") == PEER
+
+
 def prompt_text(record: dict) -> str:
     content = (record.get("message") or {}).get("content")
     if isinstance(content, str):
@@ -216,7 +230,15 @@ def turns(path: Path) -> list[shape.Turn]:
     marked, because its reply is read as it grows. The key is the turn's position.
     """
     records = read_records(path)
-    starts = [i for i, r in enumerate(records) if opener(r)]
+    starts: list[int] = []
+    kinds: list[str] = []
+    for i, r in enumerate(records):
+        kind = opener(r)
+        if not kind and handback(r) and starts and ended(records[starts[-1]:i]):
+            kind = shape.NOTIFICATION
+        if kind:
+            starts.append(i)
+            kinds.append(kind)
     if not starts:
         return [shape.Turn(shape.OPERATOR, "", "t0")]
     edges = starts + [len(records)]
@@ -227,7 +249,7 @@ def turns(path: Path) -> list[shape.Turn]:
         cut = not current and not ended(span)
         text, findings = ("", []) if cut else reply_of(span)
         out.append(shape.Turn(
-            kind=opener(records[lo]),
+            kind=kinds[position],
             text=text,
             key=f"t{position}",
             invoked=shape.invoked_in(prompt_text(records[lo])),
