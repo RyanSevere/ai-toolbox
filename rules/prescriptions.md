@@ -67,9 +67,9 @@ spec files and load when they are needed.
 <!-- mode: interactive -->
 - A question is not a command. "Why don't we do X?" is a discussion prompt.
 <!-- end -->
-- Do each job by the method your tool runs without an approval card: the method
-  in `.github/rules/tool-methods.md`, one command per call, by its canonical
-  `.github/scripts/` path. Two commands on one line always raise a card. Steps
+- Do each job by the method your tool runs without an approval card or prompt: the
+  method in `.github/rules/tool-methods.md`, one command per call, by its canonical
+  `.github/scripts/` path. Two commands on one line always raise an approval. Steps
   that raise one go last in the turn.
 - Never edit a file by running a terminal command unless asked to.
 <!-- mode: interactive -->
@@ -249,7 +249,7 @@ Not advertised - this table is the only thing that points at them:
 |---|---|
 | `.github/rules/response-shape.md` | Writing any reply. It is the estate's reply format - a condensed default (header, summary with pointers, decisions and questions, operator steps, recommended next, came up) with the full planning and execution blocks, per-entity IDs, and evidence for and against on demand. Run `python .github/scripts/responses/check_response.py --previous` first - in Cursor and in Claude Code that is the whole command; in Copilot add `--session <id>`, where `<id>` is the last segment of `VSCODE_TARGET_SESSION_LOG`. Both are rendered into every repo, so neither depends on the profile repository being open |
 | `.github/rules/tangents.md` | Weighing whether a finding is worth following now, or a rule seems to ask you to withhold one |
-| `.github/rules/tool-methods.md` | Before any shell command that writes, deletes, or reaches the network - which method does the job without an approval card, in Cursor and in Copilot |
+| `.github/rules/tool-methods.md` | Before any shell command that writes, deletes, or reaches the network - which method does the job without an approval card, in Cursor, in Copilot and in Claude Code |
 | `.github/rules/logging.md` | Adding or changing any log line, in any language |
 | `.github/rules/testing.md` | Writing a test, or changing one that already passes |
 | `.github/rules/session-logging.md` | You need the file format. **Its cadence and structure sections are superseded** by the narrowed rule above |
