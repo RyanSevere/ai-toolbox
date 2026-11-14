@@ -283,6 +283,9 @@ In this order:
   second line names the fact that would show it.
 - **`## Operator steps`**, only when the operator has something to do: run a
   command, review a page, paste a result back. Items are `OS1`, `OS2`, and so on.
+  A pull request waiting on the operator's merge is named by its full URL, every
+  time, after its live state was read this turn: never "the PR", never a number the
+  operator has to look up, and never one that has already merged.
 - **`## Recommended next`**: the work that comes next - not things for the
   operator to do. An item may depend on an operator step ("once OS1's output is
   back, decide whether X is viable"). `R` items, cap 4, or the single prose line

@@ -260,20 +260,30 @@ class BuildPlan(unittest.TestCase):
                          ["context", "context", "handoff"])
 
     def test_agents_md_says_to_hand_off_after_a_summary(self):
-        """Intent: an interactive render tells the session to write a handoff seed once its
-        conversation is first summarised, and to end the session there."""
+        """Intent: an interactive render tells the session to re-check its state and carry
+        on after a summary, and to hand off on a second summary or a sign of drift; the old
+        end-at-the-first-summary line is gone."""
         plan = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)
-        self.assertIn("After the conversation is first summarised, write a handoff seed",
-                      " ".join(plan["AGENTS.md"].split()))
+        agents = " ".join(plan["AGENTS.md"].split())
+        self.assertIn("After a summary of the conversation, re-check the workstream's state "
+                      "from live queries and carry on. Hand off (handoff skill) at the next "
+                      "clean stopping point on a second summary or a sign of drift: a "
+                      "look-back failure on structure that used to pass, the arrears cap, "
+                      "or a correction the session should not have needed.", agents)
+        self.assertNotIn("After the conversation is first summarised", agents)
 
     def test_the_handoff_skill_lists_summarisation_as_a_trigger(self):
-        """Intent: the handoff skill names a summarised conversation as a reason to hand
-        off, says how to do it, and has the seed record why the session ended."""
+        """Intent: the handoff skill names a second summary and drift as reasons to hand
+        off, has the re-check-and-continue rule for a first summary, says how to hand off,
+        and has the seed record why the session ended."""
         plan = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)
         skill = plan[".github/skills/handoff/SKILL.md"]
         description = skill.split("---", 2)[1]
-        self.assertIn("the conversation has been summarised", " ".join(description.split()))
+        self.assertIn("the conversation summarised a second time or drifting",
+                      " ".join(description.split()))
+        self.assertNotIn("the conversation has been summarised", " ".join(description.split()))
         self.assertIn("### When the conversation has been summarised", skill)
+        self.assertIn("re-checks its state from live queries", " ".join(skill.split()))
         self.assertIn("Reason: <why this session ended", skill)
 
     def test_repo_list_replaces_the_file_beside_the_ticket_tool(self):
@@ -2647,9 +2657,10 @@ class FactoryBundle(unittest.TestCase):
         self.assertNotIn("<!--", role.split("-->", 1)[1])
 
     def test_the_bundle_does_not_say_to_hand_off_after_a_summary(self):
-        """Intent: the summarised-conversation handoff line is interactive only; the
-        factory bundle must not carry it."""
+        """Intent: the summary-and-drift handoff line is interactive only; the factory
+        bundle must carry neither it nor the old line."""
         rules = " ".join(self.plan()[f"{sync.FACTORY_DIR}/prescriptions.md"].split())
+        self.assertNotIn("After a summary of the conversation", rules)
         self.assertNotIn("After the conversation is first summarised", rules)
 
     def test_factory_qa_judges_survivors_and_never_mutates(self):
