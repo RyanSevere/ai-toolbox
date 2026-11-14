@@ -148,6 +148,16 @@ class RuleTools(unittest.TestCase):
         self.assertNotIn(".github/instructions/claude-code.instructions.md", plan)
         self.assertFalse([p for p in plan if "claude-code" in p and not p.startswith(".claude/")])
 
+    def test_the_claude_code_rule_carries_the_handing_off_section_for_claude_only(self):
+        """Intent: Claude Code's rendered rule tells the session how to start the next
+        session after a handoff, and no other tool's render carries that section."""
+        defaults = {**DEFAULTS, "tier2": list(DEFAULTS.get("tier2", [])) + ["claude-code"]}
+        plan = plan_for_defaults(defaults)
+        self.assertIn("## Handing off", plan[".claude/rules/claude-code.md"].splitlines())
+        carriers = [path for path, text in plan.items()
+                    if "## Handing off" in text.splitlines()]
+        self.assertEqual(carriers, [".claude/rules/claude-code.md"])
+
     def test_the_claude_code_rule_quotes_the_reply_marker_exactly(self):
         sys.path.insert(0, str(sync.ROOT / "responses"))
         import claude
