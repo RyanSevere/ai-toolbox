@@ -36,8 +36,9 @@ If a UI is not mirrored in the remote session, do not use it.
 
 ## Workspace
 
-- One workspace per session, opened in the repository the session mostly writes to.
+- One workspace per session, opened in the repository the session mostly writes to. Work on the core also holds the profile repository, for its tools and records.
 - A step that reads or writes outside it raises a prompt. Name the step before the turn reaches it, and run those steps last.
+- With more than one repository in the workspace, a `cd` into any of them carries over to the next call. So every command names its folder (`git -C <path>`, or an explicit change of directory in the same call), and never relies on where the last call left the shell.
 
 ## Handing off
 
