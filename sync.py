@@ -932,7 +932,7 @@ def repo_list(manifest: dict) -> dict:
         cfg = cfg or {}
         repos.append({"name": name, "github": f"{owner}/{cfg.get('remote') or name}",
                       "key": cfg.get("key"), "tracked": True})
-    not_onboarded =[{"name": name, "reason": reason}
+    not_onboarded = [{"name": name, "reason": reason}
                      for name, reason in (manifest.get("not_onboarded") or {}).items()]
     return {"owner": owner, "repos": repos, "not_onboarded": not_onboarded}
 
