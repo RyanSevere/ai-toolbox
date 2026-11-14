@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-13
+# Last Updated: 2026-11-14
 # Description: Tests for sync.py - the renderer that decides what every AI
 #              session in the estate reads. Covers build_plan over every real
 #              manifest target, exclude validation, the hand-owned guard, stamp
@@ -258,6 +258,23 @@ class BuildPlan(unittest.TestCase):
                          [("design-partner", ["tracker.create", "tracker.edit", "tracker.status"])])
         self.assertEqual(sorted(p.parent.name for p, _, _ in bare.dropped_sections),
                          ["context", "context", "handoff"])
+
+    def test_agents_md_says_to_hand_off_after_a_summary(self):
+        """Intent: an interactive render tells the session to write a handoff seed once its
+        conversation is first summarised, and to end the session there."""
+        plan = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)
+        self.assertIn("After the conversation is first summarised, write a handoff seed",
+                      " ".join(plan["AGENTS.md"].split()))
+
+    def test_the_handoff_skill_lists_summarisation_as_a_trigger(self):
+        """Intent: the handoff skill names a summarised conversation as a reason to hand
+        off, says how to do it, and has the seed record why the session ended."""
+        plan = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)
+        skill = plan[".github/skills/handoff/SKILL.md"]
+        description = skill.split("---", 2)[1]
+        self.assertIn("the conversation has been summarised", " ".join(description.split()))
+        self.assertIn("### When the conversation has been summarised", skill)
+        self.assertIn("Reason: <why this session ended", skill)
 
     def test_repo_list_replaces_the_file_beside_the_ticket_tool(self):
         """Intent: the core renders the repo list at a profile path, and the
@@ -2566,6 +2583,12 @@ class FactoryBundle(unittest.TestCase):
         self.assertIn("the spec this run was briefed with", role)
         self.assertNotIn("ask the operator for one case", role)
         self.assertNotIn("<!--", role.split("-->", 1)[1])
+
+    def test_the_bundle_does_not_say_to_hand_off_after_a_summary(self):
+        """Intent: the summarised-conversation handoff line is interactive only; the
+        factory bundle must not carry it."""
+        rules = " ".join(self.plan()[f"{sync.FACTORY_DIR}/prescriptions.md"].split())
+        self.assertNotIn("After the conversation is first summarised", rules)
 
     def test_factory_qa_judges_survivors_and_never_mutates(self):
         """Intent: factory QA never mutates and has no edit rights; it judges the survivors
