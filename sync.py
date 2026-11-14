@@ -837,9 +837,9 @@ def render_claude_agent(meta: dict, body: str, sha: str, warn) -> str:
             raise SyncError(f"agent {name}: none of its tools map to Claude Code, and an empty "
                             "allowlist would render as every tool")
         fields.append(("tools", ", ".join(tools)))
-    if meta.get("agents") is not None:
-        warn(f"agent {name}: agents: is not rendered for Claude Code, whose subagents cannot "
-             "be restricted that way")
+    # `agents:` is known and not applicable here, so it is dropped without a warning: Claude
+    # Code ignores a type list in a subagent's Agent(...), and only a main-thread agent can
+    # restrict which subagents it starts.
     fields.append(("model", meta.get("model") or "inherit"))
     return f"{fm(fields)}\n{stamp(sha)}\n\n{body}"
 
@@ -1342,8 +1342,28 @@ def render_enabled_gates(manifest: dict, profile_dir: Path, sha: str) -> str:
 
 
 def add_rules(plan: Plan, rule_id: str, meta: dict, body: str, sha: str | None) -> None:
-    """One rule into every tool's rule path that renders it."""
+    """One rule into every tool's rule path that renders it.
+
+    A rule's optional `tools:` names the rows of TOOLS that render it; absent, every row
+    does. An on-demand rule is shared across tools (ON_DEMAND_DIR), so it cannot be limited
+    to some of them, and `tools:` on one is refused rather than half-applied.
+    """
+    only = meta.get("tools")
+    if only is not None:
+        names = {t.name for t in TOOLS}
+        if not isinstance(only, list) or not only:
+            raise SyncError(f"rule {rule_id}: tools: must be a non-empty list of "
+                            f"{sorted(names)}")
+        unknown = sorted(str(n) for n in only if n not in names)
+        if unknown:
+            raise SyncError(f"rule {rule_id}: tools: names {unknown}, which no row of TOOLS "
+                            f"defines. Known: {sorted(names)}")
+        if meta.get("scope", "*") == "*" and not meta.get("alwaysApply", False):
+            raise SyncError(f"rule {rule_id}: tools: on an on-demand rule is not supported, "
+                            "because on-demand rules are shared across tools")
     for tool in TOOLS:
+        if only is not None and tool.name not in only:
+            continue
         text = tool.rule(meta, body, sha)
         if text is not None:
             plan[tool.rule_path.format(id=rule_id)] = text

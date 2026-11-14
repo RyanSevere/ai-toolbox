@@ -12,7 +12,7 @@
 #              which tool is running, has that adapter read the live transcript,
 #              and owns the run budget. Structural only - it never judges
 #              whether a claim is true. Replaces the single-file checker of
-#              2026-09-22.
+#              2026-09-22. --stop is the mode for a Claude Code Stop hook.
 ################################################################################
 # ===========================================================================
 #
@@ -51,7 +51,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
+import io
 import json
 import os
 import sys
@@ -218,6 +220,42 @@ def spent_runs(path: Path, current: shape.Turn, adapter) -> int:
     return max(0, current.runs - discount)
 
 
+def stop_hook() -> int:
+    """A Claude Code Stop hook: grade the reply about to end the turn.
+
+    The hook's stdin is JSON; `last_assistant_message` is the reply, read from there because
+    the transcript may lag. Findings go to stderr and exit 2, which sends the turn back once;
+    with `stop_hook_active` set the turn is already a revision, so they are reported and the
+    exit is 0 - one forced revision, never a loop. The checker's own failure never blocks.
+    Nothing is recorded in the run ledgers.
+    """
+    try:
+        data = json.loads(sys.stdin.read())
+        message = data.get("last_assistant_message") if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        message = None
+        data = None
+    if not isinstance(message, str) or not message.strip():
+        print("check_response --stop: no readable last_assistant_message on stdin, so nothing "
+              "was graded", file=sys.stderr)
+        return 0
+    lines = message.split("\n")
+    marks = [i for i, line in enumerate(lines) if line.strip() == claude.REPLY_MARKER]
+    if marks:
+        text, extra = "\n".join(lines[marks[-1]:]), []
+    else:
+        text, extra = message, [claude.MARKER_MISSING]
+    report = io.StringIO()
+    with contextlib.redirect_stdout(report):
+        result = shape.grade("reply", text, extra=extra)
+    if result != 1:
+        return 0
+    # The ledger line is about --previous's run ledgers, which this mode never touches.
+    print("\n".join(l for l in report.getvalue().strip().splitlines()
+                    if l != shape.LEDGER_FILE_LINE), file=sys.stderr)
+    return 0 if data.get("stop_hook_active") is True else 2
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check a reply against the response shape.")
     parser.add_argument("--tool", choices=sorted(ADAPTERS),
@@ -234,7 +272,15 @@ def main() -> int:
         action="store_true",
         help="grade the previous reply rather than the one being written (the intended mode)",
     )
+    parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="a Claude Code Stop hook: read the hook JSON from stdin and grade its "
+             "last_assistant_message. Exit 2 with the findings on stderr, once; 0 otherwise",
+    )
     args = parser.parse_args()
+    if args.stop:
+        return stop_hook()
     env = os.environ
 
     tool = args.tool or detect(env)
