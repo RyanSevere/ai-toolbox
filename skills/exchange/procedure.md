@@ -81,6 +81,9 @@ operator. Removing another chat's lock is the operator's call, not yours.
   one, and the correction is how they find out.
 - **Name every file and branch you touch** that another chat could also touch,
   before you touch it.
+- **Before merging into a branch another chat is releasing from**, say so on the
+  exchange the release is coordinated on, and wait for the release owner's answer.
+  A merge that lands mid-release rides into it.
 
 ## Open items
 

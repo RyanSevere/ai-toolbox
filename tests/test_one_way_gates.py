@@ -4,12 +4,14 @@
 # Path: {PROJECT_ROOT}/tests/test_one_way_gates.py
 # Created by: Ryan Severe
 # Created: 2026-10-15
-# Last Updated: 2026-11-09
+# Last Updated: 2026-11-13
 # Description: Runs each one-way gate in githooks/one-way/ against a throwaway
 #              repository, red on a planted violation and green on a clean
 #              tree, and refusing when its pattern file is missing or empty.
 #              The gates are run by nothing yet; these tests are their only
-#              check until a profile wires them in.
+#              check until a profile wires them in. The self pre-push hook in
+#              githooks/self/ is tested by real pushes from a throwaway clone
+#              to a throwaway bare remote.
 ################################################################################
 # ===========================================================================
 #
@@ -58,7 +60,7 @@ ONE_WAY = Path(__file__).resolve().parent.parent / "githooks" / "one-way"
 ZERO = "0" * 40
 
 # Shell is invisible to coverage, so test selection is told what these run.
-EXERCISES = ["githooks/one-way/**", "githooks/lib/**"]
+EXERCISES = ["githooks/one-way/**", "githooks/lib/**", "githooks/self/**"]
 
 SH = shutil.which("sh") or next(
     (p for p in (r"C:\Program Files\Git\usr\bin\sh.exe", "/bin/sh") if Path(p).exists()),
@@ -377,3 +379,136 @@ class CoreNamesNoProfile(PatternFileRules, OneWayCase):
         result = self.run_one_way(self.patterns(self.PROFILE), (self.repo / "core").as_posix())
         self.assertEqual(result.returncode, 1, self.output(result))
         self.assertIn("no text files", self.output(result))
+
+
+class SelfPrePush(OneWayCase):
+    """The self pre-push hook, exercised by a real `git push` from a throwaway clone to a
+    throwaway bare remote, with core.hooksPath pointing at githooks/self."""
+
+    HOOKS = Path(__file__).resolve().parent.parent / "githooks" / "self"
+    SECRET = "Acme-Internal"
+    PATTERN_PATH = ".config/ai-toolbox/leak-denylist"
+
+    def setUp(self):
+        super().setUp()
+        self.bare = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.bare, ignore_errors=True)
+        subprocess.run(["git", "init", "--bare", "-q", str(self.bare)], check=True,
+                       capture_output=True)
+        self.home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+        self.git("remote", "add", "origin", self.bare.as_posix())
+        self.git("config", "core.hooksPath", self.HOOKS.as_posix())
+        self.git("checkout", "-q", "-B", "dev")
+        self.write("base.txt")
+        self.base = self.commit("base")
+        # Seed the remote with the base commit, past the hook under test.
+        self.git("push", "-q", "--no-verify", "origin", "dev")
+
+    def home_patterns(self, *lines: str) -> None:
+        """The pattern file at the fixed place the hook reads, under the temporary HOME."""
+        path = self.home / self.PATTERN_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8", newline="\n")
+
+    def branch(self, name: str, rel: str = "f.txt", text: str = "clean\n") -> str:
+        """A branch of one commit on top of the base commit; returns its sha."""
+        self.git("checkout", "-q", "-B", name, "dev")
+        self.write(rel, text)
+        return self.commit(name)
+
+    def push(self, *args: str) -> subprocess.CompletedProcess:
+        env = {**os.environ, "LC_ALL": "C", "HOME": str(self.home)}
+        env["PATH"] = str(Path(SH).parent) + os.pathsep + env.get("PATH", "")
+        return subprocess.run(["git", "push", *args], cwd=self.repo, capture_output=True,
+                              text=True, env=env)
+
+    def remote_sha(self, branch: str) -> str:
+        """The sha of a branch on the bare remote, or an empty string when it is not there."""
+        result = subprocess.run(
+            ["git", "--git-dir", str(self.bare), "rev-parse", "--verify", "-q",
+             f"refs/heads/{branch}"], capture_output=True, text=True)
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    def test_a_denylisted_line_on_a_feature_branch_is_refused(self):
+        """Intent: the gate runs on every branch, not only dev and main - a leak is refused
+        before it is public, and the output says where, never what."""
+        self.home_patterns(self.SECRET)
+        self.branch("feature", "docs/NOTES.md", f"line one\nthe {self.SECRET} host-marker\n")
+        result = self.push("origin", "feature")
+        self.assertNotEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.remote_sha("feature"), "")
+        self.assertIn("docs/NOTES.md:2", self.output(result))
+        self.assertNotIn(self.SECRET.lower(), self.output(result).lower())
+        self.assertNotIn("host-marker", self.output(result))
+
+    def test_a_denylisted_line_on_dev_is_refused(self):
+        """Intent: the same refusal on dev, where the remote branch already exists and must
+        stay where it was."""
+        self.home_patterns(self.SECRET)
+        self.write("docs/NOTES.md", f"line one\nthe {self.SECRET} host-marker\n")
+        self.commit("leak")
+        result = self.push("origin", "dev")
+        self.assertNotEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.remote_sha("dev"), self.base)
+        self.assertIn("docs/NOTES.md:2", self.output(result))
+        self.assertNotIn(self.SECRET.lower(), self.output(result).lower())
+
+    def test_a_missing_pattern_file_refuses_the_push(self):
+        """Intent: missing means abort - a hook with nothing to compare against would pass
+        every push, and it names the file so the fix is findable."""
+        self.branch("feature")
+        result = self.push("origin", "feature")
+        self.assertNotEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.remote_sha("feature"), "")
+        self.assertIn(self.PATTERN_PATH, self.output(result))
+
+    def test_an_empty_pattern_file_refuses_the_push(self):
+        """Intent: an empty denylist passing everything is the defect the gate exists to
+        stop, so an empty file refuses like a missing one."""
+        self.home_patterns()
+        self.branch("feature")
+        result = self.push("origin", "feature")
+        self.assertNotEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.remote_sha("feature"), "")
+
+    def test_a_clean_push_passes(self):
+        """Intent: green on a clean push, and the branch is on the remote at the pushed sha."""
+        self.home_patterns(self.SECRET)
+        sha = self.branch("feature", "x.md", "nothing personal\n")
+        result = self.push("origin", "feature")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.remote_sha("feature"), sha)
+
+    def test_one_bad_ref_refuses_the_whole_push(self):
+        """Intent: a push is all or nothing - one clean and one leaking ref in the same push
+        and neither reaches the remote."""
+        self.home_patterns(self.SECRET)
+        self.branch("clean-one", "x.md", "nothing personal\n")
+        self.branch("leaky", "y.md", f"the {self.SECRET} host-marker\n")
+        result = self.push("origin", "clean-one", "leaky")
+        self.assertNotEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.remote_sha("clean-one"), "")
+        self.assertEqual(self.remote_sha("leaky"), "")
+        self.assertIn("y.md:1", self.output(result))
+
+    def test_deleting_a_remote_branch_passes_without_a_pattern_file(self):
+        """Intent: a deletion adds no lines, so there is nothing to scan and no reason to
+        demand the pattern file."""
+        sha = self.branch("feature")
+        self.git("push", "-q", "--no-verify", "origin", "feature")
+        self.assertEqual(self.remote_sha("feature"), sha)
+        result = self.push("origin", "--delete", "feature")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.remote_sha("feature"), "")
+
+    def test_a_tag_push_is_not_gated(self):
+        """Intent: by design, only branch refs are gated; a lightweight tag at a commit the
+        remote already has adds no lines, so it passes with no pattern file."""
+        self.git("tag", "v0")
+        result = self.push("origin", "v0")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        tag = subprocess.run(
+            ["git", "--git-dir", str(self.bare), "rev-parse", "--verify", "-q", "refs/tags/v0"],
+            capture_output=True, text=True).stdout.strip()
+        self.assertEqual(tag, self.base)

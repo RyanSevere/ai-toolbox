@@ -757,6 +757,9 @@ def render_cursor_hooks(sha: str, owner: str | None,
                             "rendered with its interpreter stops launching when that environment "
                             "goes. Run sync.py with the base interpreter")
         native, matcher = HOOK_EVENTS["cursor"][spec["event"]]
+        # The tool is named explicitly, so hooks/lib/hookio.py reads Cursor's payload and writes
+        # Cursor's verdict by this entry rather than by its no-argument default.
+        run = [*run, "--tool", "cursor"]
         entry = {"command": hook_command(run, where, sys.executable, os.name == "nt")}
         if matcher:
             entry["matcher"] = matcher

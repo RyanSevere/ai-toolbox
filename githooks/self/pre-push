@@ -1,0 +1,87 @@
+#!/bin/sh
+################################################################################
+# File: pre-push
+# Path: {PROJECT_ROOT}/githooks/self/pre-push
+# Created by: Ryan Severe
+# Created: 2026-11-13
+# Last Updated: 2026-11-13
+# Description: ai-toolbox's own pre-push hook, turned on once per clone with
+#              git config core.hooksPath githooks/self. It runs one-way gate 1
+#              on every branch ref pushed, so a leak is refused before it is
+#              public. CI's run of the same gate remains the backstop.
+################################################################################
+# ===========================================================================
+#
+#
+#            "~,
+#                *m,
+#                   *9m;
+#                       *%pg
+#                          "YRWu
+#                              *9$&w
+#                                  *R$&w
+#   ;j]@@W;                   *w,      79&&w;
+#   :|*%MT"                     7&&w,      ?78BWw
+# . ,|*       -p     ~            *R$$$gw,     '*MU@m,
+#            =W/?*%NMWgw             *T&$F ,@w;     "*4[%m,
+#              7R$$$$$$$$g          yg$$Gg$@@Hh!j ,w     "*w|j=,
+#       ..     ]K@ww[T$Fff            >*MB&&@@Hh ]hk{!!~^     "*v'
+#          '|;, *M@@&&$P                 $$&@HHH\  ` ;w,,   ,~""
+#            "|jj]]%@F"                  ]$@@H, ;*M%P)a$$C  c
+#           . :|j[M"                     ]@@HHr TfR4&$NE*,/~<'
+#             `!||j]@@@A`                ]@@Hh~ *TT"" "* ^ r  '~
+#                *ojKM"                  l@Hh~  "*|"'   /        `
+#                                        @HHkC ,;!"
+#                                       ]HHhr/|!"'
+#                                       #Hhr!||"
+#                             ,@r       hkr!||'
+#                                      [k{|!"
+#                                     (r!!"        r
+#                                     !!"        r
+#                                      ";      /
+#                                             '
+#                                            '
+# ===========================================================================
+
+
+set -u
+
+if [ -z "${HOME:-}" ]; then
+  echo "pre-push: HOME is not set, so the leak denylist cannot be found. Push refused." >&2
+  exit 1
+fi
+
+# Fixed: no variable or setting moves it.
+pattern_file="$HOME/.config/ai-toolbox/leak-denylist"
+gate="$(dirname "$0")/../one-way/leak-denylist.sh"
+
+failed=0
+
+# stdin carries: <local ref> <local sha> <remote ref> <remote sha>
+while read -r _local_ref local_sha remote_ref remote_sha; do
+  # The last field keeps any carriage return a CRLF-fed stdin leaves.
+  remote_sha="$(printf '%s' "$remote_sha" | tr -d '\r')"
+
+  # Branches only, tested on the remote ref: a tag push is not gated.
+  case "$remote_ref" in
+    refs/heads/*) ;;
+    *) continue ;;
+  esac
+
+  # An all-zero local sha means the ref is being deleted. Nothing to scan.
+  case "$local_sha" in
+    *[!0]*) ;;
+    *) continue ;;
+  esac
+
+  if ! sh "$gate" "$pattern_file" "$local_sha" "$remote_sha" < /dev/null; then
+    echo "pre-push: the leak denylist refused $remote_ref" >&2
+    failed=1
+  fi
+done
+
+if [ "$failed" -ne 0 ]; then
+  echo "pre-push: the whole push is refused; nothing was sent." >&2
+  exit 1
+fi
+exit 0

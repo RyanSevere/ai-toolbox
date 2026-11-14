@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-10
+# Last Updated: 2026-11-13
 # Description: Tests for sync.py - the renderer that decides what every AI
 #              session in the estate reads. Covers build_plan over every real
 #              manifest target, exclude validation, the hand-owned guard, stamp
@@ -664,7 +664,8 @@ class CursorHooks(unittest.TestCase):
     def test_owner_placeholder_is_filled(self):
         plan = self.plan({"guard/hook.yaml": self.OWNED})
         self.assertEqual([e["command"] for e in self.entries(plan)],
-                         [f"{self.PY} .cursor/hooks/guard/hook.py --owner {MANIFEST['source']['owner']}"])
+                         [f"{self.PY} .cursor/hooks/guard/hook.py --owner "
+                          f"{MANIFEST['source']['owner']} --tool cursor"])
 
     def test_owner_placeholder_without_an_owner_is_refused(self):
         ownerless = {**MANIFEST, "source": {k: v for k, v in MANIFEST["source"].items()
@@ -713,8 +714,15 @@ class CursorHooks(unittest.TestCase):
         other = self.GUARD.replace("guard", "another")
         plan = self.plan({"guard/hook.yaml": self.GUARD, "another/hook.yaml": other})
         self.assertEqual([e["command"] for e in self.entries(plan)],
-                         [f"{self.PY} .cursor/hooks/another/hook.py",
-                          f"{self.PY} .cursor/hooks/guard/hook.py"])
+                         [f"{self.PY} .cursor/hooks/another/hook.py --tool cursor",
+                          f"{self.PY} .cursor/hooks/guard/hook.py --tool cursor"])
+
+    def test_the_rendered_command_names_cursor_as_the_tool(self):
+        """Intent: hooks/README.md - the adapter passes --tool, last, so hookio reads Cursor's
+        payload by name rather than by its no-argument default."""
+        plan = self.plan({"guard/hook.yaml": self.GUARD})
+        self.assertEqual([e["command"] for e in self.entries(plan)],
+                         [f"{self.PY} .cursor/hooks/guard/hook.py --tool cursor"])
 
     def test_a_directory_without_hook_yaml_is_not_a_cursor_hook(self):
         """hooks/no-secret-defaults is a git hook and CI check, not an agent hook."""
@@ -873,7 +881,7 @@ class HookSchema(unittest.TestCase):
         plan = self.plan({"guard/hook.yaml": self.hook(
             run=["{python}", "x.py", "--owner={owner}"])})
         self.assertEqual([e["command"] for e in self.entries(plan)],
-                         [f"{self.PY} x.py --owner={MANIFEST['source']['owner']}"])
+                         [f"{self.PY} x.py --owner={MANIFEST['source']['owner']} --tool cursor"])
 
     def test_the_library_renders_beside_the_hooks(self):
         """Intent: hooks/lib/ renders to

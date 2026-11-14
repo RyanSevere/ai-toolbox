@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_hooks.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-06
+# Last Updated: 2026-11-13
 # Description: Tests for the editor safety hooks, hooks/no-secret-defaults,
 #              and hooks/no-shell-file-edits, and the shared
 #              runtime library hooks/lib/hookio.py. Per hook: a violation it must
@@ -315,6 +315,126 @@ class HookLib(unittest.TestCase):
                 verdict = self.run_hook("permission", json.dumps(self.SHELL).encode(),
                                         lambda p: ("u", "a"), {"AI_TOOLBOX_HOOKS": value})
                 self.assertEqual(json.loads(verdict)["permission"], "deny")
+
+
+class HookTools(unittest.TestCase):
+    """Intent: the adapter names the tool on the hook's command line (--tool), and the library
+    reads that tool's payload shape and writes that tool's verdict shape. A permission hook
+    that cannot see its command denies, naming the field; an observer is skipped."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lib = load("hookio", HOOKS / "lib" / "hookio.py")
+
+    CLAUDE = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": "/repo",
+              "tool_input": {"command": "git status", "description": "Show status"}}
+
+    def run_hook(self, kind: str, payload, argv: list[str], callback):
+        out, err = io.StringIO(), io.StringIO()
+        data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        run = self.lib.run_permission if kind == "permission" else self.lib.run_observer
+        with mock.patch("sys.stdin", new=stdin_of(data)), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.stderr", new=err), mock.patch("sys.argv", ["hook.py", *argv]), \
+                mock.patch.dict(os.environ):
+            os.environ.pop("AI_TOOLBOX_HOOKS", None)
+            code = run("guard", "shell.before", callback)
+        return code, out.getvalue(), err.getvalue()
+
+    def never(self, payload):
+        raise AssertionError(f"callback ran with {payload}")
+
+    def test_a_claude_code_payload_reaches_decide_with_the_command_filled(self):
+        seen = []
+        self.run_hook("permission", self.CLAUDE, ["--tool", "claude"],
+                      lambda p: seen.append(p) or None)
+        self.assertEqual((seen[0]["command"], seen[0]["cwd"]), ("git status", "/repo"))
+        self.assertEqual(seen[0]["event"], "shell.before")
+
+    def test_a_claude_code_deny_comes_out_in_its_shape(self):
+        code, out, _ = self.run_hook("permission", self.CLAUDE, ["--tool", "claude"],
+                                     lambda p: ("u", "a"))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": "a"}})
+
+    def test_a_claude_code_allow_is_silent(self):
+        """Claude Code: exit 0 with no output defers to the normal permission flow."""
+        self.assertEqual(self.run_hook("permission", self.CLAUDE, ["--tool", "claude"],
+                                       lambda p: None), (0, "", ""))
+
+    def test_a_claude_code_payload_without_a_command_denies_naming_the_field(self):
+        for payload in ({"tool_input": {}}, {"cwd": "/repo"}):
+            with self.subTest(payload=payload):
+                code, out, _ = self.run_hook("permission", payload, ["--tool", "claude"],
+                                             self.never)
+                verdict = json.loads(out)["hookSpecificOutput"]
+                self.assertEqual((code, verdict["permissionDecision"]), (0, "deny"))
+                self.assertIn("tool_input.command", verdict["permissionDecisionReason"])
+
+    def test_a_cursor_payload_without_a_command_denies_naming_the_field(self):
+        code, out, _ = self.run_hook("permission", {"cwd": "/repo"}, ["--tool", "cursor"],
+                                     self.never)
+        verdict = json.loads(out)
+        self.assertEqual((code, verdict["permission"]), (0, "deny"))
+        self.assertIn("command", verdict["user_message"])
+
+    def test_an_empty_string_command_is_a_command(self):
+        seen = []
+        self.run_hook("permission", {"tool_input": {"command": ""}}, ["--tool", "claude"],
+                      lambda p: seen.append(p) or None)
+        self.run_hook("permission", {"command": ""}, ["--tool", "cursor"],
+                      lambda p: seen.append(p) or None)
+        self.assertEqual([p["command"] for p in seen], ["", ""])
+
+    def test_a_tool_input_that_is_not_an_object_denies(self):
+        for value in ("git status", ["git status"], None, 3):
+            with self.subTest(tool_input=value):
+                _, out, _ = self.run_hook("permission", {"tool_input": value},
+                                          ["--tool", "claude"], self.never)
+                verdict = json.loads(out)["hookSpecificOutput"]
+                self.assertEqual(verdict["permissionDecision"], "deny")
+                self.assertIn("tool_input", verdict["permissionDecisionReason"])
+
+    def test_an_unknown_tool_denies_a_permission_hook_naming_it(self):
+        for argv in (["--tool", "emacs"], ["--tool"], ["--tool="]):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_hook("permission", self.CLAUDE, argv, self.never)
+                self.assertEqual((code, out), (2, ""))  # exit 2 blocks in every tool
+                self.assertIn("guard", err)
+                self.assertIn("tool", err)
+        _, _, err = self.run_hook("permission", self.CLAUDE, ["--tool", "emacs"], self.never)
+        self.assertIn("emacs", err)
+
+    def test_an_unknown_tool_is_skipped_by_an_observer(self):
+        self.assertEqual(self.run_hook("observer", self.CLAUDE, ["--tool", "emacs"],
+                                       self.never), (0, "", ""))
+
+    def test_an_observer_without_its_command_is_skipped(self):
+        self.assertEqual(self.run_hook("observer", {"cwd": "/repo"}, ["--tool", "claude"],
+                                       self.never), (0, "", ""))
+
+    def test_the_equals_form_names_the_tool(self):
+        seen = []
+        self.run_hook("permission", self.CLAUDE, ["--owner", "x", "--tool=claude"],
+                      lambda p: seen.append(p) or None)
+        self.assertEqual(seen[0]["command"], "git status")
+
+    def test_no_tool_argument_is_cursor(self):
+        seen = []
+        _, out, _ = self.run_hook("permission", {"command": "git status", "cwd": "/repo"},
+                                  [], lambda p: seen.append(p) or ("u", "a"))
+        self.assertEqual(seen[0]["command"], "git status")
+        self.assertEqual(json.loads(out),
+                         {"permission": "deny", "user_message": "u", "agent_message": "a"})
+
+    def test_cursor_named_explicitly_is_byte_identical_to_no_tool(self):
+        payload = {"command": "git status", "cwd": "/repo"}
+        for verdict in (None, ("u", "a")):
+            with self.subTest(verdict=verdict):
+                self.assertEqual(
+                    self.run_hook("permission", payload, ["--tool", "cursor"], lambda p: verdict),
+                    self.run_hook("permission", payload, [], lambda p: verdict))
 
 
 class HookInput(unittest.TestCase):

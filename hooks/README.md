@@ -251,10 +251,29 @@ tools: [cursor, copilot]   # optional; default is every adapter
   `run_observer(name, event, observe)`. The library reads stdin as bytes (BOM and
   UTF-16 handled), hands the hook a neutral payload - `event`, the event's fields
   (`command` and `cwd` for `shell.before`), `model`, `model_id`, `model_params`,
-  and `raw` - and writes Cursor's output. An absent field is `None`. Input it
-  cannot parse denies a permission hook and is skipped by an observer. Only
-  `shell.before`'s fields are mapped; each other event's are mapped when its first
-  hook is seen live. `no-shell-file-edits` keeps its own reader until it is fixed.
+  and `raw` - and writes the tool's output. An absent optional field is `None`; an
+  absent required one (`command`) is not passed on. Input it cannot parse denies a
+  permission hook and is skipped by an observer. Only `shell.before`'s fields are
+  mapped; each other event's are mapped when its first hook is seen live.
+  `no-shell-file-edits` keeps its own reader until it is fixed.
+- **The tool is an argument of the hook's command line**, `--tool <name>` or
+  `--tool=<name>`, passed by the adapter that renders the hook. The library keeps a
+  table per tool of where each neutral field sits in the payload and how a verdict is
+  written; a new tool is a new table entry. The Cursor adapter appends `--tool cursor`
+  to every `run:`. With no `--tool` the library behaves as Cursor, so a hook rendered
+  before the argument existed keeps working until it is re-rendered.
+
+  | Tool | `command` | `cwd` | Allow | Deny |
+  |---|---|---|---|---|
+  | `cursor` | top-level `command` | top-level `cwd` | `{"permission": "allow"}` | `{"permission": "deny", "user_message": ..., "agent_message": ...}` |
+  | `claude` | `tool_input.command` | top-level `cwd` | no output, exit 0 (Claude Code's normal permission flow decides) | `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": <agent message>}}`, exit 0 |
+
+  Claude Code's shapes are from its hooks documentation (`PreToolUse` on the `Bash`
+  tool); no Claude Code hook is rendered yet. A required field that is absent, or a
+  `tool_input` that is not an object, denies a permission hook with a message naming
+  the field, and skips an observer. An empty-string command is a command. An unknown
+  tool has no verdict shape, so a permission hook denies it by exit code 2 with the
+  reason on stderr, which blocks in every tool; an observer is skipped.
 - **Copilot's timeouts fail open for every event**, permission hooks included. Its
   permission hooks render anyway, and each rendered entry and this file say so: a
   guard that fails open only on timeout still guards every call that finishes.
