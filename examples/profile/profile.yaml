@@ -27,6 +27,14 @@ identity:
 not_onboarded:
   example-archived: "Retired project. Not onboarded until it is revived."
 
+# Repositories the ticket tool tracks and sync never renders into, each with the reason.
+# `key` and `remote` mean what they mean on a target; `reason` is required. The name may
+# not also be a target, a not_onboarded entry or the source. Uncomment to use.
+# tracked:
+#   example-public:
+#     key: pub
+#     reason: "Public. Rendering into it would publish this profile."
+
 # Rules rendered into every target unless it excludes them. Each id names a
 # spec-<id>.md in the core's rules/ or in this profile's seeds/rules/.
 defaults:
