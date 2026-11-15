@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/toolboxctl.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-06
+# Last Updated: 2026-11-15
 # Description: One entry point for a profile's vendored core.
 #              Run as python core/toolboxctl.py <subcommand>. Owns no logic:
 #              each subcommand delegates to the function its own ticket built.
@@ -55,13 +55,14 @@ from pathlib import Path
 import yaml
 
 import consent
+import gate_lists
 import setup_profile
 import sync
 import vendor
 
 HERE = Path(__file__).resolve().parent
 # Subcommands whose arguments belong to the script they delegate to.
-PASS_THROUGH = ("flags", "setup")
+PASS_THROUGH = ("flags", "setup", "gate-lists")
 GIT_TIMEOUT = 60
 PREVIEW_TIMEOUT = 600
 # A preview renders nothing to commit, so no real source commit is stamped.
@@ -307,6 +308,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("setup", add_help=False,
                    help="create or update the profile through setup_profile.py. Writes "
                         "profile.yaml, after confirming any change to an existing one")
+    sub.add_parser("gate-lists", add_help=False,
+                   help="write the one-way gate pattern files from profile.yaml. Writes the "
+                        "two files named; prints counts, never patterns")
     return parser
 
 
@@ -331,6 +335,8 @@ def main(argv: list[str] | None = None, core: Path = HERE) -> int:
         return preview(core, args.root)
     if args.command == "flags":
         return consent.main(with_profile(rest, core.parent))
+    if args.command == "gate-lists":
+        return gate_lists.main(with_profile(rest, core.parent))
     return setup_profile.main(with_profile(rest, core.parent))
 
 

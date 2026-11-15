@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_toolboxctl.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-10
+# Last Updated: 2026-11-15
 # Description: Tests for toolboxctl.py - the one entry point a
 #              profile's owner runs against its vendored core. Covers the
 #              refusal outside a vendored core, version, check's ordering, the
@@ -170,6 +170,15 @@ class PassThrough(Fixture):
         self.assertEqual(code, 3)
         delegate.assert_called_once_with(["--profile", str(self.profile), "--answers", "a.yaml"])
 
+    def test_gate_lists_reaches_gate_lists_with_this_profile(self):
+        """Intent: gate-lists passes its arguments through to
+        gate_lists.main, adding --profile <profile> when none is given."""
+        with mock.patch("gate_lists.main", return_value=0) as delegate:
+            code, _, _ = self.run_main("gate-lists", "--leak", "l.txt", "--core-names", "c.txt")
+        self.assertEqual(code, 0)
+        delegate.assert_called_once_with(
+            ["--profile", str(self.profile), "--leak", "l.txt", "--core-names", "c.txt"])
+
     def test_a_profile_given_by_the_caller_is_left_alone(self):
         """Intent: --profile is added only when the arguments do not
         already carry one."""
@@ -203,7 +212,8 @@ class Arguments(Fixture):
             toolboxctl.main(["--help"], core=self.core)
         text = " ".join(out.getvalue().split())
         for command, consequence in (("version", "reads only"), ("check", "changes nothing"),
-                                     ("flags", "after a typed yes"), ("setup", "profile.yaml")):
+                                     ("flags", "after a typed yes"), ("setup", "profile.yaml"),
+                                     ("gate-lists", "never patterns")):
             with self.subTest(command=command):
                 self.assertIn(command, text)
                 self.assertIn(consequence, text)

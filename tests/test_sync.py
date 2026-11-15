@@ -1511,6 +1511,43 @@ class ProfileLoader(unittest.TestCase):
                     sync.load_profile(folder)
                 self.assertIn("reason", str(ctx.exception))
 
+    def test_the_gate_list_keys_are_accepted(self):
+        """Intent: personal, profile_name and leak_extra are profile keys, so a profile can
+        say what its one-way gate lists are built from."""
+        folder = self.tmp_dir()
+        (folder / "profile.yaml").write_text(
+            "source: {repo: s}\npersonal: [a]\nprofile_name: p\nleak_extra: [x]\n", encoding="utf-8")
+        profile = sync.load_profile(folder)
+        self.assertEqual((profile["personal"], profile["profile_name"], profile["leak_extra"]),
+                         (["a"], "p", ["x"]))
+
+    def test_a_gate_list_key_of_the_wrong_type_is_refused_naming_the_key(self):
+        """Intent: a list key that is not a list, and a name that is not a string, are
+        refused with the key named."""
+        for text, key in (("personal: a\n", "personal"), ("leak_extra: a\n", "leak_extra"),
+                          ("profile_name: [a]\n", "profile_name")):
+            folder = self.tmp_dir()
+            (folder / "profile.yaml").write_text("source: {repo: s}\n" + text, encoding="utf-8")
+            with self.subTest(key=key):
+                with self.assertRaises(sync.SyncError) as ctx:
+                    sync.load_profile(folder)
+                self.assertIn(key, str(ctx.exception))
+                self.assertIn("must be a", str(ctx.exception))
+
+    def test_a_gate_list_entry_that_is_not_a_non_empty_string_is_refused(self):
+        """Intent: an entry that is empty or not a string would write a blank or odd pattern
+        line, so the profile is refused with the key named."""
+        for key in ("personal", "leak_extra"):
+            for entry in ("''", "3", "[a]", "'  '"):
+                folder = self.tmp_dir()
+                (folder / "profile.yaml").write_text(
+                    f"source: {{repo: s}}\n{key}: [{entry}]\n", encoding="utf-8")
+                with self.subTest(key=key, entry=entry):
+                    with self.assertRaises(sync.SyncError) as ctx:
+                        sync.load_profile(folder)
+                    self.assertIn(key, str(ctx.exception))
+                    self.assertIn("non-empty string", str(ctx.exception))
+
     def test_sync_names_manifest_yaml_nowhere_in_its_source(self):
         """Intent: a search for manifest.yaml in source returns nothing
         outside history. A reader still naming it is a reader that was not moved."""
