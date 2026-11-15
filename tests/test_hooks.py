@@ -4,10 +4,11 @@
 # Path: {PROJECT_ROOT}/tests/test_hooks.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-13
+# Last Updated: 2026-11-15
 # Description: Tests for the editor safety hooks, hooks/no-secret-defaults,
-#              and hooks/no-shell-file-edits, and the shared
-#              runtime library hooks/lib/hookio.py. Per hook: a violation it must
+#              hooks/no-shell-file-edits, hooks/no-destructive-shell and
+#              hooks/no-generated-edits, and the
+#              shared runtime library hooks/lib/hookio.py. Per hook: a violation it must
 #              catch, a near-miss it must allow, and malformed input it must
 #              not crash on. A guard that silently stops matching looks the
 #              same as one with nothing to catch. Stdlib only.
@@ -329,7 +330,7 @@ class HookTools(unittest.TestCase):
     CLAUDE = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": "/repo",
               "tool_input": {"command": "git status", "description": "Show status"}}
 
-    def run_hook(self, kind: str, payload, argv: list[str], callback):
+    def run_hook(self, kind: str, payload, argv: list[str], callback, event: str = "shell.before"):
         out, err = io.StringIO(), io.StringIO()
         data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         run = self.lib.run_permission if kind == "permission" else self.lib.run_observer
@@ -337,7 +338,7 @@ class HookTools(unittest.TestCase):
                 mock.patch("sys.stderr", new=err), mock.patch("sys.argv", ["hook.py", *argv]), \
                 mock.patch.dict(os.environ):
             os.environ.pop("AI_TOOLBOX_HOOKS", None)
-            code = run("guard", "shell.before", callback)
+            code = run("guard", event, callback)
         return code, out.getvalue(), err.getvalue()
 
     def never(self, payload):
@@ -435,6 +436,454 @@ class HookTools(unittest.TestCase):
                 self.assertEqual(
                     self.run_hook("permission", payload, ["--tool", "cursor"], lambda p: verdict),
                     self.run_hook("permission", payload, [], lambda p: verdict))
+
+    WRITE = "file.write.before"
+    # Claude Code documents tool_input.file_path for Write and Edit, absolute. Cursor's key is
+    # mapped the same way until a capture on a real host says otherwise (hooks/README.md).
+    CLAUDE_WRITE = {"hook_event_name": "PreToolUse", "tool_name": "Write", "cwd": "/repo",
+                    "tool_input": {"file_path": "/repo/AGENTS.md", "content": "x"}}
+    CLAUDE_EDIT = {"hook_event_name": "PreToolUse", "tool_name": "Edit", "cwd": "/repo",
+                   "tool_input": {"file_path": "/repo/AGENTS.md", "old_string": "a",
+                                  "new_string": "b"}}
+    CURSOR_WRITE = {"hook_event_name": "preToolUse", "tool_name": "Write", "cwd": "/repo",
+                    "tool_input": {"file_path": "/repo/AGENTS.md", "contents": "x"}}
+
+    def test_a_file_write_payload_reaches_decide_with_the_path_and_cwd_filled(self):
+        for tool, payload in (("claude", self.CLAUDE_WRITE), ("claude", self.CLAUDE_EDIT),
+                              ("cursor", self.CURSOR_WRITE)):
+            with self.subTest(tool=tool, name=payload["tool_name"]):
+                seen = []
+                self.run_hook("permission", payload, ["--tool", tool],
+                              lambda p: seen.append(p) or None, self.WRITE)
+                self.assertEqual((seen[0]["path"], seen[0]["cwd"], seen[0]["event"]),
+                                 ("/repo/AGENTS.md", "/repo", self.WRITE))
+
+    def test_a_file_write_payload_without_a_path_denies_naming_the_field(self):
+        for tool, payload in (("claude", {"tool_input": {"content": "x"}, "cwd": "/repo"}),
+                              ("cursor", {"tool_input": {"contents": "x"}, "cwd": "/repo"}),
+                              ("claude", {"cwd": "/repo"}), ("cursor", {"cwd": "/repo"})):
+            with self.subTest(tool=tool, payload=payload):
+                code, out, _ = self.run_hook("permission", payload, ["--tool", tool],
+                                             self.never, self.WRITE)
+                said = json.loads(out)
+                reason = (said["hookSpecificOutput"]["permissionDecisionReason"]
+                          if tool == "claude" else said["user_message"])
+                self.assertEqual(code, 0)
+                self.assertIn("tool_input.file_path", reason)
+
+    def test_a_file_write_payload_without_a_cwd_still_reaches_decide(self):
+        """cwd is optional for the event: a relative path with none is the hook's to refuse."""
+        seen = []
+        self.run_hook("permission", {"tool_input": {"file_path": "a.md"}}, ["--tool", "claude"],
+                      lambda p: seen.append(p) or None, self.WRITE)
+        self.assertEqual((seen[0]["path"], seen[0]["cwd"]), ("a.md", None))
+
+    def test_a_file_write_deny_comes_out_in_each_tools_shape(self):
+        _, out, _ = self.run_hook("permission", self.CLAUDE_WRITE, ["--tool", "claude"],
+                                  lambda p: ("u", "a"), self.WRITE)
+        self.assertEqual(json.loads(out), {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": "a"}})
+        _, out, _ = self.run_hook("permission", self.CURSOR_WRITE, ["--tool", "cursor"],
+                                  lambda p: ("u", "a"), self.WRITE)
+        self.assertEqual(json.loads(out),
+                         {"permission": "deny", "user_message": "u", "agent_message": "a"})
+
+    def test_a_file_write_observer_without_a_path_is_skipped(self):
+        self.assertEqual(self.run_hook("observer", {"cwd": "/repo"}, ["--tool", "claude"],
+                                       self.never, self.WRITE), (0, "", ""))
+
+
+class DestructiveShell(unittest.TestCase):
+    """Intent: hooks/no-destructive-shell denies the shell commands that discard work - git
+    clean, git checkout of paths, git reset --hard, rm -r and Remove-Item -Recurse - read from
+    the command's leading words per segment, so a commit message that names one is allowed. A
+    command it cannot read denies. A recursive delete of literal paths inside the repository's
+    scratch/ is allowed. Every case runs with Cursor's payload and with Claude Code's."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.hook = load("no_destructive_shell", HOOKS / "no-destructive-shell" / "hook.py")
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        (self.root / ".git").mkdir()
+        (self.root / "scratch" / "sub").mkdir(parents=True)
+
+    NO_CWD = object()
+
+    def verdict(self, tool: str, command, cwd=None, raw: bytes | None = None, env=None):
+        """None when the hook allows, else (user message, agent message); Claude Code's deny
+        carries one reason, which is the agent message."""
+        if raw is None:
+            cwd = str(self.root) if cwd is None else cwd
+            body = {} if cwd is self.NO_CWD else {"cwd": cwd}
+            if tool == "cursor":
+                body["command"] = command
+            else:
+                body.update({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                             "tool_input": {"command": command}})
+            raw = json.dumps(body).encode()
+        out = io.StringIO()
+        with mock.patch("sys.stdin", new=stdin_of(raw)), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.argv", ["hook.py", "--tool", tool]), mock.patch.dict(os.environ):
+            os.environ.pop("AI_TOOLBOX_HOOKS", None)
+            os.environ.update(env or {})
+            self.assertEqual(self.hook.main(), 0)
+        text = out.getvalue()
+        if tool == "cursor":
+            said = json.loads(text)
+            return None if said["permission"] == "allow" else (said["user_message"],
+                                                              said["agent_message"])
+        if not text:
+            return None
+        said = json.loads(text)["hookSpecificOutput"]
+        self.assertEqual(said["permissionDecision"], "deny")
+        return None, said["permissionDecisionReason"]
+
+    def assert_denied(self, command, **kwargs):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool, command=command):
+                self.assertIsNotNone(self.verdict(tool, command, **kwargs))
+
+    def assert_allowed(self, command, **kwargs):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool, command=command):
+                self.assertIsNone(self.verdict(tool, command, **kwargs))
+
+    DENIED = (
+        "git clean -fd", "git clean -xfd", "git -C sub clean -f", "git checkout -- .",
+        "git checkout -- src/app.py", "git checkout .", "git reset --hard",
+        "git reset --hard HEAD~1", "rm -rf build", "rm -fr build", "rm -r -f build",
+        "/bin/rm -rf build", "sudo rm -rf build", "FOO=1 rm -rf build",
+        "Remove-Item -Recurse -Force build", "Remove-Item build -Recurse",
+        "remove-item -rec build", "REMOVE-ITEM -RECURSE build", "ri -r build",
+        "del -Recurse build", "rm -r build", "git -c core.x=y clean -f",
+        "git --git-dir=.git --work-tree=. reset --hard",
+    )
+    WRAPS = ("cd x && {}", "cd x; {}", "a | {}", "a || {}", "echo $({})", "echo hi\n{}",
+             "a & {}", "if true; then {}; fi", "& {}")
+
+    def test_the_five_families_are_denied(self):
+        for command in self.DENIED:
+            self.assert_denied(command)
+
+    def test_a_destructive_segment_anywhere_in_the_line_denies(self):
+        for command in self.DENIED:
+            for wrap in self.WRAPS:
+                self.assert_denied(wrap.format(command))
+
+    def test_everything_else_is_allowed(self):
+        for command in (
+            "git status", "git checkout main", "git checkout -b feature",
+            "git reset HEAD file.py", "git reset --soft HEAD~1", "git clean -n",
+            "git clean --dry-run -d", "git clean -nd", "rm file.txt", "Remove-Item file.txt",
+            "Remove-Item -Force file.txt", "echo rm -rf build",
+            'git log --grep "reset --hard"', 'git commit -m "git reset --hard was the fix"',
+            "git commit -m 'rm -rf build'", "Select-String -Pattern 'Remove-Item -Recurse'",
+            "git push 2>&1", "ls > out.txt 2>&1", "", "   ",
+        ):
+            self.assert_allowed(command)
+
+    def test_a_commit_message_that_names_a_destructive_command_is_allowed(self):
+        """Intent: the false positive that pulled no-shell-file-edits - a message line reading
+        git reset --hard sits at the start of a physical line in a here-string or heredoc."""
+        for command in (
+            "git commit -m @'\ngit reset --hard is gone\n'@",
+            'git commit -m @"\nrm -rf build\n"@',
+            "git commit -m @'\r\ngit reset --hard is gone\r\n'@",
+            "git commit -F - <<'EOF'\nrm -rf build\nEOF",
+            "git commit -F - <<EOF\ngit clean -fd\nEOF\n",
+            "git commit -F - <<-EOF\n\trm -rf build\n\tEOF",
+            "git commit -m @'\ngit reset --hard\n'@; git status",
+            "cat <<'A' <<'B'\nrm -rf x\nA\ngit clean -fd\nB",
+        ):
+            self.assert_allowed(command)
+
+    def test_a_command_after_a_quoted_block_is_still_read(self):
+        for command in (
+            "git commit -m @'\nnote\n'@; git reset --hard",
+            "git commit -F - <<'EOF'\nnote\nEOF\nrm -rf build",
+            "cat <<EOF | rm -rf build\nnote\nEOF",
+            "echo 'a;b' && rm -rf build",
+            'echo "a;b" && rm -rf build',
+            "Remove-Item `\n  -Recurse build",
+            "echo `rm -rf build`",
+        ):
+            self.assert_denied(command)
+
+    def test_a_quote_the_scan_cannot_close_denies_naming_the_reason(self):
+        for command, reason in (
+            ('git commit -m "oops', "unbalanced"),
+            ("git commit -m 'oops", "unbalanced"),
+            ("git commit -m @'\nno closer", "here-string"),
+            ("cat <<EOF\nrm -rf build", "heredoc"),
+            ("cat <<EOF", "heredoc"),
+        ):
+            for tool in ("cursor", "claude"):
+                with self.subTest(tool=tool, command=command):
+                    said = self.verdict(tool, command)
+                    self.assertIsNotNone(said)
+                    self.assertIn("could not read", said[1])
+                    self.assertIn(reason, said[1])
+
+    def test_a_backslash_ending_a_double_quoted_path_reads_the_rest_as_quoted(self):
+        """Characterisation of the gap hooks/README.md names: POSIX reads \\" as an escaped
+        quote, so the closing quote is missing and the command denies as unreadable."""
+        self.assert_denied('Remove-Item "C:\\dir\\"; git status')
+
+    def test_an_unparseable_payload_denies(self):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool):
+                self.assertIsNotNone(self.verdict(tool, "", raw=b"\x00\x01 not json"))
+
+    def test_a_payload_without_a_command_denies(self):
+        for tool, raw in (("cursor", b'{"cwd": "/r"}'), ("claude", b'{"tool_input": {}}')):
+            with self.subTest(tool=tool):
+                self.assertIsNotNone(self.verdict(tool, "", raw=raw))
+
+    def test_a_command_that_is_not_text_denies(self):
+        self.assert_denied(["rm", "-rf", "build"])
+
+    def test_the_off_switch_allows(self):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool):
+                self.assertIsNone(self.verdict(tool, "rm -rf build", env={"AI_TOOLBOX_HOOKS": "off"}))
+
+    def test_a_deny_names_the_command_and_says_to_ask_the_operator(self):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool):
+                said = self.verdict(tool, "cd x && git reset --hard HEAD~1")
+                self.assertIn("git reset --hard HEAD~1", said[1])
+                self.assertIn("ask the operator", said[1].lower())
+                self.assertNotRegex(said[1] + (said[0] or ""),
+                                    r"(?i)\b[a-z]{2,5}-\d+\b|github\.com|\.local\b")
+
+    def test_a_cursor_deny_has_a_user_message_naming_the_hook(self):
+        said = self.verdict("cursor", "git clean -fd")
+        self.assertIn("no-destructive-shell", said[0])
+        self.assertIn("git clean -fd", said[0])
+
+    def test_a_recursive_delete_of_literal_scratch_paths_is_allowed(self):
+        """Intent: the operator's ruling - agents clean their own scratch/ and a blanket deny
+        on that is the fight he ruled against. Literal paths inside it only."""
+        for command in (
+            "rm -rf scratch/tmp", "rm -r scratch/a scratch/sub", "rm -rf ./scratch/x",
+            "Remove-Item -Recurse -Force scratch/tmp", "Remove-Item -Recurse scratch\\sub",
+            "Remove-Item -Recurse -Force -Path scratch/tmp -ErrorAction SilentlyContinue",
+            "Remove-Item -LiteralPath scratch/tmp -Recurse", 'rm -rf "scratch/with space"',
+            "rm -rf -- scratch/-odd", "ri -r scratch/x", f"rm -rf {self.root.as_posix()}/scratch/x",
+            "rm -rf scratch/x 2>&1", "rm -rf scratch/x > /dev/null",
+            "cd x && rm -rf scratch/x",
+        ):
+            self.assert_allowed(command)
+
+    def test_a_recursive_delete_reaching_outside_scratch_is_denied(self):
+        for command in (
+            "rm -rf scratch", "rm -rf scratch/", "rm -rf scratch/..", "rm -rf scratch/../src",
+            "rm -rf scratch/sub/../../src", "rm -rf scratch/*", "rm -rf scratch/?", "rm -rf scratch/[a]",
+            "rm -rf $dir", "rm -rf scratch/$dir", 'rm -rf "scratch/$dir"', "rm -rf ~/scratch/x",
+            "rm -rf scratch/a build", "rm -rf", "rm -rf --", "rm -rf scratch2/x",
+            "rm -rf /scratch/x", "Remove-Item -Recurse", "Remove-Item -Recurse -Path",
+            "Remove-Item -Recurse -Include *.tmp scratch", "Remove-Item -Recurse scratch\\..\\src",
+            "rm -rf $(pwd)/scratch/x", "rm -rf scratch/`pwd`", "Remove-Item -Recurse (Get-Item scratch/x)",
+        ):
+            self.assert_denied(command)
+
+    def test_the_exemption_is_for_deletes_only(self):
+        for command in ("git clean -fd scratch", "git checkout -- scratch/x"):
+            self.assert_denied(command)
+
+    def test_the_repository_root_is_found_from_a_subdirectory(self):
+        self.assert_allowed("rm -rf ../scratch/x", cwd=str(self.root / "sub"))
+        self.assert_allowed("rm -rf x", cwd=str(self.root / "scratch" / "sub"))
+        self.assert_denied("rm -rf ../../src", cwd=str(self.root / "scratch" / "sub"))
+
+    def test_a_delete_without_a_usable_cwd_is_denied(self):
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        (Path(outside.name) / "scratch").mkdir()
+        for cwd in (self.NO_CWD, "", "scratch", outside.name, 5):
+            self.assert_denied("rm -rf scratch/x", cwd=cwd)
+
+
+class GeneratedEdits(unittest.TestCase):
+    """Intent: hooks/no-generated-edits denies an agent write to a file that carries the full
+    generated-file stamp in its first 40 lines, naming the stamp's source to edit instead. An
+    unstamped file, a new file and a file that only quotes the stamp's opening are allowed; a
+    target it cannot read denies. Every case runs with Cursor's payload and Claude Code's."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.hook = load("no_generated_edits", HOOKS / "no-generated-edits" / "hook.py")
+
+    STAMP = "generated from profile-x@abc1234 - edit the source, not this file"
+    UNPINNED = "generated from profile-x - edit the source, not this file"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+
+    def make(self, name: str, content: str | bytes) -> Path:
+        path = self.dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+        return path
+
+    def verdict(self, tool: str, path, cwd="", raw: bytes | None = None, env=None):
+        """None when the hook allows, else (user message, agent message); Claude Code's deny
+        carries one reason, which is the agent message. cwd="" means the temporary directory
+        and None omits the field."""
+        if raw is None:
+            body = {"tool_name": "Write", "tool_input": {"file_path": str(path)}}
+            if cwd is not None:
+                body["cwd"] = str(self.dir) if cwd == "" else cwd
+            raw = json.dumps(body).encode()
+        out = io.StringIO()
+        with mock.patch("sys.stdin", new=stdin_of(raw)), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.argv", ["hook.py", "--tool", tool]), mock.patch.dict(os.environ):
+            os.environ.pop("AI_TOOLBOX_HOOKS", None)
+            os.environ.update(env or {})
+            self.assertEqual(self.hook.main(), 0)
+        text = out.getvalue()
+        if tool == "cursor":
+            said = json.loads(text)
+            return None if said["permission"] == "allow" else (said["user_message"],
+                                                              said["agent_message"])
+        if not text:
+            return None
+        said = json.loads(text)["hookSpecificOutput"]
+        self.assertEqual(said["permissionDecision"], "deny")
+        return None, said["permissionDecisionReason"]
+
+    def assert_denied(self, path, **kwargs):
+        found = {}
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool, path=str(path)):
+                found[tool] = self.verdict(tool, path, **kwargs)
+                self.assertIsNotNone(found[tool])
+        return found
+
+    def assert_allowed(self, path, **kwargs):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool, path=str(path)):
+                self.assertIsNone(self.verdict(tool, path, **kwargs))
+
+    def test_a_stamped_file_is_denied_wherever_the_stamp_sits_in_its_head(self):
+        filler = "".join(f"line {n}\n" for n in range(18))
+        for name, content in (
+            ("a.md", f"<!-- {self.STAMP} -->\n# Title\n"),
+            ("unpinned.md", f"<!-- {self.UNPINNED} -->\n# Title\n"),
+            ("script.py", f"#!/usr/bin/env python3\n# {self.STAMP}\nprint(1)\n"),
+            ("front.md", f"---\n{filler}---\n<!-- {self.STAMP} -->\n# Title\n"),
+            ("hooks.json", json.dumps({"_generated": self.STAMP, "version": 1}, indent=2)),
+            ("last-line.md", "x\n" * 39 + f"<!-- {self.STAMP} -->\n" + "tail\n"),
+            ("crlf.md", f"<!-- {self.STAMP} -->\r\n# Title\r\n"),
+        ):
+            self.assert_denied(self.make(name, content))
+
+    def test_an_unstamped_or_new_file_is_allowed(self):
+        quoting = '# the stamp reads "generated from <repo>@<sha>" in a rendered file\nkey: 1\n'
+        for name, content in (
+            ("plain.md", "# Title\n"),
+            ("empty.md", ""),
+            ("quoted.yaml", quoting),
+            ("late.md", "x\n" * 40 + f"<!-- {self.STAMP} -->\n"),
+            ("binary.bin", b"\xff\xfe\x00\x81 not utf-8\n"),
+            ("open-only.md", "<!-- generated from profile-x@abc1234 -->\n"),
+        ):
+            self.assert_allowed(self.make(name, content))
+        self.assert_allowed(self.dir / "new" / "file-that-does-not-exist.md")
+
+    def test_a_relative_path_resolves_against_cwd(self):
+        self.make("sub/a.md", f"<!-- {self.STAMP} -->\n")
+        self.assert_denied("sub/a.md")
+        self.assert_allowed("sub/not-there.md")
+
+    @unittest.skipUnless(os.name == "nt", "a backslash separates folders only on Windows")
+    def test_a_path_with_backslashes_resolves_on_windows(self):
+        self.make("sub/a.md", f"<!-- {self.STAMP} -->\n")
+        self.assert_denied("sub\\a.md")
+        self.assert_denied(str(self.dir / "sub" / "a.md"))
+
+    def test_a_target_it_cannot_read_is_denied_naming_the_reason(self):
+        self.make("sub/keep.md", "x")
+        found = {}
+        for label, path, cwd in (
+            ("directory", self.dir / "sub", ""),
+            ("no cwd", "relative.md", None),
+            ("empty path", "", ""),
+        ):
+            found[label] = self.assert_denied(path, cwd=cwd)
+        for tool in ("cursor", "claude"):
+            self.assertIn("directory", found["directory"][tool][1])
+            self.assertIn("cwd", found["no cwd"][tool][1])
+            self.assertIn("could not read", found["empty path"][tool][1])
+
+    def test_a_read_that_raises_is_denied(self):
+        target = self.make("a.md", "# Title\n")
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool), mock.patch("builtins.open", side_effect=OSError("boom")):
+                said = self.verdict(tool, target)
+                self.assertIsNotNone(said)
+                self.assertIn("could not read", said[1])
+
+    def test_a_path_that_is_not_text_is_denied(self):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool):
+                raw = json.dumps({"cwd": str(self.dir), "tool_input": {"file_path": 7}}).encode()
+                self.assertIsNotNone(self.verdict(tool, "", raw=raw))
+
+    def test_an_unparseable_payload_denies(self):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool):
+                self.assertIsNotNone(self.verdict(tool, "", raw=b"\x00\x01 not json"))
+
+    def test_a_payload_without_a_path_denies_naming_the_field(self):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool):
+                said = self.verdict(tool, "", raw=b'{"cwd": "/r", "tool_input": {}}')
+                self.assertIn("tool_input.file_path", said[0] or said[1])
+
+    def test_the_stamp_on_line_40_counts_and_on_line_41_does_not(self):
+        self.assert_denied(self.make("l40.md", "x\n" * 39 + f"{self.STAMP}\n"))
+        self.assert_allowed(self.make("l41.md", "x\n" * 40 + f"{self.STAMP}\n"))
+
+    def test_two_stamps_are_denied_once_naming_the_first(self):
+        target = self.make("two.md", "<!-- generated from first-src@abc1234 - edit the source, "
+                                     "not this file -->\n" + f"<!-- {self.STAMP} -->\n")
+        for tool, said in self.assert_denied(target).items():
+            with self.subTest(tool=tool):
+                self.assertIn("first-src", said[1])
+                self.assertNotIn("profile-x", said[1])
+
+    def test_the_deny_names_the_file_the_source_and_the_next_render(self):
+        target = self.make("a.md", f"<!-- {self.STAMP} -->\n")
+        for tool, said in self.assert_denied(target).items():
+            with self.subTest(tool=tool):
+                self.assertIn(str(target), said[1])
+                self.assertIn("profile-x", said[1])
+                self.assertIn("overwritten at the next render", said[1])
+                self.assertNotRegex(said[1] + (said[0] or ""),
+                                    r"(?i)\b[a-z]{2,5}-\d+\b|github\.com|\.local\b")
+        self.assertIn(str(target), self.verdict("cursor", target)[0])
+
+    def test_the_off_switch_allows_a_stamped_file(self):
+        target = self.make("a.md", f"<!-- {self.STAMP} -->\n")
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool):
+                self.assertIsNone(self.verdict(tool, target, env={"AI_TOOLBOX_HOOKS": "off"}))
+
+    def test_the_pattern_wants_the_whole_stamp(self):
+        self.assertEqual(self.hook.stamp_source(self.STAMP), "profile-x")
+        self.assertEqual(self.hook.stamp_source(self.UNPINNED), "profile-x")
+        for text in ("generated from <repo>@<sha>", "generated from profile-x@abc1234",
+                     "generated from profile-x - edit the source", ""):
+            with self.subTest(text=text):
+                self.assertIsNone(self.hook.stamp_source(text))
 
 
 class HookInput(unittest.TestCase):
