@@ -3,7 +3,7 @@
 # Path: {PROJECT_ROOT}/vendor.py
 # Created by: Ryan Severe
 # Created: 2026-10-28
-# Last Updated: 2026-11-07
+# Last Updated: 2026-11-14
 # Description: The vendored core a profile renders with. Validates
 #              an <owner>/<repo>@<tag-or-sha> source before it reaches a URL,
 #              hashes core/ byte for byte, checks core/VENDORED offline,
@@ -177,15 +177,19 @@ def _hashed_files(core: Path) -> list[tuple[str, Path]]:
     return sorted(found)
 
 
-def content_hash(core: Path) -> str:
+def content_hash(core: Path, normalise_line_endings: bool = False) -> str:
     """sha256 over core/'s exact bytes, VENDORED and __pycache__ excepted.
 
     Each file contributes its relative path, its length and its bytes, each framed, so
-    moving bytes between files or renaming one changes the hash.
+    moving bytes between files or renaming one changes the hash. With
+    normalise_line_endings, every CRLF is read as LF first; check_core uses that only to
+    name a line-ending-only mismatch.
     """
     digest = hashlib.sha256()
     for rel, path in _hashed_files(core):
         data = path.read_bytes()
+        if normalise_line_endings:
+            data = data.replace(b"\r\n", b"\n")
         digest.update(rel.encode("utf-8") + b"\0" + str(len(data)).encode("ascii") + b"\0")
         digest.update(data)
     return "sha256:" + digest.hexdigest()
@@ -248,6 +252,13 @@ def check_core(core: Path) -> Record:
                           "and the hash cannot match.")
     actual = content_hash(core)
     if actual != record.content_hash:
+        if content_hash(core, normalise_line_endings=True) == record.content_hash:
+            raise VendorError(f"{core} differs from what was vendored only in line endings: "
+                              "files on disk have CRLF where the vendored core has LF. git "
+                              "checked core/ out before core/.gitattributes kept its bytes "
+                              "exact. From the profile's root, run git rm -r --cached core, "
+                              "then git reset -- core, then git checkout -- core, and check "
+                              "again.")
         raise VendorError(f"{core} differs from what was vendored ({record.content_hash}, "
                           f"now {actual}). A vendored core is never edited in place: "
                           "re-vendor it, or make the change in the core's own repository.")

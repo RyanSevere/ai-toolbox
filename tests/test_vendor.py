@@ -3,7 +3,7 @@
 # Path: {PROJECT_ROOT}/tests/test_vendor.py
 # Created by: Ryan Severe
 # Created: 2026-10-28
-# Last Updated: 2026-11-08
+# Last Updated: 2026-11-14
 # Description: The vendored core: source validation, the byte-exact
 #              content hash, core/VENDORED, sync.py --check-core, --vendor-core
 #              against in-memory archives and --check-updates against fake tag
@@ -269,6 +269,29 @@ class CheckCore(unittest.TestCase):
                 with offline(), self.assertRaises(vendor.VendorError) as caught:
                     vendor.check_core(core)
                 self.assertIn("never edited in place", str(caught.exception))
+
+    def test_crlf_on_disk_only_is_named_as_line_endings(self):
+        """Intent: a clone checked out before .gitattributes keeps CRLF on disk. The
+        refusal says line endings and gives the repair, not an edit."""
+        core = make_core(self, {"sync.py": b"a\nb\n", "rules/c.md": b"c\n"})
+        (core / "sync.py").write_bytes(b"a\r\nb\r\n")
+        (core / "rules/c.md").write_bytes(b"c\r\n")
+        with offline(), self.assertRaises(vendor.VendorError) as caught:
+            vendor.check_core(core)
+        message = str(caught.exception)
+        self.assertIn("only in line endings", message)
+        self.assertIn("git rm -r --cached core", message)
+        self.assertNotIn("never edited in place", message)
+
+    def test_content_hash_can_normalise_line_endings(self):
+        """Intent: a CRLF core and its LF twin hash alike once line endings are
+        normalised; the default hash stays byte-exact."""
+        lf = make_core(self, {"a.md": b"x\n"})
+        crlf = make_core(self, {"a.md": b"x\r\n"})
+        self.assertEqual(vendor.content_hash(lf, normalise_line_endings=True),
+                         vendor.content_hash(crlf, normalise_line_endings=True))
+        self.assertEqual(vendor.content_hash(lf),
+                         vendor.content_hash(lf, normalise_line_endings=True))
 
     def test_a_missing_or_changed_gitattributes_is_refused(self):
         """Intent: core/.gitattributes is what stops git
