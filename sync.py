@@ -2210,6 +2210,19 @@ def rollout_target(name: str, cfg: dict, root: Path, defaults: dict, sha: str,
     behind = git_at(repo, "rev-list", "--count", "HEAD..@{u}").strip()
     if behind != "0":
         raise SyncError(f"{behind} commit(s) behind its upstream; run 'git pull --ff-only' there first")
+    # An earlier rollout's own unpushed commit is not foreign work: a re-run with --push pushes it.
+    log = git_at(repo, "log", "--format=%s%x1f%b%x1e", "@{u}..HEAD")
+    prefix = f"From {source_repo(manifest)}@"
+    foreign = 0
+    for record in log.split("\x1e"):
+        if not record.strip("\n"):
+            continue
+        subject, _, body = record.strip("\n").partition("\x1f")
+        if not (subject.startswith("Sync rules: ") and body.startswith(prefix)):
+            foreign += 1
+    if foreign:
+        raise SyncError(f"{foreign} commit(s) ahead of its upstream that the rollout did not make; "
+                        f"push or reset that clone first")
 
     plan = build_plan(name, cfg, defaults, sha, manifest, profile_dir)
     report_drops(plan)
