@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_claude_render.py
 # Created by: Ryan Severe
 # Created: 2026-11-13
-# Last Updated: 2026-11-14
+# Last Updated: 2026-11-15
 # Description: Tests for Claude Code as a render target - rules, skills and agents -
 #              and for the tool table Copilot, Cursor and Claude Code share. Covers
 #              rule scope rendering, the skill root, agent frontmatter, a fake
@@ -166,6 +166,16 @@ class RuleTools(unittest.TestCase):
         self.assertIn("## Tangents", plan[".claude/rules/claude-code.md"].splitlines())
         carriers = [path for path, text in plan.items()
                     if "## Tangents" in text.splitlines()]
+        self.assertEqual(carriers, [".claude/rules/claude-code.md"])
+
+    def test_the_claude_code_rule_carries_the_detach_step_for_claude_only(self):
+        """Intent: Claude Code's rendered rule tells the new session to detach itself
+        before it picks up, and no other rendered file carries that step."""
+        defaults = {**DEFAULTS, "tier2": list(DEFAULTS.get("tier2", [])) + ["claude-code"]}
+        plan = plan_for_defaults(defaults)
+        step = "detaches itself first"
+        self.assertIn(step, plan[".claude/rules/claude-code.md"])
+        carriers = [path for path, text in plan.items() if step in text]
         self.assertEqual(carriers, [".claude/rules/claude-code.md"])
 
     def test_the_claude_code_rule_quotes_the_reply_marker_exactly(self):

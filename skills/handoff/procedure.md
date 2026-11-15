@@ -142,6 +142,8 @@ block so it copies in one action, as the last thing in the reply. It goes in cha
 in the seed: the seed is spent at pickup, and the prompt is only the way in.
 
 ```
+[Load <role skill> before anything else.]
+[Previous session id: <id>. Detach from it first.]
 Pick up the <workstream> workstream in <repository>, on branch <branch>. Read <seed path>
 in full and follow the handoff skill's "Picking up a seed" steps: do what its "First,
 before acting" section says, re-run every Live state command and say where the fresh
@@ -149,6 +151,11 @@ output differs from the pasted one, re-ask anything under "Waiting on the operat
 confirm the scope and the next step - <first item under Next, in order> - with me before
 acting. Mark the seed picked up once I confirm.
 ```
+
+The two bracketed lines are optional. Fill the role line with the role skill the
+profile defines for this workstream, if any; with none, leave it out and the prompt
+reads as before. Fill the previous-session line only in Claude Code's desktop app,
+where the tool's own rule says why; everywhere else leave it out.
 
 It carries nothing but those fields. Anything else belongs in the seed, which is the
 source; state copied into the prompt goes stale the way a hand-listed ticket set does.
