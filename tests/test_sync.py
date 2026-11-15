@@ -1295,6 +1295,59 @@ class HooksJsonLocal(unittest.TestCase):
         self.assertNotIn(".cursor/hooks.json", compared[0])
 
 
+class LockWrite(unittest.TestCase):
+    """Intent: a file-sync client holding the lock file for a moment must not end a rollout
+    in a traceback. The rename retries, a heartbeat that still fails warns and carries on, and
+    the claim before any target is touched still fails loudly."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "scratch" / "rollout.lock"
+        patcher = mock.patch.object(sync, "LOCK_REPLACE_SLEEP", 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.real_replace = os.replace
+
+    def test_write_lock_retries_a_refused_rename(self):
+        calls = []
+
+        def flaky(src, dst):
+            calls.append(src)
+            if len(calls) == 1:
+                raise PermissionError(13, "[WinError 5] Access is denied")
+            self.real_replace(src, dst)
+
+        with mock.patch.object(sync.os, "replace", flaky):
+            sync.write_lock({"pid": 1}, self.path)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"pid": 1})
+
+    def test_write_lock_raises_after_every_attempt_fails(self):
+        refuse = mock.Mock(side_effect=PermissionError(13, "[WinError 5] Access is denied"))
+        with mock.patch.object(sync.os, "replace", refuse), \
+                self.assertRaises(PermissionError):
+            sync.write_lock({"pid": 1}, self.path)
+        self.assertEqual(refuse.call_count, 5)
+
+    def test_heartbeat_warns_and_returns_when_the_write_keeps_failing(self):
+        lock = {"pid": 1, "heartbeat": "old"}
+        out = io.StringIO()
+        with mock.patch.object(sync.os, "replace", side_effect=PermissionError(13, "denied")), \
+                contextlib.redirect_stdout(out):
+            sync.heartbeat(lock, self.path)
+        self.assertIn("[WARN] rollout lock heartbeat not written", out.getvalue())
+        self.assertIn("carrying on", out.getvalue())
+        self.assertNotEqual(lock["heartbeat"], "old")
+
+    def test_a_stale_tmp_does_not_stop_the_claim(self):
+        self.path.parent.mkdir()
+        (self.path.parent / "rollout.tmp").write_text("half a lock", encoding="utf-8")
+        sync.write_lock({"pid": 2}, self.path)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"pid": 2})
+        self.assertFalse((self.path.parent / "rollout.tmp").exists())
+
+
 class ScratchIgnored(unittest.TestCase):
     """Intent: working files go in scratch/, not the system temp directory; one repo of
     eight did not ignore scratch/, so following the rule there would commit the files."""
@@ -1782,11 +1835,12 @@ class ExampleProfile(unittest.TestCase):
 
     def test_every_key_the_core_accepts_is_present(self):
         profile = sync.load_profile(sync.resolve_profile(self.FOLDER))
-        # A key the example leaves commented out, such as `tracked:`, is shown but not set.
+        # A key the example leaves commented out, such as `tracked:` or `tools:`, is shown
+        # but not set.
         text = (self.FOLDER / "profile.yaml").read_text(encoding="utf-8")
         shown = {key for key in sync.PROFILE_KEYS if f"\n# {key}:" in text}
         self.assertEqual(set(profile) | shown, set(sync.PROFILE_KEYS))
-        self.assertEqual(shown, {"tracked"})
+        self.assertEqual(shown, {"tracked", "tools"})
 
     def test_every_example_target_renders(self):
         folder = locked_example(self)
