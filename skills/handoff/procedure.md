@@ -148,14 +148,18 @@ Pick up the <workstream> workstream in <repository>, on branch <branch>. Read <s
 in full and follow the handoff skill's "Picking up a seed" steps: do what its "First,
 before acting" section says, re-run every Live state command and say where the fresh
 output differs from the pasted one, re-ask anything under "Waiting on the operator", then
-confirm the scope and the next step - <first item under Next, in order> - with me before
-acting. Mark the seed picked up once I confirm.
+restate the workstream's whole scope and objective and confirm the next step - <first
+item under Next, in order> - with me before acting. Mark the seed picked up once I confirm.
+[This rotation was ordered by <policy>, so it is pre-approved if the Live state matches
+and nothing is waiting on me.]
 ```
 
-The two bracketed lines are optional. Fill the role line with the role skill the
+The three bracketed lines are optional. Fill the role line with the role skill the
 profile defines for this workstream, if any; with none, leave it out and the prompt
 reads as before. Fill the previous-session line only in Claude Code's desktop app,
-where the tool's own rule says why; everywhere else leave it out.
+where the tool's own rule says why; everywhere else leave it out. Fill the rotation line
+only when a standing rotation policy ordered this handoff, naming the policy; step 5 of
+"Picking up a seed" says what it pre-approves.
 
 It carries nothing but those fields. Anything else belongs in the seed, which is the
 source; state copied into the prompt goes stale the way a hand-listed ticket set does.
@@ -170,13 +174,26 @@ Where the tool can start a session itself, its own rule says how; the prompt is 
 2. Run every command under `Live state` again. Where the fresh output disagrees with
    the pasted one, the fresh output wins - say what changed.
 3. Do what `First, before acting` says.
-4. Confirm the pickup with the operator - what you understood the scope and the next
+4. Open the pickup reply with the workstream's whole scope and objective, as the seed
+   gives them, before the next step. Do this on every pickup, pre-approved or not. A
+   pickup that restates only the thread that was active narrows the workstream
+   without anyone noticing.
+5. Confirm the pickup with the operator - what you understood the scope and the next
    step to be. Questions under `Waiting on the operator` are re-asked, not assumed
    answered.
-5. Write into the seed's workstream directory, worktrees included. A file this
+
+   **A policy-ordered rotation is pre-approved.** Skip the confirmation and go on
+   with the next step when all three of these hold:
+   - a standing rotation policy the profile defines ordered this rotation;
+   - every re-run `Live state` command matches the seed;
+   - `Waiting on the operator` is empty.
+
+   Any mismatch or waiting item means asking as above, naming each one. Which
+   rotations a policy orders is the profile's to say.
+6. Write into the seed's workstream directory, worktrees included. A file this
    session makes anywhere else in `scratch/` is one the cleanup will not find.
-6. Once the operator confirms, make the seed's first line
-   `Picked up <date and time>, by <tool or service>.` - an edit, not a delete. A seed
+7. Once the operator confirms, or at once for a pre-approved rotation, make the
+   seed's first line `Picked up <date and time>, by <tool or service>.` - an edit, not a delete. A seed
    carrying that line is spent: a later session reads it as history, never as a
    workstream to take. It goes with the directory's cleanup. Leave `Not yours` alone.
 
