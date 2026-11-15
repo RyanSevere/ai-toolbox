@@ -1,0 +1,4 @@
+event: file.write.before
+kind: permission
+run: ["{python}", ".cursor/hooks/no-generated-edits/hook.py"]
+timeout: 10
