@@ -2045,6 +2045,14 @@ def ensure_claude_local_ignored(repo: Path, write: bool) -> int:
                           "Claude Code's per-machine settings - kept out of commits.")
 
 
+def ensure_claude_worktrees_ignored(repo: Path, write: bool) -> int:
+    """Claude Code makes isolated worktrees under .claude/worktrees/. Never rendered; only
+    kept out of the checkout's status, where they would block a rollout."""
+    return ensure_ignored(repo, write, ".claude/worktrees/probe", ".claude/worktrees/",
+                          "Claude Code's isolated worktrees; unignored, they dirty the "
+                          "checkout and block rollouts")
+
+
 CURSOR_BLANKET = {".cursor/", ".cursor", "/.cursor/", "/.cursor"}
 CURSOR_RULES = (
     "# Cursor: rendered output is tracked. Anything else Cursor writes here stays local -",
@@ -2262,6 +2270,7 @@ def rollout_target(name: str, cfg: dict, root: Path, defaults: dict, sha: str,
     ensure_scratch_ignored(repo, True)
     ensure_pycache_ignored(repo, True)
     ensure_claude_local_ignored(repo, True)
+    ensure_claude_worktrees_ignored(repo, True)
     ensure_cursor_tracked(repo, True)
     ensure_hooks_local(repo, True)
     orphans = find_orphans(repo, plan)
@@ -2675,6 +2684,7 @@ def main(argv: list[str] | None = None) -> int:
         changed += ensure_scratch_ignored(repo, write)
         changed += ensure_pycache_ignored(repo, write)
         changed += ensure_claude_local_ignored(repo, write)
+        changed += ensure_claude_worktrees_ignored(repo, write)
         changed += ensure_cursor_tracked(repo, write)
         changed += ensure_hooks_local(repo, write)
 

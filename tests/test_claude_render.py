@@ -375,6 +375,44 @@ class ClaudeOwnership(unittest.TestCase):
         self.assertEqual(found.returncode, 0)
 
 
+class ClaudeWorktreesIgnored(unittest.TestCase):
+    """Claude Code's isolated worktrees live under .claude/worktrees/; unignored, they dirty
+    the checkout and block rollouts."""
+
+    def ignored(self, repo: Path) -> bool:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        return subprocess.run(["git", "check-ignore", "-q", ".claude/worktrees/x/a.py"],
+                              cwd=repo, env=env, timeout=60).returncode == 0
+
+    def test_write_adds_the_ignore_and_keeps_existing_lines(self):
+        repo = init_repo(self)
+        (repo / ".gitignore").write_text("node_modules/", encoding="utf-8")
+        with mock.patch("builtins.print"):
+            self.assertEqual(sync.ensure_claude_worktrees_ignored(repo, write=True), 1)
+        self.assertTrue(self.ignored(repo))
+        text = (repo / ".gitignore").read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("node_modules/\n"))
+        self.assertIn("# Claude Code's isolated worktrees; unignored, they dirty the checkout "
+                      "and block rollouts\n.claude/worktrees/\n", text)
+
+    def test_check_reports_without_writing(self):
+        repo = init_repo(self)
+        with mock.patch("builtins.print"):
+            self.assertEqual(sync.ensure_claude_worktrees_ignored(repo, write=False), 1)
+        self.assertFalse((repo / ".gitignore").exists())
+
+    def test_a_repo_that_already_ignores_it_is_left_alone(self):
+        repo = init_repo(self)
+        (repo / ".gitignore").write_text(".claude/worktrees/\n", encoding="utf-8")
+        before = (repo / ".gitignore").read_text(encoding="utf-8")
+        self.assertEqual(sync.ensure_claude_worktrees_ignored(repo, write=True), 0)
+        self.assertEqual((repo / ".gitignore").read_text(encoding="utf-8"), before)
+
+    def test_both_rollout_paths_call_it(self):
+        source = Path(sync.__file__).read_text(encoding="utf-8")
+        self.assertEqual(source.count("ensure_claude_worktrees_ignored(repo,"), 2)
+
+
 class ToolSelection(unittest.TestCase):
     """A profile's top-level tools: list chooses which rows of TOOLS sync renders."""
 
