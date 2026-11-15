@@ -182,11 +182,12 @@ look optional.
 
 ## File headers
 
-- Every new file gets the full header including the ASCII art, except a ticket
-  or comment body drafted in `scratch/`, which is posted and goes with its workstream.
+- Every new file gets the full header - the metadata block, and the profile's
+  header art if it defines one - except a ticket or comment body drafted in
+  `scratch/`, which is posted and goes with its workstream.
 - The art is write-once: emit on create, ignore on read, skip on edit.
 - Update `Last Updated` on any modification.
-- No repo is exempt. The art is a signature, not decoration.
+- No repo is exempt.
 
 ---
 

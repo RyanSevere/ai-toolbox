@@ -109,10 +109,15 @@ It skips a target, reports it as failed, and continues with the next one, if
 that target:
 
 - is dirty,
-- is not on its manifest `branch` (default `main`), or
+- is not on its manifest `branch` (default `main`),
+- has no upstream, or its fetch fails, so whether it is current cannot be checked,
+- is behind its upstream. Run `git pull --ff-only` there first,
+- is ahead of its upstream by a commit the rollout did not make. Push or reset
+  that clone first. A commit an earlier rollout made and left local is not
+  counted, so a re-run with `--push` still pushes it,
 - has a changed path after rendering that is outside the plan, is not a removed
   orphan, and is not `.gitignore`. Nothing is committed in that case, and the
-  rendered files are left in place for review.
+  rendered files are left in place for review, or
 - has its own `.gitignore` hiding a file the render wrote, so that file would
   never be committed. `.cursor/` is exempt, because it is ignored by design.
   A Python `lib/` rule once hid `.githooks/lib/` this way.

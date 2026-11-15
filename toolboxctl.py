@@ -65,6 +65,7 @@ HERE = Path(__file__).resolve().parent
 PASS_THROUGH = ("flags", "setup", "gate-lists")
 GIT_TIMEOUT = 60
 PREVIEW_TIMEOUT = 600
+RENDER_TIMEOUT = 600
 # A preview renders nothing to commit, so no real source commit is stamped.
 PREVIEW_SHA = "0000000"
 DIFF_LINES = 40
@@ -177,6 +178,46 @@ def run_preview(core: Path, root: Path | None) -> int:
     return 1
 
 
+def render_command(core: Path) -> list[str]:
+    """The profile's own render, from the core on disk. The same line a person runs by hand."""
+    return [sys.executable, str(core / "sync.py"), "--profile", str(core.parent),
+            "--self", "--write"]
+
+
+def run_render(core: Path) -> int:
+    """Render the profile from the new core, in a child process, so the code on disk is
+    what runs. A failure, a timeout or a start failure is 1; the output is left for review."""
+    try:
+        code = subprocess.run(render_command(core), cwd=core.parent,
+                              timeout=RENDER_TIMEOUT).returncode
+    except subprocess.TimeoutExpired:
+        print(f"[ERROR] the render did not finish within {RENDER_TIMEOUT} seconds",
+              file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(f"[ERROR] the render could not start: {error}", file=sys.stderr)
+        return 1
+    if code != 0:
+        print(f"[ERROR] the render exited with {code}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def commit_core(profile: Path, old: str | None, new: str) -> int:
+    """Commit core/ and nothing else, as one change. The profile's git identity is the
+    profile's identity, which update checked before the swap."""
+    message = f"Update core from {old or 'an untagged release'} to {new}"
+    for step in (("add", "-A", "--", vendor.CORE_DIR),
+                 ("commit", "-m", message, "--", vendor.CORE_DIR)):
+        result = git(profile, *step)
+        if result.returncode != 0:
+            print(f"[ERROR] git {step[0]} failed, so core/ is swapped but not committed "
+                  f"and nothing was rendered: {(result.stderr or result.stdout).strip()}",
+                  file=sys.stderr)
+            return 1
+    return 0
+
+
 def restore_core(profile: Path, core: Path) -> int:
     """Put core/ back to what the profile's HEAD holds, then prove it matches VENDORED."""
     for step in (("restore", "--source=HEAD", "--staged", "--worktree", "--", vendor.CORE_DIR),
@@ -197,17 +238,18 @@ def restore_core(profile: Path, core: Path) -> int:
 
 
 def update(core: Path, tag: str | None, root: Path | None) -> int:
-    """Swap in a newer core, preview its render, and keep it only on a typed yes.
-    Rendering is not part of it yet."""
+    """Swap in a newer core, preview its render, and keep it only on a typed yes. A yes
+    commits core/ as one change, as the profile identity, then renders the profile from it."""
     profile = core.parent
     try:
         require_committed_core(profile)
+        sync.verify_identity(profile, sync.identity(sync.load_profile(profile)))
         record = vendor.check_core(core)
         chosen = choose_tag(core, tag)
     except UpdateUnknown as error:
         print(f"[UNKNOWN] {error}. Nothing was changed.", file=sys.stderr)
         return 3
-    except (UpdateError, vendor.VendorError) as error:
+    except (UpdateError, vendor.VendorError, sync.SyncError, OSError, yaml.YAMLError) as error:
         print(f"[ERROR] {error}", file=sys.stderr)
         return 1
     if chosen is None:
@@ -223,8 +265,14 @@ def update(core: Path, tag: str | None, root: Path | None) -> int:
     sys.stdout.flush()
     if not console_confirm():
         return restore_core(profile, core)
-    print(f"[OK] core/ is now {chosen}, not yet committed and not rendered. Commit core/ "
-          "as one change; rendering from it is not part of update yet.")
+    if commit_core(profile, record.tag, chosen) != 0:
+        return 1
+    if run_render(core) != 0:
+        print(f"[ERROR] core/ is committed at {chosen} but the profile was not rendered. "
+              f"Run by hand from {profile}: {' '.join(render_command(core))}", file=sys.stderr)
+        return 1
+    print(f"[OK] core/ is now {chosen}, committed as one change, and the profile is rendered "
+          "from it. The rendered output is left uncommitted for review.")
     return 0
 
 
@@ -293,8 +341,9 @@ def build_parser() -> argparse.ArgumentParser:
                                  "Reads core/ and the network; changes nothing")
     update_parser = sub.add_parser(
         "update", help="replace core/ with the newest or a named release and preview its "
-                       "render. Keeps it only after a typed yes; restores core/ from git "
-                       "otherwise. Commits and renders nothing")
+                       "render. After a typed yes it commits core/ as one change and renders "
+                       "the profile, leaving the rendered output uncommitted; otherwise it "
+                       "restores core/ from git and commits and renders nothing")
     update_parser.add_argument("tag", nargs="?", help="a vX.Y.Z release (default: the newest)")
     update_parser.add_argument("--root", type=Path, default=None,
                                help="folder holding the target repositories "
