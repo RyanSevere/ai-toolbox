@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/shape.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-14
+# Last Updated: 2026-11-15
 # Description: The tool-neutral half of the response checker.
 #              Parses a reply against the response shape, grades it, and walks
 #              back over finished turns to collect replies whose turn never ran
@@ -104,6 +104,10 @@ FULL_SECTIONS = {
 }
 CONDENSED_REQUIRED = ["summary", "recommendednext", "cameupwhiledoingit"]
 RECOMMENDED = re.compile(r"\(recommended\)", re.IGNORECASE)
+# The nested line naming the check behind a DC's premise. Matched on strip_md(...).lower().
+PREMISE_KEY = "premise checked:"
+UNCHECKED = re.compile(r"unchecked\b")
+UNCHECKED_REASON = re.compile(r"unchecked[\s\-–—:]*\w")
 NONE_THIS_TURN = "None this turn."
 LINES = "#lines"  # suffix: a section's raw lines outside fences, blank lines kept
 # The ledger file holds what the condensed reply no longer prints. Checking it is a
@@ -442,17 +446,33 @@ def check(header: list[str], sections: dict[str, list[dict]]) -> tuple[list[str]
         if "usecase" not in item["fields"]:
             findings.append(f"decisions: '{item['title'][:60]}' missing 'Use case'")
         marked = len(RECOMMENDED.findall("\n".join(item["lines"])))
-        if marked != 1:
-            findings.append(f"decisions: '{item['title'][:60]}' marks {marked} options "
+        title = item["title"][:60]
+        condensed = shape_of(sections) == "condensed"
+        nested = [strip_md(line).lower() for line in item["lines"][1:]]
+        premises = [line[len(PREMISE_KEY):].strip() for line in nested
+                    if line.startswith(PREMISE_KEY)]
+        # A premise line reading 'unchecked' is the one case where a DC may recommend
+        # nothing: it asks the fact instead. It relaxes 'exactly one' to 'at most one'.
+        unchecked = condensed and any(UNCHECKED.match(p) for p in premises)
+        if marked != 1 and not (unchecked and marked == 0):
+            findings.append(f"decisions: '{title}' marks {marked} options "
                             "recommended, exactly one is required")
         # Condensed only: the full shape carries its reasoning in its own blocks and its
         # checks are unchanged. The reasoning is owed so a false premise can be caught.
-        if shape_of(sections) == "condensed":
-            nested = [strip_md(line).lower() for line in item["lines"][1:]]
+        if condensed:
             for key, label in (("recommendation:", "recommendation"),
                                ("would change my answer:", "would change my answer")):
                 if not any(line.startswith(key) for line in nested):
-                    findings.append(f"decisions: '{item['title'][:60]}' missing '{label}'")
+                    findings.append(f"decisions: '{title}' missing '{label}'")
+            if marked and not premises:
+                findings.append(f"decisions: '{title}' missing 'premise checked'")
+            if unchecked and marked:
+                findings.append(f"decisions: '{title}' has 'premise checked: unchecked' "
+                                "beside a recommended option - recommend only a checked premise")
+            elif unchecked and not any(
+                    UNCHECKED.match(p) and UNCHECKED_REASON.match(p) for p in premises):
+                findings.append(f"decisions: '{title}' 'premise checked: unchecked' "
+                                "has no reason after it")
 
     # Spec rule 9: every entity carries an ID. A top-level entry without one used to be
     # dropped, or merged into the field above it, so the reply passed.

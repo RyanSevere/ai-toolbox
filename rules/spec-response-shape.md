@@ -277,10 +277,16 @@ In this order:
   items and standalone `Q` items. Each carries the full context needed to answer it
   in place, because the premises and claims it would once have been attached to
   are no longer printed. Each `DC` keeps its `Use case:` line, marks exactly one
-  option `(recommended)`, and carries two nested lines: `Recommendation:`, saying
-  why and the premise the reasoning rests on, and `Would change my answer:`. The
-  reasoning is owed because a recommendation can rest on a false premise, and the
-  second line names the fact that would show it.
+  option `(recommended)`, and carries three nested lines: `Recommendation:`, saying
+  why and the premise the reasoning rests on, `Would change my answer:`, and
+  `Premise checked:`. The reasoning is owed because a recommendation can rest on a
+  false premise: the second line names the fact that would show it, and the third
+  names the `path:line`, command or ticket that established the fact the
+  recommendation turns on, so an assumed premise cannot read as a checked one. When
+  no such check was made, write `Premise checked: unchecked - <why>` and recommend
+  no option: the `DC` then asks the fact, or says what would establish it, and may
+  mark no option `(recommended)`. An `unchecked` line beside a recommended option
+  is a finding.
 - **`## Operator steps`**, only when the operator has something to do: run a
   command, review a page, paste a result back. Items are `OS1`, `OS2`, and so on.
   A pull request waiting on the operator's merge is named by its full URL, every
@@ -335,13 +341,17 @@ header checks, the item-ID check and the caps apply to both.
 | Summary carries no pointer and is not exactly `None this turn.` | `summary: no pointer a reader could follow` |
 | A condensed `DC` has no `Recommendation:` line | `decisions: '<title>' missing 'recommendation'` |
 | A condensed `DC` has no `Would change my answer:` line | `decisions: '<title>' missing 'would change my answer'` |
+| A condensed `DC` with a recommended option has no `Premise checked:` line | `decisions: '<title>' missing 'premise checked'` |
+| A condensed `DC` has `Premise checked: unchecked` beside a recommended option, or with no reason after it | `decisions: '<title>' has 'premise checked: unchecked' beside a recommended option - recommend only a checked premise`, or `decisions: '<title>' 'premise checked: unchecked' has no reason after it` |
 | Recommended next or Came up has no item and no `None.` line | `<section>: empty - list an item or write 'None.'` |
 
 In both shapes every `DC` item marks exactly one option `(recommended)`, on any of
 its lines, case-insensitive. Otherwise it fails with `decisions: '<title>' marks
 <n> options recommended, exactly one is required`. The `Recommendation:` line in
-the full shape is the reasoning and is not counted. The two reasoning lines above
-are checked in the condensed shape only; the full shape's checks are unchanged.
+the full shape is the reasoning and is not counted. The three reasoning lines above
+are checked in the condensed shape only; the full shape's checks are unchanged. The
+one exception to "exactly one" is a condensed `DC` whose `Premise checked:` line
+reads `unchecked`: it may mark none, and still not more than one.
 
 ### A reply with no operator message before it
 
@@ -552,6 +562,7 @@ own section.
     - b. Fail loudly - reply carries a visible FAILED banner
   - Recommendation: (b), because a quiet annotation is skippable and the whole point is that degradation should be loud
   - Would change my answer: if false positives turn out common, a banner becomes noise and trains you to ignore it
+  - Premise checked: the condensed-shape rule above, which reads "degradation should be loud" as a requirement
 ```
 
 The use-case line is what makes the question answerable without domain
