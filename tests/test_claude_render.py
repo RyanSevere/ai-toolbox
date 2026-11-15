@@ -158,6 +158,16 @@ class RuleTools(unittest.TestCase):
                     if "## Handing off" in text.splitlines()]
         self.assertEqual(carriers, [".claude/rules/claude-code.md"])
 
+    def test_the_claude_code_rule_carries_the_tangents_section_for_claude_only(self):
+        """Intent: Claude Code's rendered rule tells the session to send a tangent to a
+        linked side session, and no other tool's render carries that section."""
+        defaults = {**DEFAULTS, "tier2": list(DEFAULTS.get("tier2", [])) + ["claude-code"]}
+        plan = plan_for_defaults(defaults)
+        self.assertIn("## Tangents", plan[".claude/rules/claude-code.md"].splitlines())
+        carriers = [path for path, text in plan.items()
+                    if "## Tangents" in text.splitlines()]
+        self.assertEqual(carriers, [".claude/rules/claude-code.md"])
+
     def test_the_claude_code_rule_quotes_the_reply_marker_exactly(self):
         sys.path.insert(0, str(sync.ROOT / "responses"))
         import claude
