@@ -13,6 +13,8 @@ argument-hint: append, check or start, and the exchange file
 
 # Coordinating through an exchange log
 
+In Claude Code's desktop app, sessions message each other directly instead, as the Claude Code rule says; this skill is for sessions that can't.
+
 An exchange is how chats that are live at the same time talk to each other. A
 handoff seed is how one session passes a workstream to the next: written once,
 read once, marked picked up, and removed with its workstream's directory. Seeds

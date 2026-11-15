@@ -50,6 +50,13 @@ If a UI is not mirrored in the remote session, do not use it.
 - Outside the desktop app, end with the pickup prompt in chat, as the handoff skill says.
 - On the first use, check that the new session received the prompt and the folders, and report it if not.
 
+## Other sessions
+
+- Message another session directly, by the session id `list_sessions` reports. A display name or transcript file name does not resolve. Never start an exchange log or a watcher.
+- No session to message: tell the operator. A Cursor chat can't receive a message: use an exchange for that pair only.
+- A send that reports "queued" or "not confirmed read" is not received. Check the other session's next STATUS before relying on it.
+- An agreement that changes a ticket's plan, scope or ownership: the session that made it records it as a comment on the ticket.
+
 ## Tangents
 
 - A tangent is work outside the current task: a finding, a side question, a fix noticed in passing. Name it, then give it a session of its own, rather than following it here.
