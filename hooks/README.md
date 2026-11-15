@@ -105,6 +105,39 @@ are not covered.
 **Not yet verified live.** Library tests feed it Cursor's and Claude Code's payload shapes.
 It renders for Cursor only; no adapter registers it in Claude Code yet.
 
+### `no-generated-edits` - agent hook on `file.write.before`
+
+A `permission` hook, so it fails closed. Denies an agent write to a file that carries the
+generated-file stamp, because the next render overwrites the edit and the pre-push
+self-render gate catches it only after the session has built on it.
+
+**How it decides.** It resolves the payload's `path` (absolute, or against `cwd`), allows a
+path that does not exist (a new file), and reads the file's first 40 lines, the window the
+gate reads, as UTF-8 with replacement. It denies when they hold the *whole* stamp,
+`generated from <source>[@<sha>] - edit the source, not this file`. The opening alone is
+not enough: the example profile quotes `generated from <repo>@<sha>` in a comment, and
+`sync.STAMP_RE` would deny an edit to that source file. The hook carries its own pattern,
+because a rendered hook cannot import `sync.py`, and a test ties it to `sync.stamp()` in both
+forms. The deny names the file and the stamp's source repository, says the file is overwritten
+at the next render, and says to edit the source there and re-render. It does not map a
+rendered file back to the source file it came from.
+
+**Denied as unreadable:** an empty or non-text path, a directory, a read that raises, and a
+relative path when the payload has no usable `cwd`. A file that is not UTF-8 is decoded with
+replacement, so a binary file with no stamp is allowed. A file with two stamps is denied once,
+naming the first. `AI_TOOLBOX_HOOKS=off` allows everything.
+
+**Not covered:** a shell write to a stamped file (that is command-line parsing), deleting a
+stamped file, and Claude Code's `NotebookEdit`, whose path key is `notebook_path`.
+
+**Not yet verified live.** Claude Code is covered by tests that feed its documented
+`PreToolUse` payload, and the hook is not registered there yet. For Cursor, the key that
+holds a `Write`'s target path is not documented: the library reads `tool_input.file_path`
+provisionally, and a captured `preToolUse` payload for an agent file edit must confirm that
+key, and that an edit of an existing file reports the tool name `Write`, before the hook is
+enabled anywhere. If either is wrong, every agent `Write` in a repository with hooks on is
+denied for the missing field.
+
 ### `no-shell-file-edits` - Cursor hook, not shipped
 
 **Not rendered.** In Cursor it denied every agent `git commit` with "Blocked:
@@ -203,11 +236,6 @@ class of statement that can be wrong.
 
 ## Not yet built
 
-**Generated files are read-only.** Refuse edits to any file carrying the
-`generated from <source>` stamp and point at the source instead. Protects the
-mechanism from its most likely decay path. Needs `preToolUse` with a `Write`
-matcher, which is untested here.
-
 **No-emoji.** Already enforced by lint in some repos. Consolidating into one
 checker would remove the per-repo scripts.
 
@@ -297,17 +325,18 @@ tools: [cursor, copilot]   # optional; default is every adapter
   its adapter is built.
 
   **Not verified live:** Cursor's `Write` matcher on `preToolUse`. It renders per the
-  table and is checked by the first hook that uses it.
+  table, and `no-generated-edits` is the hook that uses it; its first live run checks it.
 - **A shared runtime library**, `hooks/lib/hookio.py`, rendered to
   `.cursor/hooks/lib/` whenever any hook renders. A hook puts the folder beside its
   own on `sys.path` and calls `run_permission(name, event, decide)` or
   `run_observer(name, event, observe)`. The library reads stdin as bytes (BOM and
   UTF-16 handled), hands the hook a neutral payload - `event`, the event's fields
-  (`command` and `cwd` for `shell.before`), `model`, `model_id`, `model_params`,
-  and `raw` - and writes the tool's output. An absent optional field is `None`; an
-  absent required one (`command`) is not passed on. Input it cannot parse denies a
-  permission hook and is skipped by an observer. Only `shell.before`'s fields are
-  mapped; each other event's are mapped when its first hook is seen live.
+  (`command` and `cwd` for `shell.before`, `path` and `cwd` for `file.write.before`),
+  `model`, `model_id`, `model_params`, and `raw` - and writes the tool's output. An
+  absent optional field is `None`; an absent required one (`command`, `path`) is not
+  passed on. Input it cannot parse denies a permission hook and is skipped by an
+  observer. Only `shell.before`'s and `file.write.before`'s fields are mapped; each other
+  event's are mapped when its first hook lands.
   `no-shell-file-edits` keeps its own reader until it is fixed.
 - **The tool is an argument of the hook's command line**, `--tool <name>` or
   `--tool=<name>`, passed by the adapter that renders the hook. The library keeps a
@@ -321,8 +350,15 @@ tools: [cursor, copilot]   # optional; default is every adapter
   | `cursor` | top-level `command` | top-level `cwd` | `{"permission": "allow"}` | `{"permission": "deny", "user_message": ..., "agent_message": ...}` |
   | `claude` | `tool_input.command` | top-level `cwd` | no output, exit 0 (Claude Code's normal permission flow decides) | `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": <agent message>}}`, exit 0 |
 
-  Claude Code's shapes are from its hooks documentation (`PreToolUse` on the `Bash`
-  tool); no Claude Code hook is rendered yet. A required field that is absent, or a
+  For `file.write.before` the neutral fields are `path` and `cwd`:
+
+  | Tool | `path` | `cwd` |
+  |---|---|---|
+  | `cursor` | `tool_input.file_path` - **unverified**: Cursor documents no key for a `Write`'s target, so this is Claude Code's, until a captured `preToolUse` payload confirms or corrects it | top-level `cwd` |
+  | `claude` | `tool_input.file_path`, absolute, for `Write` and `Edit` | top-level `cwd` |
+
+  Claude Code's shapes are from its hooks documentation (`PreToolUse` on the `Bash`,
+  `Write` and `Edit` tools); no Claude Code hook is rendered yet. A required field that is absent, or a
   `tool_input` that is not an object, denies a permission hook with a message naming
   the field, and skips an observer. An empty-string command is a command. An unknown
   tool has no verdict shape, so a permission hook denies it by exit code 2 with the

@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/.cursor/hooks/lib/hookio.py
 # Created by: Ryan Severe
 # Created: 2026-11-06
-# Last Updated: 2026-11-13
+# Last Updated: 2026-11-15
 # Description: Shared runtime library for agent hooks. Reads the
 #              tool's payload as bytes, hands the hook a neutral payload with
 #              the model fields, writes the tool's output shape, and honours
@@ -57,14 +57,23 @@ MODEL_FIELDS = ("model", "model_id", "model_params")
 DEFAULT_TOOL = "cursor"  # no --tool argument: hooks rendered before the argument existed
 TOOL_ARGUMENT = "--tool"
 # Per neutral event, the neutral fields a hook must have. An absent one denies a permission
-# hook and skips an observer; a present null or empty string is a value. Only shell.before has
-# a hook yet; the others are mapped when their first hook lands and its payload is seen live.
-REQUIRED_FIELDS = {"shell.before": ("command",)}
+# hook and skips an observer; a present null or empty string is a value. shell.before and
+# file.write.before have hooks; the others are mapped when their first hook lands and its
+# payload is seen live. file.write.before is mapped from documentation: Claude Code documents
+# tool_input.file_path for Write and Edit; Cursor's preToolUse documents no key for a Write's
+# path, so its entry is the same path, provisional until a captured payload confirms it.
+REQUIRED_FIELDS = {"shell.before": ("command",), "file.write.before": ("path",)}
 # Per tool, per neutral event, where each neutral field sits in that tool's payload: a path of
 # keys from the top. Fields not required here are None when absent.
 FIELD_PATHS = {
-    "cursor": {"shell.before": {"command": ("command",), "cwd": ("cwd",)}},
-    "claude": {"shell.before": {"command": ("tool_input", "command"), "cwd": ("cwd",)}},
+    "cursor": {
+        "shell.before": {"command": ("command",), "cwd": ("cwd",)},
+        "file.write.before": {"path": ("tool_input", "file_path"), "cwd": ("cwd",)},  # unverified
+    },
+    "claude": {
+        "shell.before": {"command": ("tool_input", "command"), "cwd": ("cwd",)},
+        "file.write.before": {"path": ("tool_input", "file_path"), "cwd": ("cwd",)},
+    },
 }
 
 Decide = Callable[[dict], "tuple[str, str] | None"]

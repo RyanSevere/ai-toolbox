@@ -752,6 +752,32 @@ class CursorHooks(unittest.TestCase):
         self.assertIn(".cursor/hooks/no-destructive-shell/hook.py", plan)
         self.assertIn(".cursor/hooks/lib/hookio.py", plan)
 
+    def test_the_real_generated_edits_hook_renders_with_the_write_matcher_fail_closed(self):
+        plan = build_plan("t", self.ON, DEFAULTS, SHA, MANIFEST)
+        mine = [e for e in self.entries(plan, "preToolUse")
+                if "no-generated-edits" in e["command"]]
+        self.assertEqual(len(mine), 1)
+        self.assertEqual((mine[0]["matcher"], mine[0]["failClosed"]), ("Write", True))
+        self.assertTrue(mine[0]["command"].endswith("--tool cursor"))
+        self.assertIn(".cursor/hooks/no-generated-edits/hook.py", plan)
+
+    def test_the_generated_edits_pattern_agrees_with_the_stamp_sync_writes(self):
+        """Intent: a rendered hook cannot import sync.py, so its pattern is its own and this
+        ties it to sync.stamp(). It wants the whole stamp: STAMP_RE alone matches the example
+        profile's comment that quotes the opening, which would deny edits to a source file."""
+        spec = importlib.util.spec_from_file_location(
+            "no_generated_edits", sync.HOOKS_DIR / "no-generated-edits" / "hook.py")
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        with mock.patch.object(sync, "_stamp_source", "profile-x"):
+            for sha in (SHA, None):
+                with self.subTest(sha=sha):
+                    self.assertEqual(hook.stamp_source(sync.stamp(sha)), "profile-x")
+        example = (sync.ROOT / "examples" / "profile" / "profile.yaml").read_text(encoding="utf-8")
+        head = "\n".join(example.splitlines()[:hook.HEAD_LINES])
+        self.assertIsNotNone(sync.STAMP_RE.search(head))
+        self.assertIsNone(hook.stamp_source(head))
+
     def test_owner_placeholder_is_filled(self):
         plan = self.plan({"guard/hook.yaml": self.OWNED})
         self.assertEqual([e["command"] for e in self.entries(plan)],
