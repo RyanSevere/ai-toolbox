@@ -168,6 +168,16 @@ class RuleTools(unittest.TestCase):
                     if "## Tangents" in text.splitlines()]
         self.assertEqual(carriers, [".claude/rules/claude-code.md"])
 
+    def test_the_claude_code_rule_carries_the_other_sessions_section_for_claude_only(self):
+        """Intent: Claude Code's rendered rule tells the session to message other
+        sessions directly, and no other tool's render carries that section."""
+        defaults = {**DEFAULTS, "tier2": list(DEFAULTS.get("tier2", [])) + ["claude-code"]}
+        plan = plan_for_defaults(defaults)
+        self.assertIn("## Other sessions", plan[".claude/rules/claude-code.md"].splitlines())
+        carriers = [path for path, text in plan.items()
+                    if "## Other sessions" in text.splitlines()]
+        self.assertEqual(carriers, [".claude/rules/claude-code.md"])
+
     def test_the_claude_code_rule_carries_the_detach_step_for_claude_only(self):
         """Intent: Claude Code's rendered rule tells the new session to detach itself
         before it picks up, and no other rendered file carries that step."""
