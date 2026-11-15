@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_check_response.py
 # Created by: Ryan Severe
 # Created: 2026-09-23
-# Last Updated: 2026-11-14
+# Last Updated: 2026-11-15
 # Description: Transcript fixtures for responses/check_response.py, its shared
 #              shape core and its per-tool adapters. Every case here was
 #              found by using the script and verified by hand first; the tests
@@ -130,6 +130,7 @@ The live state matches the seed: `git status -sb` printed "## main...origin/main
     - b. example-2 first
   - Recommendation: (a), because it unblocks example-2, assuming example-2 is next
   - Would change my answer: example-2 turning out to have no dependency on example-1
+  - Premise checked: `git log -1` on example-2 shows it depends on example-1
 
 ## Operator steps
 
@@ -1493,6 +1494,56 @@ class CondensedShape(TranscriptCase):
             "example-1\n", "")
         self.assertEqual(self.findings(text),
                          ["decisions: 'DC1 Pick the next ticket' missing 'would change my answer'"])
+
+    PREMISE = ("  - Premise checked: `git log -1` on example-2 shows it depends on example-1\n")
+    UNCHECKED = "  - Premise checked: unchecked - nobody has read example-2's manifest yet\n"
+
+    def test_condensed_decision_without_a_premise_line_fails(self):
+        text = CONDENSED_CLEAN.replace(self.PREMISE, "")
+        self.assertEqual(self.findings(text),
+                         ["decisions: 'DC1 Pick the next ticket' missing 'premise checked'"])
+
+    def test_condensed_unchecked_beside_a_recommended_option_fails(self):
+        text = CONDENSED_CLEAN.replace(self.PREMISE, self.UNCHECKED)
+        found = self.findings(text)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("decisions: 'DC1 Pick the next ticket'", found[0])
+        self.assertIn("unchecked", found[0])
+
+    def test_condensed_unchecked_with_no_recommended_option_passes(self):
+        text = CONDENSED_CLEAN.replace(self.PREMISE, self.UNCHECKED).replace(
+            " (recommended)", "")
+        self.assertEqual(self.findings(text), [])
+
+    def test_condensed_checked_premise_passes(self):
+        self.assertEqual(self.findings(CONDENSED_CLEAN), [])
+
+    def test_condensed_premise_line_matches_in_any_case_bold_and_position(self):
+        text = CONDENSED_CLEAN.replace(self.PREMISE, "")
+        text = text.replace("  - Recommendation:",
+                            "  - **PREMISE CHECKED:** `git log -1` shows the dependency\n"
+                            "  - Recommendation:")
+        self.assertEqual(self.findings(text), [])
+
+    def test_condensed_two_premise_lines_pass(self):
+        text = CONDENSED_CLEAN.replace(self.PREMISE, self.PREMISE + self.PREMISE)
+        self.assertEqual(self.findings(text), [])
+
+    def test_condensed_unchecked_without_a_reason_is_malformed(self):
+        for bare in ("unchecked", "Unchecked -", "unchecked - "):
+            with self.subTest(bare=bare):
+                text = CONDENSED_CLEAN.replace(
+                    self.PREMISE, f"  - Premise checked: {bare}\n").replace(" (recommended)", "")
+                found = self.findings(text)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("decisions: 'DC1 Pick the next ticket'", found[0])
+                self.assertIn("reason", found[0])
+
+    def test_condensed_no_recommended_option_without_unchecked_fails(self):
+        text = CONDENSED_CLEAN.replace(" (recommended)", "")
+        found = self.findings(text)
+        self.assertIn("decisions: 'DC1 Pick the next ticket' marks 0 options recommended, "
+                      "exactly one is required", found)
 
     def test_summary_wrapped_over_two_lines_passes(self):
         text = CONDENSED_CLEAN.replace(

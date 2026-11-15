@@ -9,6 +9,8 @@
 #              denylist and the core-names list. Writes the two files named and
 #              prints counts, never a pattern - the lists are secret-adjacent
 #              and the person running this may be an agent whose output is logged.
+#              Run beside a VENDORED record, it leaves the core's own repository
+#              name off the leak list, since the core names itself throughout.
 ################################################################################
 # ===========================================================================
 #
@@ -51,6 +53,9 @@ import sys
 from pathlib import Path
 
 import sync
+import vendor
+
+HERE = Path(__file__).resolve().parent
 
 # The gates match each line as a fixed string, ignoring case, after trimming it and
 # dropping blank lines and lines that start with #. So nothing is escaped, and an entry
@@ -95,8 +100,12 @@ def _issue_keys(manifest: dict) -> list[str]:
     return keys
 
 
-def build(manifest: dict) -> tuple[list[str], list[str]]:
-    """The leak denylist and the core-names list, each sorted and without repeats."""
+def build(manifest: dict, core_repo: str | None = None) -> tuple[list[str], list[str]]:
+    """The leak denylist and the core-names list, each sorted and without repeats.
+
+    A core names itself throughout, so when `core_repo` is given every leak entry equal to it,
+    ignoring case, is left out, from whichever source it came.
+    """
     src = manifest.get("source") or {}
     if not isinstance(src.get("repo"), str) or not src["repo"].strip():
         raise sync.SyncError("the profile has no source.repo, so a list built from it would "
@@ -118,6 +127,9 @@ def build(manifest: dict) -> tuple[list[str], list[str]]:
     leak.update(_entries(manifest, "leak_extra"))
 
     core_names = {source_repo} | ({profile_name} if profile_name else set())
+    if core_repo:
+        own = core_repo.strip().lower()
+        leak = {entry for entry in leak if entry.lower() != own}
     return sorted(leak - {""}), sorted(core_names - {""})
 
 
@@ -126,7 +138,17 @@ def _write(path: Path, entries: list[str]) -> None:
     path.write_bytes("".join(f"{entry}\n" for entry in entries).encode("utf-8"))
 
 
-def main(argv: list[str] | None = None) -> int:
+def _core_repo(core: Path) -> str | None:
+    """The repository name the vendored record names, or None when there is no VENDORED.
+
+    A VENDORED that exists but cannot be read raises vendor.VendorError, never None.
+    """
+    if not (core / vendor.VENDORED).exists():
+        return None
+    return vendor.read_record(core).source.partition("/")[2]
+
+
+def main(argv: list[str] | None = None, core: Path = HERE) -> int:
     parser = argparse.ArgumentParser(
         prog="gate_lists.py",
         description="Write the one-way gate pattern files from profile.yaml. Writes the two "
@@ -140,14 +162,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         manifest = sync.load_profile(sync.resolve_profile(args.profile))
-        leak, core_names = build(manifest)
-    except sync.SyncError as exc:
+        core_repo = _core_repo(core)
+        leak, core_names = build(manifest, core_repo)
+        dropped = core_repo is not None and len(build(manifest)[0]) != len(leak)
+    except (sync.SyncError, vendor.VendorError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
     _write(args.leak, leak)
     _write(args.core_names, core_names)
+    note = f", leaving out the core's own name ({core_repo})" if dropped else ""
     print(f"[OK] wrote {len(leak)} leak pattern(s) to {args.leak} and "
-          f"{len(core_names)} core name(s) to {args.core_names}")
+          f"{len(core_names)} core name(s) to {args.core_names}{note}")
     return 0
 
 
