@@ -3967,5 +3967,18 @@ class ProfileModules(unittest.TestCase):
         self.assertIn(str(self.profile / "seeds" / "scripts"), str(ctx.exception))
 
 
+class CoreRulesCarryNoHeaderArt(unittest.TestCase):
+    def test_no_core_rule_holds_the_art(self):
+        """Intent: the core's rules name no one's signature art. Art belongs to
+        the profile that renders the rules, so a profile with none is not told to
+        carry any. One line of the art stands for the whole block."""
+        art_line = "7R$$$$$$$$g"
+        rules = sorted((sync.ROOT / "rules").glob("*.md"))
+        self.assertTrue(rules, "no rules found, so the check proves nothing")
+        holders = [rule.name for rule in rules
+                   if art_line in rule.read_text(encoding="utf-8")]
+        self.assertEqual(holders, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
