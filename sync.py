@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-14
-# Last Updated: 2026-11-14
+# Last Updated: 2026-11-15
 # Description: Renders the core and a profile's seeds into a consuming repository's
 #              per-tool formats and stamps each output with the source SHA.
 #              Dry-run by default; --write applies. Never writes Tier 3.
@@ -1698,6 +1698,9 @@ RENDER_DIRS = (
     FACTORY_DIR,
     FACTORY_SKILLS_DIR,
 )
+# A workflow never loads as a rule, and repositories keep their own CI beside the
+# rendered workflows, so find_foreign does not report anything under these.
+FOREIGN_CHECK_SKIPS = (".github/workflows",)
 # A stamp's prefix from an arbitrary source. Detection uses is_stamped, which accepts any
 # source name, so this only stands in for a file some earlier render left behind.
 STAMP_MARKER = "generated from some-profile@"
@@ -1773,6 +1776,8 @@ def find_foreign(repo: Path, plan: dict[str, str]) -> list[str]:
     for path in _rendered_candidates(repo):
         rel = path.relative_to(repo).as_posix()
         if rel in plan:
+            continue
+        if any(rel == skip or rel.startswith(skip + "/") for skip in FOREIGN_CHECK_SKIPS):
             continue
         if not is_stamped(path.read_text(encoding="utf-8")):
             foreign.append(rel)

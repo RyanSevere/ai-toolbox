@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-14
+# Last Updated: 2026-11-15
 # Description: Tests for sync.py - the renderer that decides what every AI
 #              session in the estate reads. Covers build_plan over every real
 #              manifest target, exclude validation, the hand-owned guard, stamp
@@ -651,6 +651,28 @@ class OrphansAndForeign(unittest.TestCase):
     def test_unstamped_file_is_foreign_never_orphan(self):
         self.assertEqual(sync.find_foreign(self.repo, self.plan),
                          [".github/instructions/mine.instructions.md"])
+
+    def test_a_hand_written_workflow_is_not_foreign(self):
+        """Intent: a workflow never loads as a rule, so a repository's own CI is
+        not reported as a file nobody should touch."""
+        wf = self.repo / ".github" / "workflows" / "own-ci.yml"
+        wf.parent.mkdir(parents=True)
+        wf.write_text("name: own\n", encoding="utf-8")
+        self.assertNotIn(".github/workflows/own-ci.yml", sync.find_foreign(self.repo, self.plan))
+
+    def test_a_hand_written_rule_file_is_still_foreign(self):
+        """Intent: skipping workflows does not hide a hand-written file in a rule directory."""
+        hand = self.repo / ".cursor" / "rules" / "hand.mdc"
+        hand.parent.mkdir(parents=True)
+        hand.write_text("hand written\n", encoding="utf-8")
+        self.assertIn(".cursor/rules/hand.mdc", sync.find_foreign(self.repo, self.plan))
+
+    def test_a_stamped_workflow_outside_the_plan_is_still_an_orphan(self):
+        """Intent: a rendered workflow that left the plan is still removed."""
+        wf = self.repo / ".github" / "workflows" / "gone.yml"
+        wf.parent.mkdir(parents=True)
+        wf.write_text(f"# {sync.STAMP_MARKER}x\n", encoding="utf-8")
+        self.assertIn(".github/workflows/gone.yml", sync.find_orphans(self.repo, self.plan))
 
     def test_retired_unstampable_file_is_an_orphan(self):
         """A file that cannot carry a stamp is retired by path."""
