@@ -273,9 +273,9 @@ class CheckCore(unittest.TestCase):
     def test_crlf_on_disk_only_is_named_as_line_endings(self):
         """Intent: a clone checked out before .gitattributes keeps CRLF on disk. The
         refusal says line endings and gives the repair, not an edit."""
-        core = make_core(self, {"sync.py": b"a\nb\n", "rules/c.md": b"c\n"})
+        core = make_core(self, {"sync.py": b"a\nb\n", "rules/c.md": b"c\nd\n"})
         (core / "sync.py").write_bytes(b"a\r\nb\r\n")
-        (core / "rules/c.md").write_bytes(b"c\r\n")
+        (core / "rules/c.md").write_bytes(b"c\r\nd\n")
         with offline(), self.assertRaises(vendor.VendorError) as caught:
             vendor.check_core(core)
         message = str(caught.exception)
