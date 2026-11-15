@@ -160,6 +160,28 @@ class Build(unittest.TestCase):
         self.assertIn("spaced", leak)
 
 
+class CoreOwnName(unittest.TestCase):
+    def test_the_core_repo_is_left_off_the_leak_list(self):
+        """Intent: the core names itself throughout, so its own repository name is never on
+        its leak list, whether the profile lists it as personal, in leak_extra, or in another
+        case. Other personal names stay."""
+        for changes in ({"personal": ["example-core", "alpha"]},
+                        {"personal": ["EXAMPLE-Core", "alpha"]},
+                        {"personal": ["alpha"], "leak_extra": ["example-core"]}):
+            with self.subTest(changes=changes):
+                leak, names = gate_lists.build(profile(**changes), core_repo="example-core")
+                self.assertNotIn("example-core", [entry.lower() for entry in leak])
+                self.assertIn("alpha", leak)
+                self.assertEqual(names, ["alpha-core", "exa"])
+
+    def test_without_a_core_repo_the_name_stays_on_the_list(self):
+        """Intent: in the core's own source repository there is no vendored record, so
+        nothing is left out and the list is as it was."""
+        leak, _ = gate_lists.build(profile(personal=["example-core", "alpha"]))
+        self.assertIn("example-core", leak)
+        self.assertIn("alpha", leak)
+
+
 class Main(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -167,18 +189,56 @@ class Main(unittest.TestCase):
         self.dir = Path(tmp.name)
         self.leak = self.dir / "leak.txt"
         self.names = self.dir / "core-names.txt"
+        self.core = self.dir / "core"
+        self.core.mkdir()
         self.write_profile(PROFILE)
 
     def write_profile(self, data: dict) -> None:
         (self.dir / "profile.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    def write_vendored(self, text: str) -> None:
+        (self.core / "VENDORED").write_bytes(text.encode("utf-8"))
 
     def run_main(self, *extra: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         argv = ["--profile", str(self.dir), "--leak", str(self.leak),
                 "--core-names", str(self.names), *extra]
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = gate_lists.main(argv)
+            code = gate_lists.main(argv, core=self.core)
         return code, out.getvalue(), err.getvalue()
+
+    def test_a_vendored_core_leaves_its_own_name_off_the_written_list(self):
+        """Intent: run beside a VENDORED record, main reads the core's repository name from
+        it, leaves that name off the leak file, and says so in words."""
+        self.write_profile(profile(personal=["example-core", "alpha"]))
+        self.write_vendored(
+            "source=example-owner/example-core\ntag=v1.2.3\nsha=" + "0" * 40
+            + "\ncontent-hash=sha256:" + "0" * 64 + "\n")
+        code, out, err = self.run_main()
+        self.assertEqual(code, 0, err)
+        written = self.leak.read_text(encoding="utf-8").splitlines()
+        self.assertNotIn("example-core", written)
+        self.assertIn("alpha", written)
+        self.assertIn("leaving out the core's own name (example-core)", out)
+
+    def test_without_a_vendored_record_nothing_is_left_out(self):
+        """Intent: in the core's own source repository there is no VENDORED, and the name
+        stays on the list, with no mention of leaving anything out."""
+        self.write_profile(profile(personal=["example-core", "alpha"]))
+        code, out, err = self.run_main()
+        self.assertEqual(code, 0, err)
+        self.assertIn("example-core", self.leak.read_text(encoding="utf-8").splitlines())
+        self.assertNotIn("leaving out", out)
+
+    def test_a_malformed_vendored_record_is_refused_and_writes_nothing(self):
+        """Intent: a VENDORED that exists but cannot be read is refused, never read as no
+        record, so no list that would refuse the core's own history is written."""
+        self.write_vendored("this is not a record\n")
+        code, out, err = self.run_main()
+        self.assertNotEqual(code, 0)
+        self.assertIn("[ERROR]", err)
+        self.assertFalse(self.leak.exists())
+        self.assertFalse(self.names.exists())
 
     def test_it_writes_one_entry_per_line_and_prints_only_counts(self):
         """Intent: both files hold one entry per line with a trailing newline, as UTF-8 with
