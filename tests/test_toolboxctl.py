@@ -212,6 +212,7 @@ class Arguments(Fixture):
             toolboxctl.main(["--help"], core=self.core)
         text = " ".join(out.getvalue().split())
         for command, consequence in (("version", "reads only"), ("check", "changes nothing"),
+                                     ("update", "commits core/"),
                                      ("flags", "after a typed yes"), ("setup", "profile.yaml"),
                                      ("gate-lists", "never patterns")):
             with self.subTest(command=command):
@@ -228,7 +229,9 @@ class UpdateFixture(unittest.TestCase):
         self.profile = Path(tmp.name) / "profile"
         self.core = self.profile / vendor.CORE_DIR
         self.core.mkdir(parents=True)
-        (self.profile / "profile.yaml").write_text("targets: {}\n", encoding="utf-8")
+        (self.profile / "profile.yaml").write_text(
+            "identity:\n  name: Example Person\n  email: person@example.invalid\ntargets: {}\n",
+            encoding="utf-8")
         (self.core / "sync.py").write_text("print('v1.2.3')\n", encoding="utf-8")
         (self.core / vendor.GITATTRIBUTES).write_bytes(vendor.GITATTRIBUTES_TEXT.encode())
         self.record = vendor.Record(SOURCE, "v1.2.3", SHA, vendor.content_hash(self.core))
@@ -254,10 +257,15 @@ class UpdateFixture(unittest.TestCase):
         return 0
 
     def run_update(self, *argv: str, answer: bool = True, preview_code: int = 0,
-                   vendor_report=None) -> tuple[int, str, str]:
+                   render_code: int = 0, vendor_report=None) -> tuple[int, str, str]:
         def preview(core: Path, root: Path | None) -> int:
             self.events.append("preview")
             return preview_code
+
+        def render(core: Path) -> int:
+            self.events.append("render")
+            self.tree_at_render = git(self.profile, "status", "--porcelain", "--", "core")
+            return render_code
 
         def confirm() -> bool:
             self.events.append("confirm")
@@ -267,6 +275,7 @@ class UpdateFixture(unittest.TestCase):
         reporter = vendor_report or self.fake_vendor
         with mock.patch.object(vendor, "vendor_report", side_effect=reporter), \
                 mock.patch.object(toolboxctl, "run_preview", side_effect=preview), \
+                mock.patch.object(toolboxctl, "run_render", side_effect=render), \
                 mock.patch.object(toolboxctl, "console_confirm", side_effect=confirm), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = toolboxctl.main(["update", *argv], core=self.core)
@@ -332,7 +341,7 @@ class UpdateFlow(UpdateFixture):
         anything is committed: it shows the difference, then asks."""
         with self.newer("v1.4.0", "v1.3.0"):
             self.run_update()
-        self.assertEqual(self.events, [f"vendor {SOURCE}@v1.4.0", "preview", "confirm"])
+        self.assertEqual(self.events[:3], [f"vendor {SOURCE}@v1.4.0", "preview", "confirm"])
 
     def test_a_named_tag_is_vendored_without_an_update_lookup(self):
         """Intent: update [tag]: --vendor-core at the newest or a named tag."""
@@ -358,14 +367,85 @@ class UpdateFlow(UpdateFixture):
         self.assertNotIn("confirm", self.events)
         self.assert_core_is_committed_one()
 
-    def test_a_yes_keeps_the_new_core_uncommitted(self):
-        """Intent: a yes keeps the new core
-        and says it is not yet committed or rendered."""
+    def test_a_yes_commits_core_alone_as_the_profile_identity_then_renders(self):
+        """Intent: a yes commits core/ as one change, as the profile
+        identity, with a message naming the old and new tag, then renders from the
+        clean tree. Anything else staged in the profile stays out of the commit."""
+        (self.profile / "other.txt").write_text("staged elsewhere\n", encoding="utf-8")
+        git(self.profile, "add", "other.txt")
         with self.newer("v1.3.0"):
-            code, out, _ = self.run_update(answer=True)
-        self.assertEqual(code, 0)
+            code, out, err = self.run_update(answer=True)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.events[-2:], ["confirm", "render"])
+        self.assertEqual(self.tree_at_render, "", "the render ran before core/ was committed")
         self.assertTrue((self.core / "added.py").exists())
-        self.assertIn("not yet committed", out)
+        self.assertEqual(git(self.profile, "log", "-1", "--format=%an|%ae|%cn|%ce"),
+                         "Example Person|person@example.invalid|Example Person|"
+                         "person@example.invalid")
+        message = git(self.profile, "log", "-1", "--format=%B")
+        self.assertIn("v1.2.3", message)
+        self.assertIn("v1.3.0", message)
+        files = git(self.profile, "show", "--name-only", "--format=", "HEAD").split()
+        self.assertTrue(files and all(f.startswith("core/") for f in files), files)
+        self.assertEqual(git(self.profile, "diff", "--cached", "--name-only"), "other.txt")
+        self.assertIn("committed", out)
+        self.assertIn("rendered", out)
+
+    def test_a_no_commits_and_renders_nothing(self):
+        """Intent: anything but a yes restores core/, commits nothing and renders nothing."""
+        head = git(self.profile, "rev-parse", "HEAD")
+        with self.newer("v1.3.0"):
+            self.run_update(answer=False)
+        self.assertEqual(git(self.profile, "rev-parse", "HEAD"), head)
+        self.assertNotIn("render", self.events)
+
+    def test_a_failed_commit_leaves_core_swapped_and_renders_nothing(self):
+        """Intent: a commit that fails (here a refusing pre-commit hook) is an
+        error, leaves the swapped core/ in place, renders nothing, and is not [OK]."""
+        hook = self.profile / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\necho refused by hook >&2\nexit 1\n", encoding="utf-8",
+                        newline="\n")
+        hook.chmod(0o755)
+        with self.newer("v1.3.0"):
+            code, out, err = self.run_update(answer=True)
+        self.assertNotEqual(code, 0)
+        self.assertIn("[ERROR]", err)
+        self.assertNotIn("render", self.events)
+        self.assertTrue((self.core / "added.py").exists())
+        self.assertNotIn("[OK]", out)
+
+    def test_a_failed_render_keeps_the_commit_and_names_the_command(self):
+        """Intent: a render that fails after the commit keeps the commit, is an
+        error naming the command to run by hand, and is not [OK]."""
+        head = git(self.profile, "rev-parse", "HEAD")
+        with self.newer("v1.3.0"):
+            code, out, err = self.run_update(answer=True, render_code=1)
+        self.assertNotEqual(code, 0)
+        self.assertNotEqual(git(self.profile, "rev-parse", "HEAD"), head, "the commit was lost")
+        self.assertIn("[ERROR]", err)
+        self.assertIn("--self --write", err)
+        self.assertNotIn("[OK]", out)
+
+    def test_an_identity_that_differs_refuses_before_the_swap(self):
+        """Intent: the git identity is checked with the other preconditions, so a
+        mismatch with profile.yaml refuses before anything changes."""
+        git(self.profile, "config", "user.email", "someone@elsewhere.invalid")
+        with self.newer("v1.3.0"):
+            code, _, err = self.run_update()
+        self.assertEqual(code, 1)
+        self.assertIn("[ERROR]", err)
+        self.assertIn("someone@elsewhere.invalid", err)
+        self.assertEqual(self.events, [])
+
+    def test_a_profile_with_no_identity_refuses_before_the_swap(self):
+        """Intent: a profile.yaml with no identity: key refuses before the swap."""
+        (self.profile / "profile.yaml").write_text("targets: {}\n", encoding="utf-8")
+        git(self.profile, "commit", "-q", "-am", "no identity")
+        with self.newer("v1.3.0"):
+            code, _, err = self.run_update()
+        self.assertEqual(code, 1)
+        self.assertIn("identity", err)
+        self.assertEqual(self.events, [])
 
     def test_a_failed_swap_asks_nothing(self):
         """Intent: vendor_report refuses without touching core/, so update stops."""
@@ -373,6 +453,41 @@ class UpdateFlow(UpdateFixture):
             code, _, _ = self.run_update(vendor_report=lambda profile, source: 1)
         self.assertEqual(code, 1)
         self.assertEqual(self.events, [])
+
+
+class RunRender(Fixture):
+    """The profile's own render, run from the new core in a child process."""
+
+    def run_render(self, **kwargs) -> tuple[int, str, mock.Mock]:
+        err = io.StringIO()
+        with mock.patch.object(subprocess, "run", **kwargs) as run, \
+                contextlib.redirect_stderr(err):
+            code = toolboxctl.run_render(self.core)
+        return code, err.getvalue(), run
+
+    def test_it_runs_the_new_cores_profile_self_render(self):
+        """Intent: the render is the new core's sync.py on disk, as
+        --profile <profile> --self --write, from the profile, with an explicit timeout."""
+        code, _, run = self.run_render(return_value=subprocess.CompletedProcess([], 0))
+        self.assertEqual(code, 0)
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], sys.executable)
+        self.assertEqual(command[1], str(self.core / "sync.py"))
+        self.assertEqual(command[2:], ["--profile", str(self.profile), "--self", "--write"])
+        self.assertEqual(run.call_args.kwargs["cwd"], self.profile)
+        self.assertEqual(run.call_args.kwargs["timeout"], toolboxctl.RENDER_TIMEOUT)
+
+    def test_a_failed_timed_out_or_unstartable_render_is_a_failure(self):
+        """Intent: a render that exits non-zero, times out or cannot start is an
+        [ERROR] and returns 1, never a pass; a render at exactly the timeout is one."""
+        cases = (("exit", {"return_value": subprocess.CompletedProcess([], 2)}),
+                 ("timeout", {"side_effect": subprocess.TimeoutExpired("sync", 1)}),
+                 ("start", {"side_effect": OSError("no interpreter")}))
+        for name, kwargs in cases:
+            with self.subTest(case=name):
+                code, err, _ = self.run_render(**kwargs)
+                self.assertEqual(code, 1)
+                self.assertIn("[ERROR]", err)
 
 
 def shutil_rmtree_git(profile: Path) -> None:
