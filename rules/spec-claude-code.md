@@ -46,6 +46,13 @@ If a UI is not mirrored in the remote session, do not use it.
 - Outside the desktop app, end with the pickup prompt in chat, as the handoff skill says.
 - On the first use, check that the new session received the prompt and the folders, and report it if not.
 
+## Tangents
+
+- A tangent is work outside the current task: a finding, a side question, a fix noticed in passing. Name it, then give it a session of its own, rather than following it here.
+- In the desktop app, start a linked session with the app's session tool, or propose one for the operator to start. Give it a brief that stands on its own: the files, what done looks like, and what this session found. Then carry on with this session's task.
+- Outside the desktop app, record the tangent as the tangents rule says, and carry on.
+- A quick check, a read or a one-line fix that serves the current task is not a tangent. Do it here.
+
 ## Main session and subagents
 
 - The main session designs, decides, drafts for review and verifies.
