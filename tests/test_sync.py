@@ -3533,6 +3533,50 @@ class Rollout(unittest.TestCase):
 
         self.assert_alpha_refused(result, before, "git pull --ff-only")
 
+    def commit_foreign(self, name: str, filename: str) -> None:
+        """Commit a file the rollout did not make, leaving the clone ahead of its upstream."""
+        repo = self.root / name
+        (repo / filename).write_text("not from a rollout\n", encoding="utf-8", newline="\n")
+        git("add", "-A", cwd=repo)
+        git("commit", "--quiet", "-m", "unrelated local work", cwd=repo)
+
+    def test_rollout_refuses_a_target_ahead_of_its_upstream(self):
+        """Intent: a target holding a commit the rollout did not make, not
+        yet on its remote, is refused before anything is rendered or committed,
+        and the refusal names the count and the fix. One commit ahead refuses."""
+        self.commit_foreign("alpha", "foreign.txt")
+        before = self.state("alpha")
+
+        result = self.rollout("x")
+
+        self.assert_alpha_refused(result, before, "1 commit(s) ahead of its upstream")
+        self.assertIn("push or reset that clone first", result.stdout + result.stderr)
+
+    def test_rollout_pushes_its_own_earlier_commit(self):
+        """Intent: a commit an earlier rollout made and left local is not
+        'ahead' work, so a re-run with --push pushes it; the same target holding
+        one rollout commit plus one foreign commit is still refused."""
+        first = self.rollout("x")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.commit_foreign("alpha", "foreign.txt")
+        before = self.state("alpha")
+
+        refused = self.rollout("x", "--push")
+
+        self.assert_alpha_refused(refused, before, "ahead of its upstream")
+        for name in ("bravo", "charlie"):
+            self.assertEqual(git("rev-parse", f"refs/heads/{branch_of(name)}", cwd=self.remotes / f"{name}.git"),
+                             self.head(name), f"{name}: the first rollout's commit was not pushed")
+        git("reset", "--quiet", "--hard", "HEAD~1", cwd=self.root / "alpha")
+
+        second = self.rollout("x", "--push")
+
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        for name in LIVE:
+            self.assertNotEqual(self.head(name), self.initial[name], f"{name} has no rollout commit")
+            self.assertEqual(git("rev-parse", f"refs/heads/{branch_of(name)}", cwd=self.remotes / f"{name}.git"),
+                             self.head(name), f"{name}: the first rollout's commit was not pushed")
+
     def test_rollout_refuses_a_target_with_no_upstream(self):
         """Intent: with no upstream there is nothing to compare against, and
         unknown is not current."""
@@ -3921,6 +3965,19 @@ class ProfileModules(unittest.TestCase):
             sync.profile_module("core_twice", self.profile, "--x")
         self.assertIn(str(self.profile), str(ctx.exception))
         self.assertIn(str(self.profile / "seeds" / "scripts"), str(ctx.exception))
+
+
+class CoreRulesCarryNoHeaderArt(unittest.TestCase):
+    def test_no_core_rule_holds_the_art(self):
+        """Intent: the core's rules name no one's signature art. Art belongs to
+        the profile that renders the rules, so a profile with none is not told to
+        carry any. One line of the art stands for the whole block."""
+        art_line = "7R$$$$$$$$g"
+        rules = sorted((sync.ROOT / "rules").glob("*.md"))
+        self.assertTrue(rules, "no rules found, so the check proves nothing")
+        holders = [rule.name for rule in rules
+                   if art_line in rule.read_text(encoding="utf-8")]
+        self.assertEqual(holders, [])
 
 
 if __name__ == "__main__":

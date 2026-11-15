@@ -4,8 +4,8 @@ tier: 2
 scope: "*"
 alwaysApply: false
 description: >-
-  File header SPECIFICATION - the metadata field definitions and the ASCII art
-  block itself. Load ONLY when creating a new file that needs a header, or when
+  File header SPECIFICATION - the metadata field definitions, and how a
+  profile's header art is applied. Load ONLY when creating a new file that needs a header, or when
   explicitly asked to verify a header. Do not load when merely editing an
   existing file: the art is write-once and prescriptions.md already carries the
   rule to skip past it and update Last Updated. No repo is exempt.
@@ -13,10 +13,10 @@ description: >-
 
 # File headers
 
-Every file begins with a metadata block and the ShadowAgent ASCII art.
+Every file begins with a metadata block, followed by the profile's header art
+if it defines one.
 
-**No repo is exempt, shell included.** A per-repository opt-out was reversed
-after four tests showed the art does not break shell.
+No repo is exempt.
 
 ---
 
@@ -24,7 +24,7 @@ after four tests showed the art does not break shell.
 
 1. Shebang, where applicable
 2. Metadata block
-3. ASCII art
+3. Header art, if the profile defines it
 4. One or two blank lines before the first import or statement
 
 ## Fields
@@ -52,45 +52,14 @@ after four tests showed the art does not break shell.
 
 ---
 
-## The art
+## Header art
 
-Stored once here rather than four times per repo. Adapt the leading comment
-character to the target language; the art itself is unchanged.
-
-```
-===========================================================================
-
-
-           "~,
-               *m,
-                  *9m;
-                      *%pg
-                         "YRWu
-                             *9$&w
-                                 *R$&w
-  ;j]@@W;                   *w,      79&&w;
-  :|*%MT"                     7&&w,      ?78BWw
-. ,|*       -p     ~            *R$$$gw,     '*MU@m,
-           =W/?*%NMWgw             *T&$F ,@w;     "*4[%m,
-             7R$$$$$$$$g          yg$$Gg$@@Hh!j ,w     "*w|j=,
-      ..     ]K@ww[T$Fff            >*MB&&@@Hh ]hk{!!~^     "*v'
-         '|;, *M@@&&$P                 $$&@HHH\  ` ;w,,   ,~""
-           "|jj]]%@F"                  ]$@@H, ;*M%P)a$$C  c
-          . :|j[M"                     ]@@HHr TfR4&$NE*,/~<'
-            `!||j]@@@A`                ]@@Hh~ *TT"" "* ^ r  '~
-               *ojKM"                  l@Hh~  "*|"'   /        `
-                                       @HHkC ,;!"
-                                      ]HHhr/|!"'
-                                      #Hhr!||"
-                            ,@r       hkr!||'
-                                     [k{|!"
-                                    (r!!"        r
-                                    !!"        r
-                                     ";      /
-                                            '
-                                           '
-===========================================================================
-```
+A profile may define header art in its own rule, `header-art`, which renders as
+`.github/rules/header-art.md`. Open that file when creating a file. If it
+exists, its art follows the metadata block in every new file, with the comment
+character adapted to the language. If it does not exist, the profile defines no
+art and the header is the metadata block alone. The core ships no `header-art`
+rule, so the name never collides.
 
 ---
 
@@ -106,13 +75,9 @@ character to the target language; the art itself is unchanged.
 
 ## Note on cost
 
-The art is a signature, not decoration. It is the author's mark on code he
-wrote - anyone can put a name in a comment block; the art is unique to him.
-It stays.
-
-**But it is write-once.** After creating a file, an assistant never needs to
-read, parse, reason about, or reproduce the art again. Treat the block between
-the `===` delimiters as opaque:
+**The art, where there is one, is write-once.** After creating a file, an
+assistant never needs to read, parse, reason about, or reproduce the art again.
+Treat the block between the `===` delimiters as opaque:
 
 - **On create:** emit it in full.
 - **On edit:** skip past it to the metadata block, update `Last Updated`, and
@@ -121,5 +86,5 @@ the `===` delimiters as opaque:
 - **On explicit request to verify:** confirm the delimiters and the metadata
   fields are present. Confirming the art is byte-correct is not required.
 
-Storing it once here rather than sixteen times across the estate removes the
-maintenance cost. The above removes most of the per-file reading cost.
+Storing it once, in the profile's rule, rather than in every repository removes
+the maintenance cost. The above removes most of the per-file reading cost.

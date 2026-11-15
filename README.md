@@ -114,7 +114,7 @@ Run `python core/toolboxctl.py <subcommand>` inside the profile:
 |---|---|
 | `version` | Prints the source, tag and commit `core/VENDORED` records. Reads only. |
 | `check` | Verifies `core/` against `VENDORED`, then lists newer releases. Changes nothing. |
-| `update [vX.Y.Z]` | Replaces `core/` with the newest or a named release, previews the render, and keeps it only after you type yes. Otherwise restores `core/` from git. It commits and renders nothing. |
+| `update [vX.Y.Z]` | Replaces `core/` with the newest or a named release, previews the render, and keeps it only after you type yes. On a yes it commits `core/` as one change and renders the profile from it, leaving the rendered output uncommitted for review. Otherwise it restores `core/` from git and commits and renders nothing. |
 | `flags` | Changes gate flags through `consent.py`, after a typed yes. |
 | `setup` | Creates or updates the profile through `setup_profile.py`. |
 | `gate-lists --leak FILE --core-names FILE` | Writes the one-way gates' pattern files from `profile.yaml`. Writes the two files named; prints counts, never patterns. |
