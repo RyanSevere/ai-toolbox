@@ -1407,8 +1407,9 @@ def add_rules(plan: Plan, rule_id: str, meta: dict, body: str, sha: str | None,
 
     A rule's optional `tools:` names the rows of TOOLS that render it; absent, every row
     does. `tools` is the profile's selection (every row when None); the two intersect, and a
-    rule left rendering nowhere is skipped without a word. An on-demand rule is shared across tools (ON_DEMAND_DIR), so it cannot be limited
-    to some of them, and `tools:` on one is refused rather than half-applied.
+    rule left rendering nowhere is skipped without a word. An on-demand rule is shared across
+    tools (ON_DEMAND_DIR), so it cannot be limited to some of them, and `tools:` on one is
+    refused rather than half-applied.
     """
     only = meta.get("tools")
     if only is not None:
