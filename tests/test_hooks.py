@@ -4,10 +4,10 @@
 # Path: {PROJECT_ROOT}/tests/test_hooks.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-13
+# Last Updated: 2026-11-15
 # Description: Tests for the editor safety hooks, hooks/no-secret-defaults,
-#              and hooks/no-shell-file-edits, and the shared
-#              runtime library hooks/lib/hookio.py. Per hook: a violation it must
+#              hooks/no-shell-file-edits and hooks/no-destructive-shell, and the
+#              shared runtime library hooks/lib/hookio.py. Per hook: a violation it must
 #              catch, a near-miss it must allow, and malformed input it must
 #              not crash on. A guard that silently stops matching looks the
 #              same as one with nothing to catch. Stdlib only.
@@ -435,6 +435,221 @@ class HookTools(unittest.TestCase):
                 self.assertEqual(
                     self.run_hook("permission", payload, ["--tool", "cursor"], lambda p: verdict),
                     self.run_hook("permission", payload, [], lambda p: verdict))
+
+
+class DestructiveShell(unittest.TestCase):
+    """Intent: hooks/no-destructive-shell denies the shell commands that discard work - git
+    clean, git checkout of paths, git reset --hard, rm -r and Remove-Item -Recurse - read from
+    the command's leading words per segment, so a commit message that names one is allowed. A
+    command it cannot read denies. A recursive delete of literal paths inside the repository's
+    scratch/ is allowed. Every case runs with Cursor's payload and with Claude Code's."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.hook = load("no_destructive_shell", HOOKS / "no-destructive-shell" / "hook.py")
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        (self.root / ".git").mkdir()
+        (self.root / "scratch" / "sub").mkdir(parents=True)
+
+    NO_CWD = object()
+
+    def verdict(self, tool: str, command, cwd=None, raw: bytes | None = None, env=None):
+        """None when the hook allows, else (user message, agent message); Claude Code's deny
+        carries one reason, which is the agent message."""
+        if raw is None:
+            cwd = str(self.root) if cwd is None else cwd
+            body = {} if cwd is self.NO_CWD else {"cwd": cwd}
+            if tool == "cursor":
+                body["command"] = command
+            else:
+                body.update({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                             "tool_input": {"command": command}})
+            raw = json.dumps(body).encode()
+        out = io.StringIO()
+        with mock.patch("sys.stdin", new=stdin_of(raw)), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.argv", ["hook.py", "--tool", tool]), mock.patch.dict(os.environ):
+            os.environ.pop("AI_TOOLBOX_HOOKS", None)
+            os.environ.update(env or {})
+            self.assertEqual(self.hook.main(), 0)
+        text = out.getvalue()
+        if tool == "cursor":
+            said = json.loads(text)
+            return None if said["permission"] == "allow" else (said["user_message"],
+                                                              said["agent_message"])
+        if not text:
+            return None
+        said = json.loads(text)["hookSpecificOutput"]
+        self.assertEqual(said["permissionDecision"], "deny")
+        return None, said["permissionDecisionReason"]
+
+    def assert_denied(self, command, **kwargs):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool, command=command):
+                self.assertIsNotNone(self.verdict(tool, command, **kwargs))
+
+    def assert_allowed(self, command, **kwargs):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool, command=command):
+                self.assertIsNone(self.verdict(tool, command, **kwargs))
+
+    DENIED = (
+        "git clean -fd", "git clean -xfd", "git -C sub clean -f", "git checkout -- .",
+        "git checkout -- src/app.py", "git checkout .", "git reset --hard",
+        "git reset --hard HEAD~1", "rm -rf build", "rm -fr build", "rm -r -f build",
+        "/bin/rm -rf build", "sudo rm -rf build", "FOO=1 rm -rf build",
+        "Remove-Item -Recurse -Force build", "Remove-Item build -Recurse",
+        "remove-item -rec build", "REMOVE-ITEM -RECURSE build", "ri -r build",
+        "del -Recurse build", "rm -r build", "git -c core.x=y clean -f",
+        "git --git-dir=.git --work-tree=. reset --hard",
+    )
+    WRAPS = ("cd x && {}", "cd x; {}", "a | {}", "a || {}", "echo $({})", "echo hi\n{}",
+             "a & {}", "if true; then {}; fi", "& {}")
+
+    def test_the_five_families_are_denied(self):
+        for command in self.DENIED:
+            self.assert_denied(command)
+
+    def test_a_destructive_segment_anywhere_in_the_line_denies(self):
+        for command in self.DENIED:
+            for wrap in self.WRAPS:
+                self.assert_denied(wrap.format(command))
+
+    def test_everything_else_is_allowed(self):
+        for command in (
+            "git status", "git checkout main", "git checkout -b feature",
+            "git reset HEAD file.py", "git reset --soft HEAD~1", "git clean -n",
+            "git clean --dry-run -d", "git clean -nd", "rm file.txt", "Remove-Item file.txt",
+            "Remove-Item -Force file.txt", "echo rm -rf build",
+            'git log --grep "reset --hard"', 'git commit -m "git reset --hard was the fix"',
+            "git commit -m 'rm -rf build'", "Select-String -Pattern 'Remove-Item -Recurse'",
+            "git push 2>&1", "ls > out.txt 2>&1", "", "   ",
+        ):
+            self.assert_allowed(command)
+
+    def test_a_commit_message_that_names_a_destructive_command_is_allowed(self):
+        """Intent: the false positive that pulled no-shell-file-edits - a message line reading
+        git reset --hard sits at the start of a physical line in a here-string or heredoc."""
+        for command in (
+            "git commit -m @'\ngit reset --hard is gone\n'@",
+            'git commit -m @"\nrm -rf build\n"@',
+            "git commit -m @'\r\ngit reset --hard is gone\r\n'@",
+            "git commit -F - <<'EOF'\nrm -rf build\nEOF",
+            "git commit -F - <<EOF\ngit clean -fd\nEOF\n",
+            "git commit -F - <<-EOF\n\trm -rf build\n\tEOF",
+            "git commit -m @'\ngit reset --hard\n'@; git status",
+            "cat <<'A' <<'B'\nrm -rf x\nA\ngit clean -fd\nB",
+        ):
+            self.assert_allowed(command)
+
+    def test_a_command_after_a_quoted_block_is_still_read(self):
+        for command in (
+            "git commit -m @'\nnote\n'@; git reset --hard",
+            "git commit -F - <<'EOF'\nnote\nEOF\nrm -rf build",
+            "cat <<EOF | rm -rf build\nnote\nEOF",
+            "echo 'a;b' && rm -rf build",
+            'echo "a;b" && rm -rf build',
+            "Remove-Item `\n  -Recurse build",
+            "echo `rm -rf build`",
+        ):
+            self.assert_denied(command)
+
+    def test_a_quote_the_scan_cannot_close_denies_naming_the_reason(self):
+        for command, reason in (
+            ('git commit -m "oops', "unbalanced"),
+            ("git commit -m 'oops", "unbalanced"),
+            ("git commit -m @'\nno closer", "here-string"),
+            ("cat <<EOF\nrm -rf build", "heredoc"),
+            ("cat <<EOF", "heredoc"),
+        ):
+            for tool in ("cursor", "claude"):
+                with self.subTest(tool=tool, command=command):
+                    said = self.verdict(tool, command)
+                    self.assertIsNotNone(said)
+                    self.assertIn("could not read", said[1])
+                    self.assertIn(reason, said[1])
+
+    def test_a_backslash_ending_a_double_quoted_path_reads_the_rest_as_quoted(self):
+        """Characterisation of the gap hooks/README.md names: POSIX reads \\" as an escaped
+        quote, so the closing quote is missing and the command denies as unreadable."""
+        self.assert_denied('Remove-Item "C:\\dir\\"; git status')
+
+    def test_an_unparseable_payload_denies(self):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool):
+                self.assertIsNotNone(self.verdict(tool, "", raw=b"\x00\x01 not json"))
+
+    def test_a_payload_without_a_command_denies(self):
+        for tool, raw in (("cursor", b'{"cwd": "/r"}'), ("claude", b'{"tool_input": {}}')):
+            with self.subTest(tool=tool):
+                self.assertIsNotNone(self.verdict(tool, "", raw=raw))
+
+    def test_a_command_that_is_not_text_denies(self):
+        self.assert_denied(["rm", "-rf", "build"])
+
+    def test_the_off_switch_allows(self):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool):
+                self.assertIsNone(self.verdict(tool, "rm -rf build", env={"AI_TOOLBOX_HOOKS": "off"}))
+
+    def test_a_deny_names_the_command_and_says_to_ask_the_operator(self):
+        for tool in ("cursor", "claude"):
+            with self.subTest(tool=tool):
+                said = self.verdict(tool, "cd x && git reset --hard HEAD~1")
+                self.assertIn("git reset --hard HEAD~1", said[1])
+                self.assertIn("ask the operator", said[1].lower())
+                self.assertNotRegex(said[1] + (said[0] or ""),
+                                    r"(?i)\b[a-z]{2,5}-\d+\b|github\.com|\.local\b")
+
+    def test_a_cursor_deny_has_a_user_message_naming_the_hook(self):
+        said = self.verdict("cursor", "git clean -fd")
+        self.assertIn("no-destructive-shell", said[0])
+        self.assertIn("git clean -fd", said[0])
+
+    def test_a_recursive_delete_of_literal_scratch_paths_is_allowed(self):
+        """Intent: the operator's ruling - agents clean their own scratch/ and a blanket deny
+        on that is the fight he ruled against. Literal paths inside it only."""
+        for command in (
+            "rm -rf scratch/tmp", "rm -r scratch/a scratch/sub", "rm -rf ./scratch/x",
+            "Remove-Item -Recurse -Force scratch/tmp", "Remove-Item -Recurse scratch\\sub",
+            "Remove-Item -Recurse -Force -Path scratch/tmp -ErrorAction SilentlyContinue",
+            "Remove-Item -LiteralPath scratch/tmp -Recurse", 'rm -rf "scratch/with space"',
+            "rm -rf -- scratch/-odd", "ri -r scratch/x", f"rm -rf {self.root.as_posix()}/scratch/x",
+            "rm -rf scratch/x 2>&1", "rm -rf scratch/x > /dev/null",
+            "cd x && rm -rf scratch/x",
+        ):
+            self.assert_allowed(command)
+
+    def test_a_recursive_delete_reaching_outside_scratch_is_denied(self):
+        for command in (
+            "rm -rf scratch", "rm -rf scratch/", "rm -rf scratch/..", "rm -rf scratch/../src",
+            "rm -rf scratch/sub/../../src", "rm -rf scratch/*", "rm -rf scratch/?", "rm -rf scratch/[a]",
+            "rm -rf $dir", "rm -rf scratch/$dir", 'rm -rf "scratch/$dir"', "rm -rf ~/scratch/x",
+            "rm -rf scratch/a build", "rm -rf", "rm -rf --", "rm -rf scratch2/x",
+            "rm -rf /scratch/x", "Remove-Item -Recurse", "Remove-Item -Recurse -Path",
+            "Remove-Item -Recurse -Include *.tmp scratch", "Remove-Item -Recurse scratch\\..\\src",
+            "rm -rf $(pwd)/scratch/x", "rm -rf scratch/`pwd`", "Remove-Item -Recurse (Get-Item scratch/x)",
+        ):
+            self.assert_denied(command)
+
+    def test_the_exemption_is_for_deletes_only(self):
+        for command in ("git clean -fd scratch", "git checkout -- scratch/x"):
+            self.assert_denied(command)
+
+    def test_the_repository_root_is_found_from_a_subdirectory(self):
+        self.assert_allowed("rm -rf ../scratch/x", cwd=str(self.root / "sub"))
+        self.assert_allowed("rm -rf x", cwd=str(self.root / "scratch" / "sub"))
+        self.assert_denied("rm -rf ../../src", cwd=str(self.root / "scratch" / "sub"))
+
+    def test_a_delete_without_a_usable_cwd_is_denied(self):
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        (Path(outside.name) / "scratch").mkdir()
+        for cwd in (self.NO_CWD, "", "scratch", outside.name, 5):
+            self.assert_denied("rm -rf scratch/x", cwd=cwd)
 
 
 class HookInput(unittest.TestCase):

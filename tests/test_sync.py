@@ -743,6 +743,15 @@ class CursorHooks(unittest.TestCase):
         self.assertFalse([k for k in plan if k.startswith(".cursor/hooks/no-shell-file-edits/")])
         self.assertTrue((sync.ROOT / "hooks" / "no-shell-file-edits" / "hook.py").is_file())
 
+    def test_the_real_destructive_shell_hook_renders_fail_closed(self):
+        plan = build_plan("t", self.ON, DEFAULTS, SHA, MANIFEST)
+        mine = [e for e in self.entries(plan) if "no-destructive-shell" in e["command"]]
+        self.assertEqual(len(mine), 1)
+        self.assertIs(mine[0]["failClosed"], True)
+        self.assertTrue(mine[0]["command"].endswith("--tool cursor"))
+        self.assertIn(".cursor/hooks/no-destructive-shell/hook.py", plan)
+        self.assertIn(".cursor/hooks/lib/hookio.py", plan)
+
     def test_owner_placeholder_is_filled(self):
         plan = self.plan({"guard/hook.yaml": self.OWNED})
         self.assertEqual([e["command"] for e in self.entries(plan)],

@@ -52,6 +52,59 @@ reason.
 
 A profile documents its own hooks in a `README.md` beside their seeds.
 
+### `no-destructive-shell` - agent hook on `shell.before`
+
+A `permission` hook, so it fails closed. Denies the shell commands that discard work,
+so the agent asks the operator first. It is the second layer behind the tool's own
+approval prompt and the rule *"Never discard unfamiliar files"*.
+
+Denies five families, with these flag variants:
+
+- `git clean`, unless `-n`, `--dry-run` or a short cluster holding `n` is among its flags.
+- `git checkout` with `--` or `.` among its arguments (`git checkout -- src/app.py`, `git checkout .`).
+- `git reset --hard`.
+- `rm` with a recursive flag: `-r`, `-R`, `-rf`, `-fr`, `-r -f`, `--recursive`.
+- `Remove-Item` and its aliases `ri`, `del`, `erase`, `rd`, `rmdir`, and PowerShell's `rm`, with a
+  `-Recurse` parameter or any prefix of it (`-r`, `-rec`), in any case.
+
+Git's global options (`-C <path>`, `-c <key=value>`, `--git-dir`, `--work-tree`) are
+skipped before the subcommand, and `sudo`, `env`, `NAME=value` and a shell keyword
+(`if`, `then`, `do`, ...) before the command word.
+
+**How it reads a command.** Not a regex over the line: a quote-aware scan that finds the
+segments and judges each by its leading words. Quoted text, a PowerShell here-string
+(`@'...'@`, `@"..."@`) and a bash heredoc body are not scanned, so `git commit -m "git
+reset --hard was the fix"` and a commit message that opens a line with `rm -rf build` are
+allowed. Segments split at `;`, `&&`, `||`, `|`, `&`, a newline, `(`, `)` and a backtick, so a
+destructive segment anywhere in the line denies; a backtick before a newline is PowerShell's
+line continuation and joins the lines. The same payload carries either shell's syntax, so
+the scan accepts both quoting styles. A quote, here-string or heredoc that never closes
+denies, naming that the command could not be read: a command that cannot be split may hide a
+destructive segment.
+
+**Scratch exemption.** A recursive delete is allowed when every target is a literal path
+that resolves, against the payload's `cwd`, strictly inside `<repository root>/scratch/`.
+The repository root is the nearest folder at or above `cwd` that holds `.git`. A variable, a
+glob, `{}`, `~`, `..` out of `scratch/`, `scratch/` itself, a target-less delete, a `cwd` that
+is absent, relative or in no repository, or a pattern parameter (`-Include`, `-Filter`, ...)
+denies. The exemption covers deletes only; the git families are never exempt.
+
+The deny's message names the matched command and says to ask the operator. Allowed:
+everything else, including `rm file.txt`, `git checkout main`, `git reset --soft`, and
+`Remove-Item file.txt`. `AI_TOOLBOX_HOOKS=off` allows everything.
+
+**Known gaps** (a general shell parser is a separate piece of work): a command run through
+another interpreter (`bash -c`, `pwsh -Command`, `cmd /c rd /s`); `xargs rm`; `find -delete`;
+a script that deletes; a command substitution inside a double-quoted string; a bash line
+continuation (backslash then newline), which reads as two segments; a Windows path in double
+quotes that ends in a backslash (`"C:\dir\"`), which POSIX quoting reads as an escaped quote,
+so the rest of the line is read as quoted and a later segment can be missed, or the command
+denies as unreadable. `git restore`, `git checkout -f`, `git stash drop` and `git stash clear`
+are not covered.
+
+**Not yet verified live.** Library tests feed it Cursor's and Claude Code's payload shapes.
+It renders for Cursor only; no adapter registers it in Claude Code yet.
+
 ### `no-shell-file-edits` - Cursor hook, not shipped
 
 **Not rendered.** In Cursor it denied every agent `git commit` with "Blocked:
