@@ -4,10 +4,11 @@
 # Created by: Ryan Severe
 # Created: 2026-11-08
 # Last Updated: 2026-11-14
-# Description: Tests and secret scan. Runs the sharded test suite on the stated
-#              Python floor and the newest stable, and scans the full history
-#              with a pinned, checksum-verified gitleaks release. Needs no
-#              secret, so it runs on fork pull requests too.
+# Description: Tests, lint and secret scan. Runs the sharded test suite on the
+#              stated Python floor and the newest stable, runs a pinned ruff
+#              with default rules, and scans the full history with a pinned,
+#              checksum-verified gitleaks release. Needs no secret, so it runs
+#              on fork pull requests too.
 ################################################################################
 # ===========================================================================
 #
