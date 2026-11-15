@@ -6,9 +6,9 @@ description: >-
   it. Use when the user says any of: "hand this off", "write a seed", "write a
   handoff", "new chat for this", "I'm switching to X", "pick up where that left
   off", "read the seed", or when a session is about to end mid-workstream - the
-  conversation summarised a second time or drifting, the reply shape
-  collapsing, context degrading, the
-  compliance arrears cap reached, a service's usage running out.
+  conversation summarised a second time or drifting, the reply shape collapsing,
+  context degrading, the compliance arrears cap reached, a service's usage running
+  out.
   Also use when a scratch/<objective>/handoff.md file exists for the work in front of you, and
   when the operator declares a workstream's objective complete - its scratch cleanup
   is the last step.
