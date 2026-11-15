@@ -56,6 +56,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -229,6 +230,10 @@ NEVER_WRITE = {
 # clone would interleave commits in every target. Relative to the profile, never
 # under core/, whose bytes a vendored profile checks.
 ROLLOUT_LOCK = Path("scratch") / "rollout.lock"
+# A file-sync client watching scratch/ can hold the lock file for a moment, and the rename
+# then raises PermissionError. Retry briefly: 5 attempts, 0.1 s apart, about 0.4 s in all.
+LOCK_REPLACE_ATTEMPTS = 5
+LOCK_REPLACE_SLEEP = 0.1
 # PROVISIONAL. Measured rollouts took about 34 minutes twice (2026-09-28), with
 # pre-push gates. Revise both by reviewing new timing data with the operator,
 # not by guessing.
@@ -2189,7 +2194,24 @@ def write_lock(lock: dict, path: Path) -> None:
     path.parent.mkdir(exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(lock), encoding="utf-8")
-    os.replace(tmp, path)
+    for attempt in range(1, LOCK_REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == LOCK_REPLACE_ATTEMPTS:
+                raise
+            time.sleep(LOCK_REPLACE_SLEEP)
+
+
+def heartbeat(lock: dict, path: Path) -> None:
+    """Stamp the lock as alive. A write that still fails after its retries is a warning:
+    the targets are mid-rollout, and a stale heartbeat is no reason to abandon them."""
+    lock["heartbeat"] = _now().isoformat(timespec="seconds")
+    try:
+        write_lock(lock, path)
+    except PermissionError as exc:
+        print(f"[WARN] rollout lock heartbeat not written ({exc}); carrying on")
 
 
 def read_lock(path: Path) -> dict | None:
@@ -2462,8 +2484,7 @@ def rollout(args: argparse.Namespace, manifest: dict, defaults: dict) -> int:
         print(f"{source}@{sha} rollout: {subject}" + (" (with push)" if args.push else ""))
 
         def beat() -> None:
-            lock["heartbeat"] = _now().isoformat(timespec="seconds")
-            write_lock(lock, lock_path)
+            heartbeat(lock, lock_path)
 
         ready = []
         for name, cfg in (manifest.get("targets") or {}).items():
@@ -2504,6 +2525,7 @@ def rollout(args: argparse.Namespace, manifest: dict, defaults: dict) -> int:
         print(f"ROLLOUT COMPLETE: {ok} ok, {failed} failed")
     finally:
         lock_path.unlink(missing_ok=True)
+        lock_path.with_suffix(".tmp").unlink(missing_ok=True)
     return 1 if failed else 0
 
 
