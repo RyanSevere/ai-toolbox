@@ -47,6 +47,13 @@ not_onboarded:
 #     key: pub
 #     reason: "Public. Rendering into it would publish this profile."
 
+# Which tools' files sync renders, for every target: copilot, cursor, claude. One list
+# for the whole profile; a target cannot override it. Absent, all three render. A tool left
+# out stops receiving files, and the stamped ones it already holds are removed on the next
+# write. Shared output (AGENTS.md, .github/rules/, gates, workflows, scripts) always renders.
+# Uncomment to use.
+# tools: [claude]
+
 # Rules rendered into every target unless it excludes them. Each id names a
 # spec-<id>.md in the core's rules/ or in this profile's seeds/rules/.
 defaults:

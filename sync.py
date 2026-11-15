@@ -89,6 +89,8 @@ PROFILE_KEYS = {
     # What gate_lists.py builds the one-way gates' pattern files from: the owner's own
     # repository names, a name for the profile, and further literal strings kept by hand.
     "personal": list, "profile_name": str, "leak_extra": list,
+    # Which rows of TOOLS render, for every target. Absent, every row does.
+    "tools": list,
 }
 # Keys whose list elements must each be a non-empty string.
 STRING_LIST_KEYS = ("personal", "leak_extra")
@@ -358,6 +360,7 @@ def load_profile(folder: Path) -> dict:
                     raise SyncError(f"{path}: every entry under {key!r} must be a "
                                     "non-empty string")
     check_tracked(data, path)
+    selected_tools(data, str(path))
     return data
 
 
@@ -923,6 +926,26 @@ TOOLS = (
 SKILL_ROOTS = tuple(t.skill_root for t in TOOLS if t.skill_root)
 
 
+def selected_tools(manifest: dict, where: str = PROFILE_NAME) -> tuple[Tool, ...]:
+    """The rows of TOOLS the profile renders: its top-level `tools:` list, or every row when
+    there is none. One list for the whole profile; a target cannot override it. An empty
+    list, a non-list, an unknown name or a duplicate is refused, naming the known rows."""
+    known = [t.name for t in TOOLS]
+    if "tools" not in manifest:
+        return TOOLS
+    names = manifest["tools"]
+    if not isinstance(names, list) or not names:
+        raise SyncError(f"{where}: tools: must be a non-empty list of {known}")
+    unknown = sorted({str(n) for n in names if n not in known})
+    if unknown:
+        raise SyncError(f"{where}: tools: names {unknown}, which no row of TOOLS defines. "
+                        f"Known: {known}")
+    repeated = sorted({n for n in names if names.count(n) > 1})
+    if repeated:
+        raise SyncError(f"{where}: tools: lists {repeated} more than once. Known: {known}")
+    return tuple(t for t in TOOLS if t.name in names)
+
+
 def repo_list(manifest: dict) -> dict:
     """The estate as data: owner, every repository with its GitHub name and issue key, and
     the repositories deliberately left out. Rendered to REPO_LIST, and used in memory by
@@ -1378,11 +1401,13 @@ def render_enabled_gates(manifest: dict, profile_dir: Path, sha: str) -> str:
                                             if on)
 
 
-def add_rules(plan: Plan, rule_id: str, meta: dict, body: str, sha: str | None) -> None:
+def add_rules(plan: Plan, rule_id: str, meta: dict, body: str, sha: str | None,
+              tools: tuple[Tool, ...] | None = None) -> None:
     """One rule into every tool's rule path that renders it.
 
     A rule's optional `tools:` names the rows of TOOLS that render it; absent, every row
-    does. An on-demand rule is shared across tools (ON_DEMAND_DIR), so it cannot be limited
+    does. `tools` is the profile's selection (every row when None); the two intersect, and a
+    rule left rendering nowhere is skipped without a word. An on-demand rule is shared across tools (ON_DEMAND_DIR), so it cannot be limited
     to some of them, and `tools:` on one is refused rather than half-applied.
     """
     only = meta.get("tools")
@@ -1398,7 +1423,7 @@ def add_rules(plan: Plan, rule_id: str, meta: dict, body: str, sha: str | None) 
         if meta.get("scope", "*") == "*" and not meta.get("alwaysApply", False):
             raise SyncError(f"rule {rule_id}: tools: on an on-demand rule is not supported, "
                             "because on-demand rules are shared across tools")
-    for tool in TOOLS:
+    for tool in TOOLS if tools is None else tools:
         if only is not None and tool.name not in only:
             continue
         text = tool.rule(meta, body, sha)
@@ -1418,6 +1443,8 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
     check_seed_kinds(profile_dir)
     excluded = set(cfg.get("exclude") or [])
     plan = Plan()
+    tools = selected_tools(manifest)
+    chosen = {t.name for t in tools}
     skill_dirs = [d for d in merged_seeds(SKILLS_DIR, profile_dir, "skills",
                                           lambda f: [p for p in f.iterdir() if p.is_dir()])
                   if (d / "procedure.md").exists()]
@@ -1430,7 +1457,7 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
     for stem, rule, missing in rules:
         plan[f"{ON_DEMAND_DIR}/{stem}-conventions.md"] = render_ondemand(
             conventions_meta(stem), rule, sha)
-        add_rules(plan, f"{stem}-conventions", conventions_meta(stem), rule, sha)
+        add_rules(plan, f"{stem}-conventions", conventions_meta(stem), rule, sha, tools)
         plan.unanswered += missing
 
     source = RULES_DIR / "prescriptions.md"
@@ -1454,7 +1481,7 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
         refuse_requires(meta, source)
         body = render_body(body, source, meta, known, bound, plan)
         body = body.replace("<!-- KEYS -->", issue_keys(manifest))
-        add_rules(plan, "estate", meta, body, sha)
+        add_rules(plan, "estate", meta, body, sha, tools)
         # Same opt-in: it names the personal repos too.
         plan[REPO_LIST] = render_repo_list(manifest, sha)
 
@@ -1482,7 +1509,7 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
 
         if scope == "*" and not always:
             plan[f"{ON_DEMAND_DIR}/{rule_id}.md"] = render_ondemand(meta, body, sha)
-        add_rules(plan, rule_id, meta, body, sha)
+        add_rules(plan, rule_id, meta, body, sha, tools)
 
     # An exclusion that matches nothing is not a no-op, it is a silent failure to
     # drop the rule that was meant to be dropped.
@@ -1520,7 +1547,7 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
             check_body(body, source, meta, known)
             continue
         rendered = render_skill(meta, render_body(body, source, meta, known, bound, plan), sha)
-        for root in (t.skill_root for t in TOOLS if t.skill_root):
+        for root in (t.skill_root for t in tools if t.skill_root):
             plan[f"{root}/{skill_dir.name}/SKILL.md"] = rendered
             for rel, content in assets.items():
                 plan[f"{root}/{skill_dir.name}/{rel}"] = content
@@ -1538,8 +1565,10 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
             check_body(body, source, meta, known)
             plan.dropped.append((source, unbound))
             continue
-        plan[f".github/prompts/{source.name}"] = render_prompt(
-            meta, render_body(body, source, meta, known, bound, plan), sha)
+        body = render_body(body, source, meta, known, bound, plan)
+        # Copilot prompt files; nothing else reads .github/prompts/.
+        if "copilot" in chosen:
+            plan[f".github/prompts/{source.name}"] = render_prompt(meta, body, sha)
 
     for source in merged_seeds(WORKFLOWS_DIR, profile_dir, "workflows",
                                lambda f: sorted(f.glob("*.yml"))):
@@ -1586,7 +1615,7 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
                             "unbound capability")
         if INTERACTIVE in sessions:
             rendered = render_body(body, source, meta, known, bound, plan)
-            for tool in TOOLS:
+            for tool in tools:
                 if tool.agent_path and tool.agent:
                     plan[tool.agent_path.format(name=name)] = tool.agent(
                         meta, rendered, sha, plan.warnings.append)
@@ -1654,8 +1683,9 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
     if cleaner.exists():
         plan[".github/scripts/cleanup.py"] = render_asset(cleaner, sha)
 
-    # Off unless a target opts in with `hooks: true`, pending the hook design review.
-    if cfg.get("hooks", False) and HOOKS_DIR.exists():
+    # Off unless a target opts in with `hooks: true`, pending the hook design review. They
+    # are Cursor's agent hooks, so a profile that leaves Cursor out renders none.
+    if cfg.get("hooks", False) and "cursor" in chosen and HOOKS_DIR.exists():
         plan.update(render_cursor_hooks(sha, (manifest.get("source") or {}).get("owner"),
                                         profile_dir))
 

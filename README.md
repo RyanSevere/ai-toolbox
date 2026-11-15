@@ -144,9 +144,22 @@ A profile chooses which rules each target receives with the `tier1` and
 A complete profile with every top-level key the core accepts and invented
 values: `source`, `identity`, `not_onboarded`, `defaults`, `rollout`,
 `actions`, `gate_config_dir`, `features`, `capabilities`, `answers`,
-`personal`, `profile_name`, `leak_extra` and `targets`. The last three
-before `targets` feed `toolboxctl.py gate-lists`. Each key has a comment saying what it is for. The renderer refuses a
+`personal`, `profile_name`, `leak_extra`, `tools` and `targets`. The three
+before `tools` feed `toolboxctl.py gate-lists`. Each key has a comment saying what it is for. The renderer refuses a
 key outside that set. Copy it as the start of your own.
+
+`tools:` is an optional list naming which tools' files sync renders, for every
+target in the profile: `copilot`, `cursor` and `claude`. Absent, all three
+render. A rule's own `tools:` narrows further, and a rule left with no tool
+renders nowhere. Shared output (`AGENTS.md`, `.github/rules/`, gates,
+workflows, scripts) renders whatever is selected, and Cursor's agent hooks
+render only when `cursor` is. An empty list, an unknown name or a duplicate is
+refused. A tool left out stops receiving files, and the stamped ones it already
+holds are removed on the next write.
+
+```yaml
+tools: [claude]
+```
 
 ### `setup_profile.py`
 

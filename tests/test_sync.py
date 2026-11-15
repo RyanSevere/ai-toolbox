@@ -1782,11 +1782,12 @@ class ExampleProfile(unittest.TestCase):
 
     def test_every_key_the_core_accepts_is_present(self):
         profile = sync.load_profile(sync.resolve_profile(self.FOLDER))
-        # A key the example leaves commented out, such as `tracked:`, is shown but not set.
+        # A key the example leaves commented out, such as `tracked:` or `tools:`, is shown
+        # but not set.
         text = (self.FOLDER / "profile.yaml").read_text(encoding="utf-8")
         shown = {key for key in sync.PROFILE_KEYS if f"\n# {key}:" in text}
         self.assertEqual(set(profile) | shown, set(sync.PROFILE_KEYS))
-        self.assertEqual(shown, {"tracked"})
+        self.assertEqual(shown, {"tracked", "tools"})
 
     def test_every_example_target_renders(self):
         folder = locked_example(self)

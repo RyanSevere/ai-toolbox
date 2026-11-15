@@ -375,5 +375,117 @@ class ClaudeOwnership(unittest.TestCase):
         self.assertEqual(found.returncode, 0)
 
 
+class ToolSelection(unittest.TestCase):
+    """A profile's top-level tools: list chooses which rows of TOOLS sync renders."""
+
+    IDENT = {"name": "n", "email": "n@example.invalid"}
+    CURSOR_ONLY = (".cursor/",)
+    COPILOT_ONLY = (".github/instructions/", ".github/skills/", ".github/agents/",
+                    ".github/prompts/")
+
+    def manifest(self, **extra) -> dict:
+        return {**MANIFEST, **extra}
+
+    def plan(self, **extra) -> sync.Plan:
+        return plan_for(manifest=self.manifest(**extra))
+
+    def test_absent_renders_every_row_exactly_as_before(self):
+        absent = {k: v for k, v in MANIFEST.items() if k != "tools"}
+        every = self.plan(tools=[t.name for t in sync.TOOLS])
+        self.assertEqual(dict(plan_for(manifest=absent)), dict(every))
+        self.assertTrue([p for p in every if p.startswith(".cursor/")])
+        self.assertTrue([p for p in every if p.startswith(".github/prompts/")])
+
+    def test_claude_only_drops_the_other_tools_paths(self):
+        plan = self.plan(tools=["claude"])
+        for prefix in self.CURSOR_ONLY + self.COPILOT_ONLY:
+            self.assertEqual([p for p in plan if p.startswith(prefix)], [], prefix)
+        self.assertIn(".claude/rules/estate.md", plan)
+        self.assertTrue([p for p in plan if p.startswith(".claude/skills/")])
+        self.assertTrue([p for p in plan if p.startswith(".claude/agents/")])
+
+    def test_shared_output_survives_a_narrow_selection(self):
+        plan = self.plan(tools=["claude"])
+        self.assertIn("AGENTS.md", plan)
+        self.assertIn(".github/rules/personal.md", plan)
+        self.assertTrue([p for p in plan if p.startswith(".github/scripts/")])
+
+    def test_copilot_alone_keeps_prompts_and_drops_claude_and_cursor(self):
+        plan = self.plan(tools=["copilot"])
+        self.assertTrue([p for p in plan if p.startswith(".github/prompts/")])
+        self.assertEqual([p for p in plan if p.startswith((".cursor/", ".claude/"))], [])
+
+    def test_unknown_name_is_refused_naming_the_known_rows(self):
+        with self.assertRaises(sync.SyncError) as caught:
+            self.plan(tools=["claude", "emacs"])
+        self.assertIn("emacs", str(caught.exception))
+        self.assertIn("copilot", str(caught.exception))
+
+    def test_empty_list_is_refused(self):
+        with self.assertRaises(sync.SyncError):
+            self.plan(tools=[])
+
+    def test_duplicate_is_refused(self):
+        with self.assertRaises(sync.SyncError) as caught:
+            self.plan(tools=["claude", "claude"])
+        self.assertIn("claude", str(caught.exception))
+
+    def test_a_non_list_is_refused(self):
+        with self.assertRaises(sync.SyncError):
+            self.plan(tools="claude")
+
+    def test_the_loader_refuses_a_bad_list_naming_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "profile.yaml").write_text("source: {}\ntools: [claude, claude]\n",
+                                                    encoding="utf-8")
+            with self.assertRaises(sync.SyncError) as caught:
+                sync.load_profile(Path(tmp))
+        self.assertIn("profile.yaml", str(caught.exception))
+
+    def test_a_rule_for_a_deselected_tool_renders_nowhere_and_does_not_raise(self):
+        sync.set_stamp_source(MANIFEST)
+        plan = sync.Plan()
+        chosen = tuple(t for t in sync.TOOLS if t.name == "claude")
+        sync.add_rules(plan, "x", {"description": "d", "alwaysApply": True,
+                                   "tools": ["cursor"]}, "b", SHA, tools=chosen)
+        self.assertEqual(list(plan), [])
+
+    def test_a_rules_own_tools_intersect_with_the_profiles(self):
+        sync.set_stamp_source(MANIFEST)
+        plan = sync.Plan()
+        chosen = tuple(t for t in sync.TOOLS if t.name in ("claude", "cursor"))
+        sync.add_rules(plan, "x", {"description": "d", "alwaysApply": True,
+                                   "tools": ["copilot", "claude"]}, "b", SHA, tools=chosen)
+        self.assertEqual(list(plan), [".claude/rules/x.md"])
+
+    def test_cursor_hooks_do_not_render_when_cursor_is_deselected(self):
+        cfg = {"estate": True, "hooks": True}
+        on = sync.build_plan("t", cfg, DEFAULTS, SHA, self.manifest(tools=["cursor", "claude"]),
+                             profile_dir=EXAMPLE)
+        off = sync.build_plan("t", cfg, DEFAULTS, SHA, self.manifest(tools=["claude"]),
+                              profile_dir=EXAMPLE)
+        self.assertTrue([p for p in on if p.startswith(".cursor/hooks")])
+        self.assertEqual([p for p in off if p.startswith(".cursor/")], [])
+
+    def test_a_deselected_tools_stamped_files_are_removed_on_the_next_write(self):
+        repo = init_repo(self)
+        with mock.patch("builtins.print"):
+            sync.emit(repo, plan_for(), True, ident=self.IDENT)
+        old = repo / ".cursor" / "rules" / "x.mdc"
+        old.parent.mkdir(parents=True, exist_ok=True)
+        old.write_text(f"<!-- {sync.STAMP_MARKER}abc -->\nbody\n", encoding="utf-8")
+        narrow = self.plan(tools=["claude"])
+        orphans = sync.find_orphans(repo, narrow)
+        self.assertIn(".cursor/rules/x.mdc", orphans)
+        self.assertIn(".cursor/rules/estate.mdc", orphans)
+        self.assertIn(".github/instructions/estate.instructions.md", orphans)
+        self.assertIn(".github/prompts/sitrep.prompt.md", orphans)
+        self.assertEqual([o for o in orphans if o.startswith(".claude/")], [])
+
+    def test_the_example_profile_documents_the_key(self):
+        text = (EXAMPLE / "profile.yaml").read_text(encoding="utf-8")
+        self.assertIn("\n# tools: [claude]", text)
+
+
 if __name__ == "__main__":
     unittest.main()
