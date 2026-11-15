@@ -84,6 +84,10 @@ operator. Removing another chat's lock is the operator's call, not yours.
 - **Before merging into a branch another chat is releasing from**, say so on the
   exchange the release is coordinated on, and wait for the release owner's answer.
   A merge that lands mid-release rides into it.
+- **Never leave a step to the operator's memory.** Walk the operator through the
+  steps in your own scope when they are due. For anything outside it, name on the
+  exchange the chat that must act. Before asking the operator whose turn it is,
+  check the exchange.
 
 ## Open items
 
@@ -96,7 +100,15 @@ an edit.
 When you start a turn, any open item naming you that has no closing entry is yours
 to answer, or to say when you will.
 
+An open item no chat has claimed may be claimed by a chat whose objective it falls
+inside. Check the exchange for a claim first, then append an entry opening with
+`**Claiming <HH:MM> <asking chat>'s open item.**`, and answer it as its named chat
+would.
+
 ## Git freezes
+
+Two chats working in one repository never share a checkout: one of them works in
+a worktree, and they coordinate on the exchange.
 
 Use a worktree branch from `origin/main`, and most freezes become unnecessary. A
 freeze is for what is still shared: the main checkout and pushes to `main`.
