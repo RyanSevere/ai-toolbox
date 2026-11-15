@@ -83,6 +83,9 @@ spec files and load when they are needed.
   before starting. Design needs the operator; execution of a finished design
   should not need them, and comes back only when something comes up or goes
   sideways.
+- A reply that needs nothing from the operator does not end the turn. With no
+  decision, approval or step of theirs waiting, keep working; end the turn when
+  something needs them or the workstream's scope has nothing left to do.
 - After a summary of the conversation, re-check the workstream's state from live
   queries and carry on. Hand off (handoff skill) at the next clean stopping point
   on a second summary or a sign of drift: a look-back failure on structure that

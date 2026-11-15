@@ -6,7 +6,8 @@ description: >-
   it. Use when the user says any of: "hand this off", "write a seed", "write a
   handoff", "new chat for this", "I'm switching to X", "pick up where that left
   off", "read the seed", or when a session is about to end mid-workstream - the
-  conversation summarised a second time or drifting, context degrading, the
+  conversation summarised a second time or drifting, the reply shape
+  collapsing, context degrading, the
   compliance arrears cap reached, a service's usage running out.
   Also use when a scratch/<objective>/handoff.md file exists for the work in front of you, and
   when the operator declares a workstream's objective complete - its scratch cleanup
@@ -176,6 +177,11 @@ Where the tool can start a session itself, its own rule says how; the prompt is 
 
 When the operator declares the objective complete, and not before - not when a
 ticket closes, not mid-task:
+
+Before the operator rules it complete, restate the objective as the seed or the
+operator gave it, and show the evidence that each part of it is done: the merged
+pull request, the closed ticket, the live check. The operator rules on that
+evidence, not on a summary.
 
 1. Run `python .github/scripts/cleanup.py --ws <objective>` in each repository in
    scope. It lists the directory's files, its worktrees and their branches, and
