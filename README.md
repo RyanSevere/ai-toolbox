@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/README.md
 # Created by: Ryan Severe
 # Created: 2026-11-08
-# Last Updated: 2026-11-13
+# Last Updated: 2026-11-15
 # Description: The front page of the ai-toolbox repository - what the core is,
 #              how a private profile builds on it, how to run it, and what the
 #              one-way gates are for.
@@ -117,6 +117,7 @@ Run `python core/toolboxctl.py <subcommand>` inside the profile:
 | `update [vX.Y.Z]` | Replaces `core/` with the newest or a named release, previews the render, and keeps it only after you type yes. Otherwise restores `core/` from git. It commits and renders nothing. |
 | `flags` | Changes gate flags through `consent.py`, after a typed yes. |
 | `setup` | Creates or updates the profile through `setup_profile.py`. |
+| `gate-lists --leak FILE --core-names FILE` | Writes the one-way gates' pattern files from `profile.yaml`. Writes the two files named; prints counts, never patterns. |
 
 ## Tiers
 
@@ -142,8 +143,9 @@ A profile chooses which rules each target receives with the `tier1` and
 
 A complete profile with every top-level key the core accepts and invented
 values: `source`, `identity`, `not_onboarded`, `defaults`, `rollout`,
-`actions`, `gate_config_dir`, `features`, `capabilities`, `answers` and
-`targets`. Each key has a comment saying what it is for. The renderer refuses a
+`actions`, `gate_config_dir`, `features`, `capabilities`, `answers`,
+`personal`, `profile_name`, `leak_extra` and `targets`. The last three
+before `targets` feed `toolboxctl.py gate-lists`. Each key has a comment saying what it is for. The renderer refuses a
 key outside that set. Copy it as the start of your own.
 
 ### `setup_profile.py`
