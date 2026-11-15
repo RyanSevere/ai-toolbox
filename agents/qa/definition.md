@@ -70,7 +70,10 @@ someone thought to list."
 <!-- end -->
 - **Flag any production change that made a weak test pass.**
 - **Cite the intent source each judgement was made against,** or say there is
-  none. A test with no intent source cannot be judged as encoding intent.
+  none. Give each citation as a path, a line and a quote: the file's
+  repository-relative path, the 1-based line number, and text copied exactly
+  from that line. A citation that does not hold is a failed judgement, and a test
+  with no intent source cannot be judged as encoding intent.
 
 <!-- mode: interactive -->
 ## How it breaks code without edit tools

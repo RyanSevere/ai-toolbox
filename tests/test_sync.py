@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-14
+# Last Updated: 2026-11-15
 # Description: Tests for sync.py - the renderer that decides what every AI
 #              session in the estate reads. Covers build_plan over every real
 #              manifest target, exclude validation, the hand-owned guard, stamp
@@ -651,6 +651,28 @@ class OrphansAndForeign(unittest.TestCase):
     def test_unstamped_file_is_foreign_never_orphan(self):
         self.assertEqual(sync.find_foreign(self.repo, self.plan),
                          [".github/instructions/mine.instructions.md"])
+
+    def test_a_hand_written_workflow_is_not_foreign(self):
+        """Intent: a workflow never loads as a rule, so a repository's own CI is
+        not reported as a file nobody should touch."""
+        wf = self.repo / ".github" / "workflows" / "own-ci.yml"
+        wf.parent.mkdir(parents=True)
+        wf.write_text("name: own\n", encoding="utf-8")
+        self.assertNotIn(".github/workflows/own-ci.yml", sync.find_foreign(self.repo, self.plan))
+
+    def test_a_hand_written_rule_file_is_still_foreign(self):
+        """Intent: skipping workflows does not hide a hand-written file in a rule directory."""
+        hand = self.repo / ".cursor" / "rules" / "hand.mdc"
+        hand.parent.mkdir(parents=True)
+        hand.write_text("hand written\n", encoding="utf-8")
+        self.assertIn(".cursor/rules/hand.mdc", sync.find_foreign(self.repo, self.plan))
+
+    def test_a_stamped_workflow_outside_the_plan_is_still_an_orphan(self):
+        """Intent: a rendered workflow that left the plan is still removed."""
+        wf = self.repo / ".github" / "workflows" / "gone.yml"
+        wf.parent.mkdir(parents=True)
+        wf.write_text(f"# {sync.STAMP_MARKER}x\n", encoding="utf-8")
+        self.assertIn(".github/workflows/gone.yml", sync.find_orphans(self.repo, self.plan))
 
     def test_retired_unstampable_file_is_an_orphan(self):
         """A file that cannot carry a stamp is retired by path."""
@@ -1488,6 +1510,43 @@ class ProfileLoader(unittest.TestCase):
                 with self.assertRaises(sync.SyncError) as ctx:
                     sync.load_profile(folder)
                 self.assertIn("reason", str(ctx.exception))
+
+    def test_the_gate_list_keys_are_accepted(self):
+        """Intent: personal, profile_name and leak_extra are profile keys, so a profile can
+        say what its one-way gate lists are built from."""
+        folder = self.tmp_dir()
+        (folder / "profile.yaml").write_text(
+            "source: {repo: s}\npersonal: [a]\nprofile_name: p\nleak_extra: [x]\n", encoding="utf-8")
+        profile = sync.load_profile(folder)
+        self.assertEqual((profile["personal"], profile["profile_name"], profile["leak_extra"]),
+                         (["a"], "p", ["x"]))
+
+    def test_a_gate_list_key_of_the_wrong_type_is_refused_naming_the_key(self):
+        """Intent: a list key that is not a list, and a name that is not a string, are
+        refused with the key named."""
+        for text, key in (("personal: a\n", "personal"), ("leak_extra: a\n", "leak_extra"),
+                          ("profile_name: [a]\n", "profile_name")):
+            folder = self.tmp_dir()
+            (folder / "profile.yaml").write_text("source: {repo: s}\n" + text, encoding="utf-8")
+            with self.subTest(key=key):
+                with self.assertRaises(sync.SyncError) as ctx:
+                    sync.load_profile(folder)
+                self.assertIn(key, str(ctx.exception))
+                self.assertIn("must be a", str(ctx.exception))
+
+    def test_a_gate_list_entry_that_is_not_a_non_empty_string_is_refused(self):
+        """Intent: an entry that is empty or not a string would write a blank or odd pattern
+        line, so the profile is refused with the key named."""
+        for key in ("personal", "leak_extra"):
+            for entry in ("''", "3", "[a]", "'  '"):
+                folder = self.tmp_dir()
+                (folder / "profile.yaml").write_text(
+                    f"source: {{repo: s}}\n{key}: [{entry}]\n", encoding="utf-8")
+                with self.subTest(key=key, entry=entry):
+                    with self.assertRaises(sync.SyncError) as ctx:
+                        sync.load_profile(folder)
+                    self.assertIn(key, str(ctx.exception))
+                    self.assertIn("non-empty string", str(ctx.exception))
 
     def test_sync_names_manifest_yaml_nowhere_in_its_source(self):
         """Intent: a search for manifest.yaml in source returns nothing

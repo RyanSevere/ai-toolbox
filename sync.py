@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-14
-# Last Updated: 2026-11-14
+# Last Updated: 2026-11-15
 # Description: Renders the core and a profile's seeds into a consuming repository's
 #              per-tool formats and stamps each output with the source SHA.
 #              Dry-run by default; --write applies. Never writes Tier 3.
@@ -86,7 +86,12 @@ PROFILE_KEYS = {
     "source": dict, "identity": dict, "not_onboarded": dict, "defaults": dict,
     "rollout": dict, "actions": dict, "targets": dict, "features": dict, "capabilities": dict,
     "answers": dict, "gate_config_dir": str, "tracked": dict,
+    # What gate_lists.py builds the one-way gates' pattern files from: the owner's own
+    # repository names, a name for the profile, and further literal strings kept by hand.
+    "personal": list, "profile_name": str, "leak_extra": list,
 }
+# Keys whose list elements must each be a non-empty string.
+STRING_LIST_KEYS = ("personal", "leak_extra")
 # Repo-relative, one or more plain segments. Rendered into gate-config as config-dir.
 CONFIG_DIR = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9._-]*(/[A-Za-z0-9_.][A-Za-z0-9._-]*)*")
 # What each repo keeps in its gate_config_dir by hand: which paths hold tests, and
@@ -346,6 +351,12 @@ def load_profile(folder: Path) -> dict:
                             f"Allowed: {', '.join(sorted(PROFILE_KEYS))}")
         if value is not None and not isinstance(value, PROFILE_KEYS[key]):
             raise SyncError(f"{path}: {key!r} must be a {PROFILE_KEYS[key].__name__}")
+        if key in STRING_LIST_KEYS:
+            for item in value or []:
+                if not isinstance(item, str) or not item.strip():
+                    # The entry is never quoted: these lists are secret-adjacent.
+                    raise SyncError(f"{path}: every entry under {key!r} must be a "
+                                    "non-empty string")
     check_tracked(data, path)
     return data
 
@@ -1698,6 +1709,9 @@ RENDER_DIRS = (
     FACTORY_DIR,
     FACTORY_SKILLS_DIR,
 )
+# A workflow never loads as a rule, and repositories keep their own CI beside the
+# rendered workflows, so find_foreign does not report anything under these.
+FOREIGN_CHECK_SKIPS = (".github/workflows",)
 # A stamp's prefix from an arbitrary source. Detection uses is_stamped, which accepts any
 # source name, so this only stands in for a file some earlier render left behind.
 STAMP_MARKER = "generated from some-profile@"
@@ -1773,6 +1787,8 @@ def find_foreign(repo: Path, plan: dict[str, str]) -> list[str]:
     for path in _rendered_candidates(repo):
         rel = path.relative_to(repo).as_posix()
         if rel in plan:
+            continue
+        if any(rel == skip or rel.startswith(skip + "/") for skip in FOREIGN_CHECK_SKIPS):
             continue
         if not is_stamped(path.read_text(encoding="utf-8")):
             foreign.append(rel)

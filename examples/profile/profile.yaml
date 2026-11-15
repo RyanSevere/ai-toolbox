@@ -22,6 +22,18 @@ identity:
   name: Example Owner
   email: owner@example.invalid
 
+# What `python core/toolboxctl.py gate-lists` builds the one-way gates' pattern files
+# from. `personal` lists the repository names that belong to the profile's owner;
+# `profile_name` is a name for the profile that the core must never mention; `leak_extra`
+# lists further literal strings the leak gate must refuse, kept by hand. Every entry is
+# a non-empty string. The command adds the source repository, the identity email and
+# nine numbered references (<key>-1 to <key>-9) for every issue key itself.
+personal:
+  - example-private
+profile_name: example-profile-name
+leak_extra:
+  - internal.example.invalid
+
 # Repositories deliberately left out, each with the reason. Explicit, so "does this
 # repository matter" is answered before anyone asks.
 not_onboarded:
