@@ -275,8 +275,9 @@ def run_setup(folder: Path, *, answers_file: Path | None = None, ask: Ask = cons
 def write_registry(name: str, value: str | None, winreg_module=None) -> None:
     """Set the user environment variable `name` to `value` as REG_SZ, or delete it when
     `value` is None. Deleting a variable that is not there is fine."""
-    import winreg
-    module = winreg_module or winreg
+    module = winreg_module
+    if module is None:
+        import winreg as module  # Windows only; a test passes a fake on any platform
     with module.OpenKey(module.HKEY_CURRENT_USER, "Environment", 0,
                         module.KEY_SET_VALUE) as key:
         if value is None:
