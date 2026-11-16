@@ -218,8 +218,10 @@ each with a `kind` (`allow`, `ask` or `deny`) and the tool-methods `job` it
 backs. The core renders each as `Bash(<command> *)` and `PowerShell(<command> *)`
 and ships no rule of its own. An optional `classifier:` block of prose lines is
 validated but not rendered into a repository. `--check` also fails when an
-entry's `job` is not the first cell of exactly one row of the tool-methods
-table, or that row does not hold the entry's command. A `.claude/settings.json`
+entry's `job` is not the first cell of exactly one row across the `Job` tables
+(tables whose first header cell is `Job`) of the core's rules and of the
+profile's own `seeds/rules/`, or that row does not hold the entry's command.
+The profile's rules can carry `Job` tables for its own scripts. A `.claude/settings.json`
 that sync did not generate is never overwritten; see `hooks/README.md`.
 
 ## One-way gates

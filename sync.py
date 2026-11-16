@@ -1039,31 +1039,63 @@ def render_permission_rules(entries: list[dict]) -> dict[str, list[str]]:
     return rules
 
 
-def permission_table_problems(entries: list[dict], table: str) -> list[str]:
-    """Each entry's job must be the first cell of exactly one table row, and that row must hold
-    the entry's command, so the prose table and the data cannot drift."""
-    rows = [(cells[0], line) for line in table.splitlines() if line.startswith("|")
-            for cells in [[c.strip() for c in line.strip().strip("|").split("|")]]]
+def job_table_rows(text: str) -> list[tuple[str, str]]:
+    """The (first cell, line) of every row below a table header whose first cell is `Job`.
+
+    A table is a run of lines starting with `|`; its first line is the header and the
+    separator line is skipped. A table with any other first header cell is ignored."""
+    rows: list[tuple[str, str]] = []
+    in_job_table = False
+    previous_was_table = False
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            previous_was_table = False
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if not previous_was_table:
+            in_job_table = cells[0] == "Job"
+        elif in_job_table and not set(line.replace("|", "").strip()) <= set("-: "):
+            rows.append((cells[0], line))
+        previous_was_table = True
+    return rows
+
+
+def permission_table_problems(entries: list[dict], tables: str | dict[str, str]) -> list[str]:
+    """Each entry's job must be the first cell of exactly one `Job` table row across the given
+    tables, and that row must hold the entry's command, so the prose and the data cannot drift.
+
+    `tables` maps a file name to its text, so a problem can name the file of the row; a bare
+    string is one unnamed table."""
+    if isinstance(tables, str):
+        tables = {"the table": tables}
+    rows = [(first, line, name) for name, text in tables.items()
+            for first, line in job_table_rows(text)]
     problems = []
     for entry in entries:
         job, command = entry["job"], entry["command"]
-        matching = [line for first, line in rows if first == job]
+        matching = [(line, name) for first, line, name in rows if first == job]
         if len(matching) != 1:
+            where = f" ({', '.join(sorted(n for _, n in matching))})" if matching else ""
             problems.append(f"permission entry {command!r}: job {job!r} is the first cell of "
-                            f"{len(matching)} table rows, not exactly one")
-        elif command not in matching[0]:
-            problems.append(f"permission entry {command!r}: its row {job!r} does not mention "
-                            "that command")
+                            f"{len(matching)} table rows{where}, not exactly one")
+        elif command not in matching[0][0]:
+            problems.append(f"permission entry {command!r}: its row {job!r} in "
+                            f"{matching[0][1]} does not mention that command")
     return problems
 
 
 def permission_problems(profile_dir: Path) -> list[str]:
-    """The table drift check on a profile's real data; the core has none, so it passes empty."""
+    """The table drift check on a profile's real data; the core has none, so it passes empty.
+
+    It reads every `Job` table in the core's rules and in the profile's own seeds/rules/."""
     entries = load_permissions(profile_dir)["entries"]
     if not entries:
         return []
-    table = (RULES_DIR / "spec-tool-methods.md").read_text(encoding="utf-8")
-    return permission_table_problems(entries, table)
+    folders = [("core", RULES_DIR), ("profile", profile_dir / "seeds" / "rules")]
+    tables = {f"{label} rules/{path.name}": path.read_text(encoding="utf-8")
+              for label, folder in folders if folder.is_dir()
+              for path in sorted(folder.glob("*.md"))}
+    return permission_table_problems(entries, tables)
 
 
 def render_agent(meta: dict, body: str, sha: str, skills: tuple[str, ...] = ()) -> str:
