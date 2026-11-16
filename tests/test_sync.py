@@ -1295,6 +1295,306 @@ class HooksJsonLocal(unittest.TestCase):
         self.assertNotIn(".cursor/hooks.json", compared[0])
 
 
+class ClaudeSettings(unittest.TestCase):
+    """Intent: hooks/README.md, "Claude Code adapter". One committed, machine-independent
+    .claude/settings.json: hook entries in Claude Code's shape, the permission rules from the
+    profile's seeds/permissions.yaml, and a stamp key. A hand-written file is never overwritten,
+    and a write launches `python` the way Claude Code will first."""
+
+    GUARD = ('event: shell.before\nkind: permission\n'
+             'run: ["{python}", "{hooks}/guard/hook.py"]\ntimeout: 10\n')
+    WATCH = ('event: file.write.after\nkind: observer\n'
+             'run: ["{python}", "{hooks}/watch/hook.py"]\n')
+    IDENT = {"name": "n", "email": "e@example.com"}
+    CLAUDE_ONLY = {**MANIFEST, "tools": ["claude"]}
+    CURSOR_ONLY = {**MANIFEST, "tools": ["cursor"]}
+    PERMISSIONS = (
+        "entries:\n"
+        "  - command: python tools/ticket.py\n    kind: allow\n    job: Read a ticket\n"
+        "  - command: gh\n    kind: deny\n    job: GitHub only through the wrapper\n"
+        "  - command: git push\n    kind: ask\n    job: Publish a branch\n"
+        "classifier:\n  allow:\n    - Read-only commands\n  block:\n    - Force pushes\n")
+    tree = CursorHooks.tree
+
+    def plan(self, files: dict[str, str], cfg: dict | None = None, manifest: dict | None = None,
+             profile_dir: Path = EXAMPLE) -> dict[str, str]:
+        with mock.patch.object(sync, "HOOKS_DIR", self.tree(files)):
+            return build_plan("t", {"hooks": True} if cfg is None else cfg, DEFAULTS, SHA,
+                              manifest or self.CLAUDE_ONLY, profile_dir=profile_dir)
+
+    def settings(self, plan: dict[str, str]) -> dict:
+        return json.loads(plan[".claude/settings.json"])
+
+    def with_permissions(self, text: str | None = None) -> Path:
+        folder = example_copy(self)
+        (folder / "seeds").mkdir(exist_ok=True)
+        (folder / "seeds" / "permissions.yaml").write_text(
+            self.PERMISSIONS if text is None else text, encoding="utf-8")
+        return folder
+
+    @contextlib.contextmanager
+    def launches(self, **behaviour):
+        ran = mock.Mock(**behaviour)
+        with mock.patch.object(sync.subprocess, "run", ran), \
+                mock.patch.object(sync.shutil, "which", return_value="/usr/bin/bash"), \
+                mock.patch.object(sync, "activate_hooks"), \
+                mock.patch.object(sync, "ensure_identity"), \
+                mock.patch("builtins.print"):
+            yield ran
+
+    def content(self, command: str = 'python "${CLAUDE_PROJECT_DIR}/.claude/hooks/g/hook.py"'
+                ) -> str:
+        return json.dumps({"_generated": f"{MARK}{SHA}", "hooks": {"PreToolUse": [
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}]}},
+            indent=2) + "\n"
+
+    def test_the_event_mapping(self):
+        for neutral, native, matcher in (
+                ("session.start", "SessionStart", None),
+                ("shell.before", "PreToolUse", "Bash|PowerShell"),
+                ("file.write.before", "PreToolUse", "Write|Edit"),
+                ("file.write.after", "PostToolUse", "Write|Edit"),
+                ("turn.end", "Stop", None)):
+            with self.subTest(neutral=neutral):
+                self.assertEqual(sync.HOOK_EVENTS["claude"][neutral], (native, matcher))
+
+    def test_there_is_no_reply_event_so_a_hook_on_it_must_leave_claude_out(self):
+        body = self.GUARD.replace("shell.before", "reply.after").replace("permission", "observer")
+        with self.assertRaises(sync.SyncError) as caught:
+            self.plan({"guard/hook.yaml": body, "guard/hook.py": "pass\n"})
+        self.assertIn("claude", str(caught.exception))
+
+    def test_an_entry_runs_python_on_the_script_under_the_project_dir(self):
+        plan = self.plan({"guard/hook.yaml": self.GUARD, "guard/hook.py": "pass\n"})
+        entry = self.settings(plan)["hooks"]["PreToolUse"][0]["hooks"][0]
+        self.assertEqual(entry["command"],
+                         'python "${CLAUDE_PROJECT_DIR}/.claude/hooks/guard/hook.py" '
+                         '--tool claude')
+        self.assertEqual((entry["type"], entry["timeout"]), ("command", 10))
+
+    def test_the_owner_fills_inside_an_argument(self):
+        plan = self.plan({"guard/hook.yaml": self.GUARD.replace(
+            'hook.py"]', 'hook.py", "--owner={owner}"]')})
+        command = self.settings(plan)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        self.assertTrue(command.endswith(f'hook.py" --owner={MANIFEST["source"]["owner"]} '
+                                         '--tool claude'), command)
+
+    def test_a_permission_hook_blocks_on_failure_and_an_observer_does_not(self):
+        plan = self.plan({"guard/hook.yaml": self.GUARD, "watch/hook.yaml": self.WATCH})
+        hooks = self.settings(plan)["hooks"]
+        self.assertEqual(hooks["PreToolUse"][0]["hooks"][0]["onFailure"], "block")
+        self.assertNotIn("onFailure", hooks["PostToolUse"][0]["hooks"][0])
+
+    def test_the_file_is_stamped_and_ordered_and_formatted(self):
+        text = self.plan({"guard/hook.yaml": self.GUARD})[".claude/settings.json"]
+        self.assertTrue(text.endswith("}\n"))
+        self.assertIn('\n  "hooks": {', text)
+        config = json.loads(text)
+        self.assertEqual(list(config), ["_generated", "hooks"])
+        self.assertIn(f"{MARK}{SHA}", config["_generated"])
+
+    def test_a_none_matcher_is_left_out_and_equal_matchers_share_one_group_in_name_order(self):
+        start = self.GUARD.replace("shell.before", "session.start").replace(
+            "permission", "observer")
+        other = self.GUARD.replace("guard", "another")
+        hooks = self.settings(self.plan({"guard/hook.yaml": self.GUARD,
+                                         "another/hook.yaml": other,
+                                         "start/hook.yaml": start}))["hooks"]
+        self.assertNotIn("matcher", hooks["SessionStart"][0])
+        self.assertEqual(len(hooks["PreToolUse"]), 1)
+        self.assertEqual(hooks["PreToolUse"][0]["matcher"], "Bash|PowerShell")
+        self.assertEqual([e["command"].split("/")[-2] for e in hooks["PreToolUse"][0]["hooks"]],
+                         ["another", "guard"])
+
+    def test_the_scripts_and_library_render_under_claude_hooks(self):
+        plan = self.plan({"guard/hook.yaml": self.GUARD, "guard/hook.py": "pass\n",
+                          "lib/hookio.py": "pass\n"})
+        self.assertIn(".claude/hooks/guard/hook.py", plan)
+        self.assertIn(".claude/hooks/lib/hookio.py", plan)
+        self.assertNotIn(".claude/hooks/guard/hook.yaml", plan)
+
+    def test_a_cursor_path_is_refused_naming_the_file_and_the_placeholder(self):
+        body = self.GUARD.replace("{hooks}", ".cursor/hooks")
+        with self.assertRaises(sync.SyncError) as caught:
+            self.plan({"guard/hook.yaml": body})
+        self.assertIn("hooks/guard/hook.yaml", str(caught.exception))
+        self.assertIn("{hooks}", str(caught.exception))
+
+    def test_cursor_resolves_the_placeholder_and_still_takes_a_literal_path(self):
+        for body in (self.GUARD, self.GUARD.replace("{hooks}", ".cursor/hooks")):
+            plan = self.plan({"guard/hook.yaml": body, "guard/hook.py": "pass\n"},
+                             manifest=self.CURSOR_ONLY)
+            command = json.loads(plan[".cursor/hooks.json"])["hooks"]["beforeShellExecution"][0]
+            self.assertEqual(command["command"],
+                             f"{CursorHooks.PY} .cursor/hooks/guard/hook.py --tool cursor")
+
+    def test_the_core_hooks_render_for_cursor_exactly_as_before(self):
+        """Intent: moving the core hooks to {hooks} changes nothing Cursor reads."""
+        plan = build_plan("t", {"hooks": True}, DEFAULTS, SHA, self.CURSOR_ONLY)
+        config = json.loads(plan[".cursor/hooks.json"])["hooks"]
+        self.assertEqual(
+            [e["command"] for e in config["beforeShellExecution"]],
+            [f"{CursorHooks.PY} .cursor/hooks/no-destructive-shell/hook.py --tool cursor"])
+        self.assertEqual(
+            [e["command"] for e in config["preToolUse"]],
+            [f"{CursorHooks.PY} .cursor/hooks/no-generated-edits/hook.py --tool cursor"])
+        self.assertNotIn(".claude/settings.json", plan)
+
+    def test_the_core_hooks_render_for_claude(self):
+        plan = build_plan("t", {"hooks": True}, DEFAULTS, SHA, self.CLAUDE_ONLY)
+        commands = [e["command"] for group in self.settings(plan)["hooks"]["PreToolUse"]
+                    for e in group["hooks"]]
+        self.assertEqual(sorted(commands), sorted(
+            f'python "${{CLAUDE_PROJECT_DIR}}/.claude/hooks/{name}/hook.py" --tool claude'
+            for name in ("no-destructive-shell", "no-generated-edits")))
+
+    def test_nothing_renders_with_hooks_off_or_without_the_claude_tool(self):
+        self.assertNotIn(".claude/settings.json", self.plan(
+            {"guard/hook.yaml": self.GUARD}, {"hooks": False}))
+        self.assertNotIn(".claude/settings.json", self.plan(
+            {"guard/hook.yaml": self.GUARD}, manifest=self.CURSOR_ONLY))
+
+    def test_a_hand_written_file_is_refused_and_a_generated_one_is_overwritten(self):
+        original = '{"permissions": {"allow": ["Bash(ls)"]}}\n'
+        repo = self.tree({".claude/settings.json": original})
+        with self.assertRaises(sync.SyncError) as caught, mock.patch("builtins.print"):
+            sync.emit(repo, {".claude/settings.json": self.content()}, False, ident=self.IDENT)
+        self.assertIn(".claude/settings.json", str(caught.exception))
+        self.assertIn(".claude/settings.local.json", str(caught.exception))
+        self.assertEqual((repo / ".claude/settings.json").read_text(encoding="utf-8"), original)
+        repo = self.tree({".claude/settings.json": '{"_generated": "old"}\n'})
+        ok = subprocess.CompletedProcess([], 0, "", "")
+        with self.launches(return_value=ok):
+            sync.emit(repo, {".claude/settings.json": self.content()}, True, ident=self.IDENT)
+        self.assertEqual((repo / ".claude/settings.json").read_text(encoding="utf-8"),
+                         self.content())
+
+    def test_check_reports_drift_in_the_file_and_runs_no_launch(self):
+        repo = self.tree({".claude/settings.json": self.content('python "x"')})
+        with self.launches() as ran:
+            changed = sync.emit(repo, {".claude/settings.json": self.content()}, False,
+                                ident=self.IDENT)
+        self.assertEqual(changed, 1)
+        ran.assert_not_called()
+
+    def test_the_settings_file_is_checked_not_local(self):
+        self.assertIn(".claude/settings.json", sync.MARKED_JSON)
+        self.assertNotIn(".claude/settings.json", sync.LOCAL_RENDERED)
+
+    def test_the_probe_runs_python_under_bash_on_windows_and_sh_elsewhere(self):
+        with mock.patch.object(sync.shutil, "which", return_value="C:/Git/bash.exe"):
+            self.assertEqual(sync.claude_launch_shell(windows=True), ["C:/Git/bash.exe", "-c"])
+        self.assertEqual(sync.claude_launch_shell(windows=False), ["sh", "-c"])
+
+    def test_without_bash_on_windows_the_write_is_refused_with_the_reason(self):
+        with mock.patch.object(sync.shutil, "which", return_value=None), \
+                self.assertRaises(sync.SyncError) as caught:
+            sync.check_claude_launch(".claude/settings.json", self.content(), windows=True)
+        self.assertIn("bash", str(caught.exception))
+
+    def test_a_python_that_does_not_start_is_refused_and_nothing_is_written(self):
+        repo = self.tree({})
+        failed = subprocess.CompletedProcess([], 127, "", "python: command not found")
+        with self.launches(return_value=failed), self.assertRaises(sync.SyncError) as caught:
+            sync.emit(repo, {".claude/settings.json": self.content(), "AGENTS.md": "x\n"}, True,
+                      ident=self.IDENT)
+        message = str(caught.exception)
+        for expected in ("python -c pass", "127", "python: command not found"):
+            self.assertIn(expected, message)
+        self.assertFalse((repo / ".claude/settings.json").exists())
+        self.assertFalse((repo / "AGENTS.md").exists())
+
+    def test_a_python_that_starts_is_written_after_a_timed_probe(self):
+        repo = self.tree({})
+        ok = subprocess.CompletedProcess([], 0, "", "")
+        with self.launches(return_value=ok) as ran:
+            sync.emit(repo, {".claude/settings.json": self.content()}, True, ident=self.IDENT)
+        self.assertTrue((repo / ".claude/settings.json").is_file())
+        self.assertEqual(ran.call_args.args[0][-1], "python -c pass")
+        self.assertIn("timeout", ran.call_args.kwargs)
+
+    def test_a_file_with_only_permissions_is_not_probed(self):
+        repo = self.tree({})
+        text = json.dumps({"_generated": f"{MARK}{SHA}", "permissions": {"allow": []}}) + "\n"
+        with self.launches() as ran:
+            sync.emit(repo, {".claude/settings.json": text}, True, ident=self.IDENT)
+        ran.assert_not_called()
+
+    def test_permissions_render_both_shells_sorted_by_kind(self):
+        plan = self.plan({}, profile_dir=self.with_permissions())
+        config = self.settings(plan)
+        self.assertEqual(list(config), ["_generated", "permissions"])
+        self.assertEqual(config["permissions"], {
+            "allow": ["Bash(python tools/ticket.py *)", "PowerShell(python tools/ticket.py *)"],
+            "ask": ["Bash(git push *)", "PowerShell(git push *)"],
+            "deny": ["Bash(gh *)", "PowerShell(gh *)"]})
+
+    def test_the_classifier_is_validated_but_not_rendered(self):
+        plan = self.plan({}, profile_dir=self.with_permissions())
+        self.assertNotIn("Force pushes", plan[".claude/settings.json"])
+        loaded = sync.load_permissions(self.with_permissions())
+        self.assertEqual(loaded["classifier"], {"allow": ["Read-only commands"],
+                                                "block": ["Force pushes"]})
+
+    def test_no_permissions_file_and_no_hooks_write_no_settings(self):
+        self.assertNotIn(".claude/settings.json", self.plan({}))
+
+    def test_permissions_render_without_the_hooks_switch(self):
+        plan = self.plan({}, {}, profile_dir=self.with_permissions())
+        self.assertNotIn("hooks", self.settings(plan))
+
+    def test_a_bad_permissions_file_is_refused_naming_the_entry(self):
+        entry = "  - command: gh\n    kind: deny\n    job: j\n"
+        for label, text, needle in (
+                ("unknown key", "entries:\n" + entry + "    risk: high\n", "risk"),
+                ("bad kind", "entries:\n" + entry.replace("deny", "maybe"), "maybe"),
+                ("empty command", "entries:\n" + entry.replace("gh", "''"), "command"),
+                ("conflict", "entries:\n" + entry + entry.replace("deny", "allow"), "gh"),
+                ("unknown top key", "rules: []\n", "rules")):
+            with self.subTest(label), self.assertRaises(sync.SyncError) as caught:
+                sync.load_permissions(self.with_permissions(text))
+            self.assertIn(needle, str(caught.exception))
+
+    def test_the_seed_folder_check_accepts_the_permissions_file(self):
+        sync.check_seed_kinds(self.with_permissions())
+
+    def test_a_duplicate_command_of_one_kind_renders_once(self):
+        entry = "  - command: gh\n    kind: deny\n    job: j\n"
+        plan = self.plan({}, profile_dir=self.with_permissions("entries:\n" + entry * 2))
+        self.assertEqual(self.settings(plan)["permissions"]["deny"],
+                         ["Bash(gh *)", "PowerShell(gh *)"])
+
+    TABLE = ("| Job | Cursor | Claude Code |\n|---|---|---|\n"
+             "| Read a ticket | `python tools/ticket.py` | same |\n"
+             "| Publish a branch | `git push` | same |\n")
+
+    def entry(self, **override) -> dict:
+        return {"command": "git push", "kind": "ask", "job": "Publish a branch", **override}
+
+    def test_the_table_drift_check_passes_when_each_job_row_holds_its_command(self):
+        self.assertEqual(sync.permission_table_problems([self.entry()], self.TABLE), [])
+
+    def test_the_table_drift_check_names_the_entry_and_row_on_a_missing_command(self):
+        problems = sync.permission_table_problems(
+            [self.entry(command="git pull")], self.TABLE)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("git pull", problems[0])
+        self.assertIn("Publish a branch", problems[0])
+
+    def test_the_table_drift_check_refuses_an_unknown_or_repeated_job(self):
+        self.assertTrue(sync.permission_table_problems([self.entry(job="Nope")], self.TABLE))
+        twice = self.TABLE + "| Publish a branch | `git push` | same |\n"
+        self.assertTrue(sync.permission_table_problems([self.entry()], twice))
+
+    def test_the_core_has_no_data_so_its_table_check_passes_empty(self):
+        self.assertEqual(sync.permission_table_problems([], self.TABLE), [])
+
+    def test_the_real_table_check_runs_on_a_profiles_data(self):
+        folder = self.with_permissions()
+        self.assertTrue(sync.permission_problems(folder))
+        self.assertEqual(sync.permission_problems(example_copy(self)), [])
+
+
 class LockWrite(unittest.TestCase):
     """Intent: a file-sync client holding the lock file for a moment must not end a rollout
     in a traceback. The rename retries, a heartbeat that still fails warns and carries on, and
