@@ -57,12 +57,18 @@ decl="$config_dir/test-roots"
 pattern='(^|/)(test_[^/]+\.py|[^/]+_test\.py|[^/]+\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs))$'
 
 # Tracked files only. An untracked stray belongs to whoever made it.
-tests="$(git ls-files | grep -E "$pattern" || true)"
+# shellcheck source=/dev/null
+. "$(dirname "$0")/../lib/vendored_core.sh"
+tests="$(own_test_files "$pattern")"
 test_count=$(printf '%s' "$tests" | grep -c . || true)
 
 if [ ! -f "$decl" ]; then
   if [ "$test_count" -eq 0 ]; then
-    echo "No test files and no declaration. Nothing to check."
+    if has_vendored_core; then
+      echo "No test files of its own and no declaration: core/tests/ is the vendored core's, run upstream. Nothing to check."
+    else
+      echo "No test files and no declaration. Nothing to check."
+    fi
     exit 0
   fi
   echo "REFUSED: $test_count test file(s) present, and no $decl says where tests live."

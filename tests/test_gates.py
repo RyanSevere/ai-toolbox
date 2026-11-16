@@ -371,6 +371,43 @@ class TestOrphans(GateCase):
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_vendored_core_tests_are_not_the_profiles_own(self):
+        """Intent: where core/VENDORED exists, core/tests/ is the core's suite, run upstream.
+        A profile with no tests of its own passes, and says so."""
+        self.write("core/VENDORED", "source: acme/toolbox\n")
+        self.write("core/tests/test_core_thing.py")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("vendored", result.stdout)
+
+    def test_vendored_core_tests_need_no_root_beside_a_declaration(self):
+        self.write("core/VENDORED", "source: acme/toolbox\n")
+        self.write("core/tests/test_core_thing.py")
+        self.write("tests/test_own.py")
+        self.write(".github/test-roots", "tests\n")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("core/tests", result.stdout)
+
+    def test_a_core_folder_with_no_vendored_marker_still_counts(self):
+        self.write("core/tests/test_thing.py")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("core/tests/test_thing.py", result.stdout)
+
+    def test_a_profiles_own_tests_still_count_beside_a_vendored_core(self):
+        self.write("core/VENDORED", "source: acme/toolbox\n")
+        self.write("core/tests/test_core_thing.py")
+        self.write("tests/test_own.py")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("tests/test_own.py", result.stdout)
+        self.assertNotIn("core/tests/test_core_thing.py", result.stdout)
+
 
 class SecretScan(GateCase):
     gate = "secret-scan"
@@ -518,6 +555,27 @@ class Tests(GateCase):
         self.write("a.txt")
         self.commit()
         self.assertEqual(self.run_gate().returncode, 0)
+
+    def test_vendored_core_tests_are_not_the_profiles_own(self):
+        """Intent: where core/VENDORED exists, core/tests/ is the core's suite, run upstream.
+        A profile with no tests of its own passes, and says so."""
+        self.write("core/VENDORED", "source: acme/toolbox\n")
+        self.write("core/tests/test_core_thing.py")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("vendored", result.stdout)
+
+    def test_a_core_folder_with_no_vendored_marker_still_counts(self):
+        self.write("core/tests/test_thing.py")
+        self.commit()
+        self.assertEqual(self.run_gate().returncode, 1)
+
+    def test_a_profiles_own_tests_still_need_a_declaration_beside_a_vendored_core(self):
+        self.write("core/VENDORED", "source: acme/toolbox\n")
+        self.write("tests/test_own.py")
+        self.commit()
+        self.assertEqual(self.run_gate().returncode, 1)
 
     def test_roots_without_a_run_line_are_refused(self):
         self.write("tests/test_thing.py")

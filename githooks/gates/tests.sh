@@ -80,8 +80,14 @@ PUSH_REMOTE_SHA="${2:-}"
 export PUSH_LOCAL_SHA PUSH_REMOTE_SHA
 
 if [ ! -f "$decl" ]; then
-  if [ -z "$(git ls-files | grep -E "$pattern" || true)" ]; then
-    echo "No test files and no $decl. Nothing to run."
+  # shellcheck source=/dev/null
+  . "$(dirname "$0")/../lib/vendored_core.sh"
+  if [ -z "$(own_test_files "$pattern")" ]; then
+    if has_vendored_core; then
+      echo "No test files of its own and no $decl: core/tests/ is the vendored core's, run upstream. Nothing to run."
+    else
+      echo "No test files and no $decl. Nothing to run."
+    fi
     exit 0
   fi
   echo "REFUSED: test files exist and no $decl says how to run them."

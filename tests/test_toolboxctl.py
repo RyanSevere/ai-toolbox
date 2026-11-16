@@ -671,6 +671,17 @@ class Init(InitFixture):
         self.assertIn("git push", steps)
         self.assertNotIn("render not checked", steps)
 
+    def test_its_next_steps_name_the_tools_the_gates_need(self):
+        """Intent: the enabled gates refuse a push on a machine without their tools, so the
+        next steps say so in one line before the push step."""
+        code, out, err = self.run_init()
+        steps = out.rpartition("Next steps")[2]
+        needs = [line for line in steps.splitlines() if "before the first push" in line]
+        self.assertEqual(len(needs), 1, steps)
+        for tool in ("ruff", "shellcheck"):
+            self.assertIn(tool, needs[0])
+        self.assertLess(steps.index("before the first push"), steps.index("git push"))
+
     def test_the_repository_it_made_has_no_remote(self):
         """Intent: nothing init does leaves a remote that names the core."""
         self.run_init()

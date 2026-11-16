@@ -211,6 +211,16 @@ class Command(ProfileCase):
         self.assertEqual(self.features(), {"gates": {"alpha": True, "beta": True}})
         consent.check(self.dir, self.features(), self.known)
 
+    def test_the_screen_says_the_gates_need_their_tools_before_the_first_push(self):
+        """Intent: a gate whose tool is missing refuses the push, so the screen that turns
+        gates on names the tools, in one line, before anyone pushes."""
+        with self.answer("yes"):
+            self.run_main("--init")
+        needs = [line for line in self.output.splitlines() if "before the first push" in line]
+        self.assertEqual(len(needs), 1, self.output)
+        for tool in ("ruff", "shellcheck", "PyYAML"):
+            self.assertIn(tool, needs[0])
+
     def test_set_changes_one_flag_and_states_its_consequence(self):
         """Intent: states each change and its consequence, applies on yes."""
         with self.answer("yes"):
