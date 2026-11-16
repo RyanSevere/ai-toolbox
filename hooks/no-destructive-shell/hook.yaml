@@ -1,4 +1,4 @@
 event: shell.before
 kind: permission
-run: ["{python}", ".cursor/hooks/no-destructive-shell/hook.py"]
+run: ["{python}", "{hooks}/no-destructive-shell/hook.py"]
 timeout: 10

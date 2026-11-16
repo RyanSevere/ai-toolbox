@@ -704,7 +704,7 @@ class CursorHooks(unittest.TestCase):
     """Agent hooks render into .cursor/, merged into one hooks.json, fail closed."""
 
     GUARD = ('event: shell.before\nkind: permission\n'
-             'run: ["{python}", ".cursor/hooks/guard/hook.py"]\ntimeout: 10\n')
+             'run: ["{python}", "{hooks}/guard/hook.py"]\ntimeout: 10\n')
     OWNED = GUARD.replace('hook.py"]', 'hook.py", "--owner", "{owner}"]')
     PY = sync.hook_interpreter(sys.executable, os.name == "nt")
 
@@ -890,7 +890,7 @@ class HookSchema(unittest.TestCase):
 
     def hook(self, **override) -> str:
         spec = {"event": "shell.before", "kind": "permission",
-                "run": ["{python}", ".cursor/hooks/guard/hook.py"], "timeout": 10, **override}
+                "run": ["{python}", "{hooks}/guard/hook.py"], "timeout": 10, **override}
         return yaml.safe_dump({k: v for k, v in spec.items() if v is not None})
 
     def refused(self, body: str) -> str:

@@ -290,6 +290,8 @@ class Plan(dict):
 
 SEED_KINDS = ("rules", "skills", "context", "agents", "hooks", "githooks",
               "scripts", "workflows", "actions")
+# Single files directly under seeds/, read by name rather than merged as a folder.
+SEED_FILES = ("permissions.yaml",)
 
 
 def check_seed_kinds(profile_dir: Path) -> None:
@@ -302,6 +304,8 @@ def check_seed_kinds(profile_dir: Path) -> None:
     if not base.is_dir():
         return
     for entry in sorted(base.iterdir()):
+        if entry.name in SEED_FILES and entry.is_file():
+            continue
         if entry.name not in SEED_KINDS:
             raise SyncError(f"unknown seed folder {entry.name!r} in {base}. "
                             f"Allowed: {', '.join(SEED_KINDS)}")
@@ -594,9 +598,17 @@ HOOK_KEYS = {"event", "kind", "run", "timeout", "tools"}
 HOOK_REQUIRED = ("event", "kind", "run")
 # The fail mode comes from the kind, so it cannot be set wrong per hook.
 HOOK_FAILS_CLOSED = {"permission": True, "observer": False}
-# Each tool's native event, and its tool matcher where it needs one. Copilot's column is
-# validation only until its adapter renders it, so a hook it cannot run is refused today.
+# Each tool's native event, and its tool matcher where it needs one. Cursor's and Claude
+# Code's adapters render; Copilot's column is validation only until its adapter does, so a
+# hook it cannot run is refused today.
 HOOK_EVENTS = {
+    "claude": {
+        "session.start": ("SessionStart", None),
+        "shell.before": ("PreToolUse", "Bash|PowerShell"),
+        "file.write.before": ("PreToolUse", "Write|Edit"),
+        "file.write.after": ("PostToolUse", "Write|Edit"),
+        "turn.end": ("Stop", None),
+    },
     "cursor": {
         "session.start": ("sessionStart", None),
         "shell.before": ("beforeShellExecution", None),
@@ -617,7 +629,8 @@ NEUTRAL_EVENTS = sorted(set().union(*HOOK_EVENTS.values()))
 HOOK_LIB = "lib"
 
 # JSON has no comment syntax, so these carry the stamp as a key and are found by path.
-MARKED_JSON = (".cursor/hooks.json",)
+CLAUDE_SETTINGS = ".claude/settings.json"
+MARKED_JSON = (".cursor/hooks.json", CLAUDE_SETTINGS)
 # Rendered per machine, so never tracked and never compared by --check.
 LOCAL_RENDERED = (".cursor/hooks.json",)
 
@@ -709,6 +722,48 @@ def check_hooks_launch(rel: str, content: str, windows: bool) -> None:
                                 f"exit code {ran.returncode}\n  {command}\n{output}")
 
 
+CLAUDE_PROBE = "python -c pass"
+
+
+def claude_launch_shell(windows: bool) -> list[str]:
+    """The shell Claude Code runs a hook command under: bash on Windows, sh elsewhere."""
+    if not windows:
+        return ["sh", "-c"]
+    bash = shutil.which("bash")
+    if not bash:
+        raise SyncError("bash is not on PATH, and Claude Code runs a hook command under bash "
+                        "on Windows, so `python` cannot be checked to launch. Install Git for "
+                        "Windows (or put bash on PATH), then re-run --write")
+    return [bash, "-c"]
+
+
+def check_claude_launch(rel: str, content: str, windows: bool) -> None:
+    """Refuse a settings file with hook entries when `python` does not launch the way Claude
+    Code will launch it. A permission hook that cannot start blocks the action it guards."""
+    if not json.loads(content).get("hooks"):
+        return
+    shell = claude_launch_shell(windows)
+    try:
+        ran = subprocess.run([*shell, CLAUDE_PROBE], capture_output=True, text=True,
+                             timeout=HOOK_LAUNCH_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SyncError(f"{rel} not written: `{CLAUDE_PROBE}` could not be launched under "
+                        f"{shell[0]}: {exc}") from exc
+    if ran.returncode != 0:
+        output = (ran.stdout + ran.stderr).strip()
+        raise SyncError(f"{rel} not written: `{CLAUDE_PROBE}` does not launch under "
+                        f"{shell[0]}, exit code {ran.returncode}\n{output}")
+
+
+def has_generated_key(text: str) -> bool:
+    """True when text is a JSON object with a top-level _generated key: sync's own file."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and "_generated" in data
+
+
 def on_windows_mount(path: str, platform: str | None = None) -> bool:
     """A Windows folder seen from WSL, where a Linux interpreter path cannot launch."""
     return (platform or sys.platform).startswith("linux") and bool(WINDOWS_MOUNT.match(path))
@@ -756,12 +811,47 @@ def hook_spec(spec, where: str) -> dict:
     return {**spec, "tools": tools}
 
 
-def render_hook_assets(plan: Plan, hook_dir: Path, sha: str, skip: Path | None = None) -> None:
+CURSOR_HOOKS = ".cursor/hooks"
+CLAUDE_HOOKS = ".claude/hooks"
+# What {hooks} in run: becomes: each adapter's own folder for the rendered scripts. Claude
+# Code's goes through its project-root variable, so the committed file names no machine.
+HOOKS_PLACEHOLDER = "{hooks}"
+CLAUDE_PROJECT_HOOKS = "${CLAUDE_PROJECT_DIR}/" + CLAUDE_HOOKS
+
+
+def render_hook_assets(plan: Plan, hook_dir: Path, sha: str, skip: Path | None = None,
+                       root: str = CURSOR_HOOKS) -> None:
     for asset in sorted(p for p in hook_dir.rglob("*") if p.is_file()):
         rel = asset.relative_to(hook_dir)
         if asset == skip or GENERATED_DIRS.intersection(rel.parts):
             continue
-        plan[f".cursor/hooks/{hook_dir.name}/{rel.as_posix()}"] = render_asset(asset, sha)
+        plan[f"{root}/{hook_dir.name}/{rel.as_posix()}"] = render_asset(asset, sha)
+
+
+def hook_sources(profile_dir: Path, tool: str) -> tuple[list[Path], list[tuple]]:
+    """Every hooks/<name>/ directory, and the (dir, source, where, spec) of each with a
+    hook.yaml that targets `tool`. A directory without hook.yaml is not an agent hook -
+    no-secret-defaults is a git hook."""
+    hook_dirs = [hook_dir for hook_dir in
+                 merged_seeds(HOOKS_DIR, profile_dir, "hooks",
+                              lambda f: [p for p in f.iterdir() if p.is_dir()])]
+    found = []
+    for hook_dir in hook_dirs:
+        source = hook_dir / "hook.yaml"
+        if not source.is_file():
+            continue
+        where = f"hooks/{hook_dir.name}/hook.yaml"
+        spec = hook_spec(yaml.safe_load(source.read_text(encoding="utf-8")), where)
+        if tool in spec["tools"]:
+            found.append((hook_dir, source, where, spec))
+    return hook_dirs, found
+
+
+def fill_owner(run: list[str], owner: str | None, where: str) -> list[str]:
+    run = [arg.replace("{owner}", owner) if owner else arg for arg in run]
+    if any("{owner}" in arg for arg in run):
+        raise SyncError(f"{where} uses {{owner}}, but {PROFILE_NAME} source has no owner")
+    return run
 
 
 def render_cursor_hooks(sha: str, owner: str | None,
@@ -771,25 +861,16 @@ def render_cursor_hooks(sha: str, owner: str | None,
     The source is the tool-neutral schema (hooks/README.md); this is Cursor's adapter.
     Cursor hooks fail open by default, so failClosed is written on every entry, from kind:.
     A directory without hook.yaml is not an agent hook - no-secret-defaults is a git hook.
-    `{owner}` in run: is the profile's GitHub owner, so a hook script never names one.
+    `{owner}` in run: is the profile's GitHub owner, so a hook script never names one, and
+    `{hooks}` is `.cursor/hooks`; a literal `.cursor/hooks/` path still works.
     hooks/lib/ is the shared runtime library, rendered beside the hooks whenever any render.
     """
     plan = Plan()
     events: dict[str, list[dict]] = {}
-    hook_dirs = [hook_dir for hook_dir in
-                 merged_seeds(HOOKS_DIR, profile_dir, "hooks",
-                              lambda f: [p for p in f.iterdir() if p.is_dir()])]
-    for hook_dir in hook_dirs:
-        source = hook_dir / "hook.yaml"
-        if not source.is_file():
-            continue
-        where = f"hooks/{hook_dir.name}/hook.yaml"
-        spec = hook_spec(yaml.safe_load(source.read_text(encoding="utf-8")), where)
-        if "cursor" not in spec["tools"]:
-            continue
-        run = [arg.replace("{owner}", owner) if owner else arg for arg in spec["run"]]
-        if any("{owner}" in arg for arg in run):
-            raise SyncError(f"{where} uses {{owner}}, but {PROFILE_NAME} source has no owner")
+    hook_dirs, found = hook_sources(profile_dir, "cursor")
+    for hook_dir, source, where, spec in found:
+        run = fill_owner([arg.replace(HOOKS_PLACEHOLDER, CURSOR_HOOKS) for arg in spec["run"]],
+                         owner, where)
         if run[0] == "{python}" and sys.prefix != sys.base_prefix:
             raise SyncError(f"sync.py is running in a virtual environment ({sys.prefix}); a hook "
                             "rendered with its interpreter stops launching when that environment "
@@ -814,6 +895,174 @@ def render_cursor_hooks(sha: str, owner: str | None,
                   "hooks": events}
         plan[".cursor/hooks.json"] = json.dumps(config, indent=2) + "\n"
     return plan
+
+
+def claude_hook_command(run: list[str], where: str, owner: str | None) -> str:
+    """Claude Code's adapter: join run: into one command for the bash it runs hooks under.
+
+    `{python}` is a bare `python` from PATH, since a committed file cannot name a machine's
+    interpreter; the launch check at --write proves it starts. `{hooks}` is the project's
+    .claude/hooks through ${CLAUDE_PROJECT_DIR}, in double quotes so the shell expands it.
+    """
+    for arg in run:
+        if arg.startswith(".cursor/"):
+            raise SyncError(f"{where}: run: names {arg!r}, a Cursor path, which Claude Code "
+                            f"cannot run. Write {HOOKS_PLACEHOLDER}/<name>/... so each tool "
+                            "resolves its own folder")
+    if "{python}" in run[1:]:
+        raise SyncError(f"{where}: {{python}} must open run:")
+    words = []
+    for arg in fill_owner([a.replace(HOOKS_PLACEHOLDER, CLAUDE_PROJECT_HOOKS)
+                           for a in ["python" if a == "{python}" else a for a in run]],
+                          owner, where):
+        if "${CLAUDE_PROJECT_DIR}" in arg:
+            rest = arg.replace("${CLAUDE_PROJECT_DIR}", "")
+            if any(char in rest for char in '"`$\\'):
+                raise SyncError(f"{where}: run: entry {arg!r} cannot be double-quoted safely")
+            words.append(f'"{arg}"')
+        else:
+            words.append(shell_argument(arg, windows=False))
+    return " ".join(words)
+
+
+def render_claude_settings(sha: str, owner: str | None, profile_dir: Path,
+                           hooks_on: bool) -> dict[str, str]:
+    """The one committed .claude/settings.json: hook entries in Claude Code's shape, and the
+    permission rules from the profile's seeds/permissions.yaml. Written only when it has
+    one of them. Scripts and the library go under .claude/hooks/."""
+    plan = Plan()
+    events: dict[str, list[dict]] = {}
+    if hooks_on and HOOKS_DIR.exists():
+        hook_dirs, found = hook_sources(profile_dir, "claude")
+        for hook_dir, source, where, spec in found:
+            run = claude_hook_command(spec["run"], where, owner)
+            native, matcher = HOOK_EVENTS["claude"][spec["event"]]
+            handler = {"type": "command", "command": f"{run} --tool claude"}
+            if "timeout" in spec:
+                handler["timeout"] = spec["timeout"]
+            if HOOK_FAILS_CLOSED[spec["kind"]]:
+                handler["onFailure"] = "block"
+            groups = events.setdefault(native, [])
+            group = next((g for g in groups if g.get("matcher") == matcher), None)
+            if group is None:
+                group = {"matcher": matcher, "hooks": []} if matcher else {"hooks": []}
+                groups.append(group)
+            group["hooks"].append(handler)
+            render_hook_assets(plan, hook_dir, sha, skip=source, root=CLAUDE_HOOKS)
+        if events:
+            for hook_dir in hook_dirs:
+                if hook_dir.name == HOOK_LIB:
+                    render_hook_assets(plan, hook_dir, sha, root=CLAUDE_HOOKS)
+    rules = render_permission_rules(load_permissions(profile_dir)["entries"])
+    if events or rules:
+        config: dict = {"_generated": stamp(sha)[5:-4].strip()}
+        if events:
+            config["hooks"] = events
+        if rules:
+            config["permissions"] = rules
+        plan[CLAUDE_SETTINGS] = json.dumps(config, indent=2, sort_keys=False) + "\n"
+    return plan
+
+
+PERMISSIONS_FILE = "permissions.yaml"
+PERMISSION_KINDS = ("allow", "ask", "deny")
+PERMISSION_ENTRY_KEYS = {"command", "kind", "job"}
+PERMISSION_KEYS = {"entries", "classifier"}
+CLASSIFIER_KEYS = ("allow", "block")
+
+
+def load_permissions(profile_dir: Path) -> dict:
+    """<profile>/seeds/permissions.yaml, checked: {"entries": [...], "classifier": {...}}.
+
+    The core holds the schema and never a rule. Anything the schema does not name is
+    refused, and each refusal names the entry. `classifier:` is validated here and rendered
+    by the user-level file's render, not into a repository."""
+    path = Path(profile_dir) / "seeds" / PERMISSIONS_FILE
+    empty = {"entries": [], "classifier": {key: [] for key in CLASSIFIER_KEYS}}
+    if not path.is_file():
+        return empty
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise SyncError(f"{path} must be a mapping with entries: and classifier:")
+    unknown = sorted(set(data) - PERMISSION_KEYS)
+    if unknown:
+        raise SyncError(f"{path}: unknown key(s) {unknown}; allowed {sorted(PERMISSION_KEYS)}")
+    entries = data.get("entries") or []
+    if not isinstance(entries, list):
+        raise SyncError(f"{path}: entries: must be a list")
+    seen: dict[str, str] = {}
+    for index, entry in enumerate(entries, 1):
+        name = f"{path} entry {index}"
+        if not isinstance(entry, dict):
+            raise SyncError(f"{name} must be a mapping")
+        command = entry.get("command")
+        if isinstance(command, str) and command.strip():
+            name = f"{name} ({command.strip()!r})"
+        unknown = sorted(set(entry) - PERMISSION_ENTRY_KEYS)
+        if unknown:
+            raise SyncError(f"{name}: unknown key(s) {unknown}; "
+                            f"allowed {sorted(PERMISSION_ENTRY_KEYS)}")
+        if not isinstance(command, str) or not command.strip():
+            raise SyncError(f"{name}: command: must be a non-empty string")
+        if entry.get("kind") not in PERMISSION_KINDS:
+            raise SyncError(f"{name}: kind: {entry.get('kind')!r} is not one of "
+                            f"{list(PERMISSION_KINDS)}")
+        if not isinstance(entry.get("job"), str) or not entry["job"].strip():
+            raise SyncError(f"{name}: job: must be a non-empty string")
+        command = command.strip()
+        if seen.setdefault(command, entry["kind"]) != entry["kind"]:
+            raise SyncError(f"{name}: command {command!r} is {seen[command]} in one entry "
+                            f"and {entry['kind']} in another")
+    classifier = data.get("classifier") or {}
+    if not isinstance(classifier, dict) or set(classifier) - set(CLASSIFIER_KEYS):
+        raise SyncError(f"{path}: classifier: must be a mapping with only {list(CLASSIFIER_KEYS)}")
+    for key in CLASSIFIER_KEYS:
+        lines = classifier.get(key) or []
+        if not isinstance(lines, list) or not all(isinstance(line, str) and line.strip()
+                                                  for line in lines):
+            raise SyncError(f"{path}: classifier.{key}: must be a list of non-empty strings")
+    return {"entries": [{**e, "command": e["command"].strip(), "job": e["job"].strip()}
+                        for e in entries],
+            "classifier": {key: list(classifier.get(key) or []) for key in CLASSIFIER_KEYS}}
+
+
+def render_permission_rules(entries: list[dict]) -> dict[str, list[str]]:
+    """Claude Code's permissions block: each command as a Bash and a PowerShell prefix rule
+    under its kind, sorted and de-duplicated, with only the kinds that have a rule."""
+    rules: dict[str, list[str]] = {}
+    for kind in PERMISSION_KINDS:
+        found = sorted({f"{tool}({e['command']} *)" for e in entries if e["kind"] == kind
+                        for tool in ("Bash", "PowerShell")})
+        if found:
+            rules[kind] = found
+    return rules
+
+
+def permission_table_problems(entries: list[dict], table: str) -> list[str]:
+    """Each entry's job must be the first cell of exactly one table row, and that row must hold
+    the entry's command, so the prose table and the data cannot drift."""
+    rows = [(cells[0], line) for line in table.splitlines() if line.startswith("|")
+            for cells in [[c.strip() for c in line.strip().strip("|").split("|")]]]
+    problems = []
+    for entry in entries:
+        job, command = entry["job"], entry["command"]
+        matching = [line for first, line in rows if first == job]
+        if len(matching) != 1:
+            problems.append(f"permission entry {command!r}: job {job!r} is the first cell of "
+                            f"{len(matching)} table rows, not exactly one")
+        elif command not in matching[0]:
+            problems.append(f"permission entry {command!r}: its row {job!r} does not mention "
+                            "that command")
+    return problems
+
+
+def permission_problems(profile_dir: Path) -> list[str]:
+    """The table drift check on a profile's real data; the core has none, so it passes empty."""
+    entries = load_permissions(profile_dir)["entries"]
+    if not entries:
+        return []
+    table = (RULES_DIR / "spec-tool-methods.md").read_text(encoding="utf-8")
+    return permission_table_problems(entries, table)
 
 
 def render_agent(meta: dict, body: str, sha: str, skills: tuple[str, ...] = ()) -> str:
@@ -1689,11 +1938,14 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
     if cleaner.exists():
         plan[".github/scripts/cleanup.py"] = render_asset(cleaner, sha)
 
-    # Off unless a target opts in with `hooks: true`, pending the hook design review. They
-    # are Cursor's agent hooks, so a profile that leaves Cursor out renders none.
+    # Off unless a target opts in with `hooks: true`, pending the hook design review. Each
+    # adapter renders only when its tool is chosen. Claude Code's file also carries the
+    # profile's permission rules, which render whether or not hooks are on.
+    owner = (manifest.get("source") or {}).get("owner")
     if cfg.get("hooks", False) and "cursor" in chosen and HOOKS_DIR.exists():
-        plan.update(render_cursor_hooks(sha, (manifest.get("source") or {}).get("owner"),
-                                        profile_dir))
+        plan.update(render_cursor_hooks(sha, owner, profile_dir))
+    if "claude" in chosen:
+        plan.update(render_claude_settings(sha, owner, profile_dir, cfg.get("hooks", False)))
 
     for entry in merged_seeds(SCRIPTS_DIR, profile_dir, "scripts",
                               lambda f: sorted(p for p in f.iterdir()
@@ -1738,6 +1990,7 @@ RENDER_DIRS = (
     ".cursor/rules",
     ".cursor/skills",
     ".cursor/hooks",
+    ".claude/hooks",
     ".claude/rules",
     ".claude/skills",
     ".claude/agents",
@@ -1964,6 +2217,13 @@ def emit(repo: Path, plan: dict[str, str], write: bool, *, ident: dict[str, str]
     # and overwriting it drops the guard silently.
     for rel in MARKED_JSON:
         path = repo / rel
+        if rel == CLAUDE_SETTINGS:
+            if (rel in plan and path.is_file()
+                    and not has_generated_key(path.read_text(encoding="utf-8"))):
+                raise SyncError(f"{rel} in {repo} has no _generated key, so sync did not write "
+                                "it. Refusing to overwrite it: move its entries to "
+                                ".claude/settings.local.json, which Claude Code merges in")
+            continue
         if rel in plan and path.is_file() and not is_stamped(path.read_text(encoding="utf-8")):
             raise SyncError(f"{rel} in {repo} carries no generated-file stamp, so it is hand-owned. "
                             "Refusing to overwrite it: move its hooks into the profile's "
@@ -1977,6 +2237,8 @@ def emit(repo: Path, plan: dict[str, str], write: bool, *, ident: dict[str, str]
         for rel in LOCAL_RENDERED:
             if rel in plan:
                 check_hooks_launch(rel, plan[rel], os.name == "nt")
+        if CLAUDE_SETTINGS in plan:
+            check_claude_launch(CLAUDE_SETTINGS, plan[CLAUDE_SETTINGS], os.name == "nt")
     changed = 0
     for rel, content in sorted(plan.items()):
         path = repo / rel
@@ -2692,6 +2954,11 @@ def main(argv: list[str] | None = None) -> int:
         plan = build_plan(name, cfg, defaults, None if args.self_only else sha, manifest,
                           profile_dir)
         report_drops(plan)
+        if args.check:
+            drift = permission_problems(profile_dir)
+            if drift:
+                raise SyncError("the permissions and the tool-methods table disagree:\n  "
+                                + "\n  ".join(drift))
         if args.self_only:
             plan = {k: v for k, v in plan.items() if k not in never_write(manifest)}
 
