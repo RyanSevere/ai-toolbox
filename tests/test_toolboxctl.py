@@ -673,6 +673,68 @@ class Init(InitFixture):
                 self.assertEqual(self.listing(self.profile), before)
                 self.assertEqual(self.urls, [])
 
+    def test_a_setup_that_raises_leaves_no_core_and_no_profile(self):
+        """Intent: a setup step that fails after vendoring removes the core/ this run
+        wrote, so the folder is as init found it."""
+        before = self.listing(self.profile)
+        with mock.patch("setup_profile.main", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                self.run_init()
+        self.assertFalse((self.profile / "core").exists())
+        self.assertFalse((self.profile / "profile.yaml").exists())
+        self.assertEqual(self.listing(self.profile), before)
+
+    def test_a_setup_refusal_removes_everything_this_run_wrote(self):
+        """Intent: a refused setup (exit 1) removes core/, profile.yaml and the seeds/ setup
+        copied in, so a retry starts clean; a file that was there before init stays."""
+        (self.profile / "notes.txt").write_text("mine\n", encoding="utf-8")
+        before = self.listing(self.profile)
+
+        def half_setup(_argv):
+            (self.profile / "profile.yaml").write_text("x: 1\n", encoding="utf-8")
+            (self.profile / "seeds").mkdir()
+            (self.profile / "seeds" / "a.md").write_text("a\n", encoding="utf-8")
+            return 1
+
+        with mock.patch("setup_profile.main", side_effect=half_setup):
+            code, _, _ = self.run_init()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.listing(self.profile), before)
+
+    def test_a_written_profile_whose_render_was_not_checked_is_kept(self):
+        """Intent: setup's exit 3 means the profile was written; init keeps it."""
+        def written(_argv):
+            (self.profile / "profile.yaml").write_text("x: 1\n", encoding="utf-8")
+            return 3
+
+        with mock.patch("setup_profile.main", side_effect=written):
+            code, _, _ = self.run_init()
+        self.assertEqual(code, 3)
+        self.assertTrue((self.profile / "core").exists())
+        self.assertTrue((self.profile / "profile.yaml").exists())
+
+    def test_an_interrupted_setup_leaves_no_core_and_no_profile(self):
+        """Intent: Ctrl+C at a prompt removes the core/ this run wrote."""
+        with mock.patch("setup_profile.main", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_init()
+        self.assertFalse((self.profile / "core").exists())
+        self.assertFalse((self.profile / "profile.yaml").exists())
+
+    def test_a_folder_with_core_and_no_profile_names_the_unfinished_init(self):
+        """Intent: core/ without profile.yaml is an unfinished init: the message says so,
+        says to delete core/ and run init again, and does not send the operator to update."""
+        (self.profile / "core").mkdir()
+        before = self.listing(self.profile)
+        code, _, err = self.run_init()
+        self.assertNotEqual(code, 0)
+        self.assertIn("unfinished init", err)
+        self.assertIn("Delete", err)
+        self.assertIn("run init again", err)
+        self.assertNotIn("toolboxctl update", err)
+        self.assertEqual(self.listing(self.profile), before)
+        self.assertEqual(self.urls, [])
+
     def test_it_refuses_a_folder_that_is_not_a_git_work_tree(self):
         """Intent: no repository, no bootstrap, and nothing written."""
         plain = self.profile.parent / "plain"
