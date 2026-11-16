@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -334,6 +335,13 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
     into <profile>/core/, then run setup. Refuses, changing nothing, where a profile is
     already there. Run from the archive, not from a vendored core."""
     profile = profile.resolve()
+    core_dir, manifest = profile / vendor.CORE_DIR, profile / sync.PROFILE_NAME
+    if ((core_dir.exists() or core_dir.is_symlink())
+            and not (manifest.exists() or manifest.is_symlink())):
+        print(f"[ERROR] {core_dir} exists but {manifest} does not: this is an unfinished "
+              f"init. Delete {core_dir}, then run init again. Nothing was changed.",
+              file=sys.stderr)
+        return 1
     for name in (vendor.CORE_DIR, sync.PROFILE_NAME):
         if (profile / name).exists() or (profile / name).is_symlink():
             print(f"[ERROR] {profile / name} already exists, so this is not a new profile. "
@@ -350,6 +358,7 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
     except OSError as error:
         print(f"[ERROR] could not read this archive's VERSION: {error}", file=sys.stderr)
         return 1
+    before = {entry.name for entry in profile.iterdir()}
     try:
         record, notes = vendor.vendor_core(profile, f"{source}@{tag}", fetch or vendor.http_get)
     except vendor.VendorError as error:
@@ -359,8 +368,60 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
         print(f"[NOTE] {note}")
     print(f"[OK] vendored {record.source} {record.tag} {record.sha[:12]} into "
           f"{profile / vendor.CORE_DIR}")
-    return setup_profile.main(["--profile", str(profile),
-                               *(["--answers", str(answers)] if answers else [])])
+    try:
+        code = setup_profile.main(["--profile", str(profile),
+                                   *(["--answers", str(answers)] if answers else [])])
+    except BaseException:
+        remove_unfinished(profile, before)
+        raise
+    # 1 is a refusal. 3 means the profile was written and only its render was not checked,
+    # so it is a finished profile and stays.
+    if code == 1:
+        remove_unfinished(profile, before)
+    if code in (0, 3):
+        print(next_steps(profile))
+    return code
+
+
+def remove_unfinished(profile: Path, before: set[str]) -> None:
+    """Take back what a failed or cancelled init wrote: every top-level entry that was not
+    in the folder when init started (core/, profile.yaml, the seeds/ setup copies in), so a
+    retry starts from the same folder. Nothing that was there before is touched."""
+    def writable(func, path, _error):
+        os.chmod(path, 0o700)
+        func(path)
+    removed = []
+    for entry in sorted(profile.iterdir()):
+        if entry.name in before:
+            continue
+        if entry.is_symlink() or entry.is_file():
+            entry.unlink()
+        else:
+            shutil.rmtree(entry, onerror=writable)
+        removed.append(entry.name)
+    print(f"[NOTE] init did not finish; removed {', '.join(removed) or 'nothing'} from "
+          f"{profile}. Run init again.", file=sys.stderr)
+
+
+def next_steps(profile: Path) -> str:
+    """What to do after init wrote the profile, and where the answers went."""
+    return ("\nNext steps\n"
+            f"  Your answers are in {profile / sync.PROFILE_NAME}, under identity:, source:, "
+            "answers: and the leak-gate keys. Edit that file in any editor to change one.\n"
+            "  The build: lines above list what is still to author. They are not errors.\n"
+            + ("" if consent.read_lock(profile) is not None else
+               "  0. Lock the push gates. Setup did not, because its answers came from a file."
+               f" In {profile}, run:\n"
+               "       python core/consent.py --profile . --init\n")
+            + f"  1. Review the render. In {profile}, run:\n"
+            "       git status\n"
+            "  2. Commit it:\n"
+            "       git add -A\n"
+            "       git commit -m \"Create the profile\"\n"
+            "  3. Push it:\n"
+            "       git push -u origin main\n"
+            "  4. Confirm the core from inside the profile:\n"
+            "       python core/toolboxctl.py version")
 
 
 def build_parser() -> argparse.ArgumentParser:

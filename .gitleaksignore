@@ -1,0 +1,7 @@
+# Fake test fixtures that gitleaks reads as credentials, in commits that cannot be
+# changed. Format: commit:file:rule:line. Each value was a synthetic secret-scan fixture,
+# checked by hand (operator, 2026-11-16); from then on the fixtures are assembled at run
+# time. Add a line only for a finding checked by hand and known not to be a real secret.
+930307c055fb98201d18e3b0637c8ee97944d6a8:tests/test_gates.py:generic-api-key:379
+bf57d5a3e3c731e9f2796ea6765892884f1c3060:tests/test_gates.py:generic-api-key:377
+bf57d5a3e3c731e9f2796ea6765892884f1c3060:tests/test_gates.py:generic-api-key:392
