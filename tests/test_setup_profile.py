@@ -3,7 +3,7 @@
 # Path: {PROJECT_ROOT}/tests/test_setup_profile.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-16
 # Description: The setup process: a profile created from the
 #              example, answers collected interactively or from a file, features
 #              left to the consent command, a diff confirmed before any re-run
@@ -132,13 +132,31 @@ class FromEmpty(Fixture):
         self.assertEqual(data["identity"], {"name": "Example Person",
                                             "email": "person@example.invalid"})
         self.assertEqual(data["answers"], {"tracker.system": SYSTEM})
-        self.assertEqual(self.consented, [])
         profile = sync.load_profile(self.folder)
         for name, cfg in profile["targets"].items():
             with self.subTest(target=name):
                 plan = sync.build_plan(name, cfg or {}, profile["defaults"], "abc1234", profile,
                                        profile_dir=self.folder)
                 self.assertIn("AGENTS.md", plan)
+        self.assertIn("[OK] render:", out)
+
+    def test_a_fresh_profile_reaches_consent_with_the_core_gates(self):
+        """Intent: the core ships gates, so a profile made from it alone is put to consent
+        and ends with the lock written."""
+        code, out = self.run_setup()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.consented, [self.folder])
+        self.assertTrue((self.folder / consent.LOCK_NAME).is_file())
+        self.assertNotIn("consent was skipped", out)
+
+    def test_no_known_gates_prints_a_skip_line_and_carries_on(self):
+        """Intent: skipping consent is never silent."""
+        with mock.patch.object(consent, "known_gates", return_value=[]):
+            code, out = self.run_setup()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.consented, [])
+        self.assertIn("[WARN] no push gates are known, so consent was skipped: "
+                      "add gates under seeds/githooks/gates/", out)
         self.assertIn("[OK] render:", out)
 
     def test_a_shipped_gate_is_put_to_consent(self):
@@ -226,8 +244,11 @@ class AnswersFile(Fixture):
         self.assertEqual(self.data()["features"], {})
         self.assertFalse((self.folder / "profile.lock").exists())
         self.assertEqual(self.consented, [])
-        self.assertEqual(code, 0, out)
-        self.assertIn("[OK] render:", out)
+        # The core ships gates, so the render cannot be checked until consent is given. 3
+        # is "written, render not checked", and the message names the consent command.
+        self.assertEqual(code, 3, out)
+        self.assertIn("no profile.lock", out)
+        self.assertIn("consent.py --profile . --init", out)
 
     def test_a_file_that_sets_features_or_anything_else_refuses(self):
         """Intent: features are set only through the consent command."""

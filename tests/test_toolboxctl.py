@@ -640,13 +640,16 @@ class Init(InitFixture):
         """Intent: init in an empty repository writes core/ and a VENDORED recording the
         archive's own VERSION as a tag and the SHA it resolved to, then renders a profile."""
         code, out, err = self.run_init()
-        self.assertEqual(code, 0, out + err)
+        # The core ships gates and an answers file leaves consent for the operator's own
+        # console, so the render is unchecked (3) until `consent.py --init`.
+        self.assertEqual(code, 3, out + err)
+        self.assertIn("consent.py --profile . --init", out + err)
         record = vendor.read_record(self.profile / "core")
         self.assertEqual((record.source, record.tag, record.sha),
                          (self.SOURCE, "v0.9.9", SHA))
         self.assertTrue((self.profile / "core" / "sync.py").is_file())
         self.assertTrue((self.profile / "profile.yaml").is_file())
-        self.assertIn("[OK] render:", out)
+        self.assertIn("[UNKNOWN] render not checked", out)
         self.assertTrue(any(url.endswith("/commits/v0.9.9") for url in self.urls))
 
     def test_the_repository_it_made_has_no_remote(self):
@@ -700,7 +703,10 @@ class InitGate2(InitFixture):
         if sh is None:
             self.skipTest("no POSIX shell available; not reporting a pass")
         code, out, err = self.run_init()
-        self.assertEqual(code, 0, out + err)
+        # The core ships gates and an answers file leaves consent for the operator's own
+        # console, so the render is unchecked (3) until `consent.py --init`.
+        self.assertEqual(code, 3, out + err)
+        self.assertIn("consent.py --profile . --init", out + err)
         git(self.profile, "remote", "add", "origin", self.CORE_URL)
         push_url = git(self.profile, "remote", "get-url", "--push", "origin")
         script = (Path(toolboxctl.__file__).resolve().parent / "githooks" / "one-way"
