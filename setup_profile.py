@@ -4,12 +4,15 @@
 # Path: {PROJECT_ROOT}/setup_profile.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-06
+# Last Updated: 2026-11-15
 # Description: The setup process. Creates a profile from the
 #              example, asks each capability file's setup questions (or reads
 #              them from --answers), hands features to the consent command,
 #              shows a diff before a re-run writes, and finishes with a dry-run
 #              render naming what is dropped and what is still to build.
+#              With --hooks off|on it does only the per-machine hooks switch:
+#              a user environment variable on Windows, a marked block in
+#              ~/.profile elsewhere, written after a typed yes.
 ################################################################################
 # ===========================================================================
 #
@@ -49,6 +52,8 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import importlib.util
+import os
 import re
 import shutil
 import sys
@@ -67,6 +72,26 @@ ANSWER_FILE_KEYS = {"identity", "answers"}
 IDENTITY_KEYS = {"name", "email"}
 # A dry run renders nothing to commit, so no real source commit is stamped.
 DRY_RUN_SHA = "0000000"
+
+
+def _hooks_variable() -> str:
+    """The off switch's name, read from the hook library so it is written in one place."""
+    spec = importlib.util.spec_from_file_location("hookio", ROOT / "hooks" / "lib" / "hookio.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.OFF_VARIABLE
+
+
+HOOKS_VARIABLE = _hooks_variable()
+HOOKS_START = "# >>> ai-toolbox hooks switch >>>"
+HOOKS_END = "# <<< ai-toolbox hooks switch <<<"
+HOOKS_BLOCK = f"{HOOKS_START}\nexport {HOOKS_VARIABLE}=off\n{HOOKS_END}\n"
+# A line that sources ~/.profile: `. ~/.profile`, `source "$HOME/.profile"`, inside an `if`, ...
+HOOKS_SOURCES = re.compile(r"(?:^|[\s;&|(])(?:\.|source)\s+[\"']?(?:~|\$HOME|\$\{HOME\})/\.profile\b")
+HWND_BROADCAST = 0xFFFF
+WM_SETTINGCHANGE = 0x001A
+SMTO_ABORTIFHUNG = 0x0002
+BROADCAST_TIMEOUT_MS = 5000
 
 Ask = Callable[[str, str, "str | None"], str]
 Confirm = Callable[[str], bool]
@@ -247,18 +272,142 @@ def run_setup(folder: Path, *, answers_file: Path | None = None, ask: Ask = cons
     return report(folder, answers)
 
 
+def write_registry(name: str, value: str | None, winreg_module=None) -> None:
+    """Set the user environment variable `name` to `value` as REG_SZ, or delete it when
+    `value` is None. Deleting a variable that is not there is fine."""
+    module = winreg_module
+    if module is None:
+        import winreg as module  # Windows only; a test passes a fake on any platform
+    with module.OpenKey(module.HKEY_CURRENT_USER, "Environment", 0,
+                        module.KEY_SET_VALUE) as key:
+        if value is None:
+            try:
+                module.DeleteValue(key, name)
+            except FileNotFoundError:
+                pass
+        else:
+            module.SetValueEx(key, name, 0, module.REG_SZ, value)
+
+
+def broadcast_environment(user32=None) -> None:
+    """Tell running programs the environment changed, so processes started from now on see it."""
+    import ctypes
+    user32 = user32 or ctypes.windll.user32
+    result = ctypes.c_ulong()
+    sent = user32.SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment",
+                                      SMTO_ABORTIFHUNG, BROADCAST_TIMEOUT_MS,
+                                      ctypes.byref(result))
+    if not sent:
+        raise OSError("the settings-change broadcast was not delivered")
+
+
+def sources_profile(text: str) -> bool:
+    return any(HOOKS_SOURCES.search(line) for line in text.splitlines()
+               if not line.lstrip().startswith("#"))
+
+
+def posix_refusal(home: Path, shell: str, state: str) -> str | None:
+    """Why the ~/.profile block would not be read, or None. Names the line to handle by hand."""
+    do = "add" if state == "off" else "remove"
+    line = f"export {HOOKS_VARIABLE}=off"
+    for name in (".bash_profile", ".bash_login"):
+        path = home / name
+        if path.is_file() and not sources_profile(path.read_text(encoding="utf-8",
+                                                                 errors="replace")):
+            return (f"{path} exists and does not source ~/.profile, so a bash login shell "
+                    f"never reads ~/.profile. Nothing was written. {do.capitalize()} this "
+                    f"line {'to' if state == 'off' else 'from'} {path} by hand: {line}")
+    if shell.endswith("zsh"):
+        return (f"the login shell is zsh ({shell}), which does not read ~/.profile. Nothing "
+                f"was written. {do.capitalize()} this line {'to' if state == 'off' else 'from'} "
+                f"~/.zprofile by hand: {line}")
+    return None
+
+
+def edit_profile_text(text: str, state: str) -> str:
+    """~/.profile text with the marked block present (off) or gone (on); the rest untouched."""
+    if HOOKS_START in text and HOOKS_BLOCK not in text:
+        raise SetupError(f"~/.profile holds the line {HOOKS_START!r} but not the whole block "
+                         "setup writes. Fix or remove it by hand")
+    if state == "on":
+        return text.replace(HOOKS_BLOCK, "")
+    if HOOKS_BLOCK in text:
+        return text
+    return text + ("" if not text or text.endswith("\n") else "\n") + HOOKS_BLOCK
+
+
+def run_hooks(state: str, *, confirm: Confirm = console_confirm, platform: str | None = None,
+              home: Path | None = None, shell: str | None = None,
+              registry: Callable[[str, "str | None"], None] = write_registry,
+              broadcast: Callable[[], None] = broadcast_environment) -> int:
+    """Set (off) or clear (on) the hooks off switch for this machine, after a typed yes.
+    0 done or already so, 1 refused or not confirmed. The writers are parameters so a test
+    never touches the real registry or home folder."""
+    platform = sys.platform if platform is None else platform
+    try:
+        if platform == "win32":
+            verb = "set" if state == "off" else "delete"
+            what = (f"This will {verb} {HOOKS_VARIABLE}{'=off' if state == 'off' else ''} "
+                    r"in the user environment: HKCU\Environment, as a string value.")
+            print(what)
+            if not confirm(what):
+                raise SetupError("not confirmed. Nothing was written")
+            registry(HOOKS_VARIABLE, "off" if state == "off" else None)
+            print(f"[OK] {verb} {HOOKS_VARIABLE} in HKCU\\Environment")
+            try:
+                broadcast()
+            except Exception as error:  # a failed broadcast must not undo the write
+                print(f"[WARN] the settings-change broadcast failed ({error}). The value is "
+                      "written; sign out and in, or restart the tool, to pick it up")
+        else:
+            home = Path.home() if home is None else Path(home)
+            shell = os.environ.get("SHELL", "") if shell is None else shell
+            refusal = posix_refusal(home, shell, state)
+            if refusal:
+                raise SetupError(refusal)
+            path = home / ".profile"
+            text = path.read_bytes().decode("utf-8") if path.exists() else ""
+            proposed = edit_profile_text(text, state)
+            if proposed == text:
+                print(f"[OK] nothing to change in {path}")
+                return 0
+            what = (f"This will {'add' if state == 'off' else 'remove'} this block "
+                    f"{'to' if state == 'off' else 'from'} {path}:\n{HOOKS_BLOCK}")
+            print(what)
+            if not confirm(what):
+                raise SetupError("not confirmed. Nothing was written")
+            path.write_bytes(proposed.encode("utf-8"))
+            print(f"[OK] written: {path}")
+    except (SetupError, OSError, UnicodeError) as error:
+        print(f"REFUSED: {error}", file=sys.stderr)
+        return 1
+    print("[OK] Restart the tool, from a new login shell on Linux, for the change to take effect")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="setup_profile.py",
         description="Create or update a profile: identity, setup answers, then features "
                     "through consent.py. Exit 0 done, 1 refused, 3 written but the render "
                     "could not be checked.")
-    parser.add_argument("--profile", type=Path, required=True,
-                        help="the profile folder: new, empty, or holding profile.yaml")
+    parser.add_argument("--profile", type=Path,
+                        help="the profile folder: new, empty, or holding profile.yaml. "
+                             "Required unless --hooks is given")
     parser.add_argument("--answers", type=Path,
                         help="answer from this YAML file instead of the console. Holds "
                              "identity: and answers: only; features stay off")
+    parser.add_argument("--hooks", choices=("off", "on"),
+                        help="only set or clear the hooks off switch on this machine "
+                             f"({HOOKS_VARIABLE}): no profile questions, no profile.yaml "
+                             "write. Shows what it will write and asks for a typed yes")
     args = parser.parse_args(argv)
+    if args.hooks:
+        if args.answers:
+            parser.error("--answers does not apply to --hooks, which asks no profile questions")
+        return run_hooks(args.hooks)
+    if args.profile is None:
+        parser.error("--profile is required unless --hooks is given")
     return run_setup(args.profile.resolve(), answers_file=args.answers)
 
 

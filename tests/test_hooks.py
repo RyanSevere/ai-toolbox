@@ -7,7 +7,7 @@
 # Last Updated: 2026-11-15
 # Description: Tests for the editor safety hooks, hooks/no-secret-defaults,
 #              hooks/no-shell-file-edits, hooks/no-destructive-shell and
-#              hooks/no-generated-edits, and the
+#              hooks/no-generated-edits, hooks/session-start, and the
 #              shared runtime library hooks/lib/hookio.py. Per hook: a violation it must
 #              catch, a near-miss it must allow, and malformed input it must
 #              not crash on. A guard that silently stops matching looks the
@@ -884,6 +884,109 @@ class GeneratedEdits(unittest.TestCase):
                      "generated from profile-x - edit the source", ""):
             with self.subTest(text=text):
                 self.assertIsNone(self.hook.stamp_source(text))
+
+
+class HookNotice(unittest.TestCase):
+    """Intent: hooks/README.md, "The off switch". run_notice is the one entry point the off switch
+    does not gate, for a hook whose job is to report the switch: it writes the text its callback
+    returns as Claude Code's SessionStart context, and like an observer it fails open."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lib = load("hookio", HOOKS / "lib" / "hookio.py")
+
+    START = {"hook_event_name": "SessionStart", "source": "startup", "cwd": "/repo"}
+
+    def run_hook(self, payload, argv: list[str], callback, env: dict | None = None):
+        out = io.StringIO()
+        data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        with mock.patch("sys.stdin", new=stdin_of(data)), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.argv", ["hook.py", *argv]), mock.patch.dict(os.environ):
+            os.environ.pop("AI_TOOLBOX_HOOKS", None)
+            os.environ.update(env or {})
+            code = self.lib.run_notice("start", "session.start", callback)
+        return code, out.getvalue()
+
+    def never(self, seen):
+        raise AssertionError(f"callback ran with {seen}")
+
+    def test_the_text_comes_out_as_claude_codes_session_start_context(self):
+        code, out = self.run_hook(self.START, ["--tool", "claude"], lambda seen: "the line")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, json.dumps({"hookSpecificOutput": {
+            "hookEventName": "SessionStart", "additionalContext": "the line"}}) + "\n")
+
+    def test_the_callback_sees_the_neutral_session_start_payload(self):
+        seen = []
+        self.run_hook(self.START, ["--tool", "claude"], lambda p: seen.append(p))
+        self.assertEqual(seen[0]["event"], "session.start")
+
+    def test_no_text_writes_nothing(self):
+        self.assertEqual(self.run_hook(self.START, ["--tool", "claude"], lambda p: None),
+                         (0, ""))
+
+    def test_the_off_switch_does_not_gate_it(self):
+        code, out = self.run_hook(self.START, ["--tool", "claude"], lambda p: "the line",
+                                  {"AI_TOOLBOX_HOOKS": "off"})
+        self.assertEqual(code, 0)
+        self.assertIn("the line", out)
+
+    def test_input_it_cannot_read_writes_nothing_and_exits_zero(self):
+        for data in (b"\x00\x01 not json", b"[]"):
+            with self.subTest(data=data):
+                self.assertEqual(self.run_hook(data, ["--tool", "claude"], self.never), (0, ""))
+
+    def test_a_tool_with_no_writer_gets_nothing(self):
+        for argv in (["--tool", "cursor"], ["--tool", "nope"], []):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_hook(self.START, argv, lambda p: "the line"), (0, ""))
+
+
+class SessionStart(unittest.TestCase):
+    """Intent: hooks/session-start reports the off switch to the session and nothing else: the
+    line when AI_TOOLBOX_HOOKS=off, nothing when it is unset, and it still runs while it is off."""
+
+    LINE = ("Agent hooks are OFF on this machine: AI_TOOLBOX_HOOKS=off is set, so no hook "
+            "guards this session. Clear it to turn them back on.")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.hook = load("session_start", HOOKS / "session-start" / "hook.py")
+
+    def start(self, data: bytes, env: dict | None = None):
+        out = io.StringIO()
+        with mock.patch("sys.stdin", new=stdin_of(data)), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.argv", ["hook.py", "--tool", "claude"]), \
+                mock.patch.dict(os.environ):
+            os.environ.pop("AI_TOOLBOX_HOOKS", None)
+            os.environ.update(env or {})
+            code = self.hook.main()
+        return code, out.getvalue()
+
+    PAYLOAD = json.dumps({"hook_event_name": "SessionStart", "source": "startup"}).encode()
+
+    def test_with_the_switch_off_it_emits_the_line_in_claude_codes_shape(self):
+        code, out = self.start(self.PAYLOAD, {"AI_TOOLBOX_HOOKS": "off"})
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"hookSpecificOutput": {
+            "hookEventName": "SessionStart", "additionalContext": self.LINE}})
+        self.assertEqual(len(out.splitlines()), 1)
+
+    def test_with_the_switch_unset_or_anything_but_off_it_writes_nothing(self):
+        for env in ({}, {"AI_TOOLBOX_HOOKS": ""}, {"AI_TOOLBOX_HOOKS": "0"}):
+            with self.subTest(env=env):
+                self.assertEqual(self.start(self.PAYLOAD, env), (0, ""))
+
+    def test_an_unreadable_payload_writes_nothing_and_exits_zero(self):
+        for env in ({}, {"AI_TOOLBOX_HOOKS": "off"}):
+            with self.subTest(env=env):
+                self.assertEqual(self.start(b"\x00\x01 not json", env), (0, ""))
+
+    def test_the_manifest_names_the_event_the_kind_and_the_tool(self):
+        text = (HOOKS / "session-start" / "hook.yaml").read_text(encoding="utf-8")
+        for line in ("event: session.start", "kind: observer", "tools: [claude]", "timeout: 10",
+                     'run: ["{python}", "{hooks}/session-start/hook.py"]'):
+            self.assertIn(line, text.splitlines())
 
 
 class HookInput(unittest.TestCase):

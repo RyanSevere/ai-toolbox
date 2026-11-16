@@ -1,0 +1,5 @@
+event: session.start
+kind: observer
+tools: [claude]
+run: ["{python}", "{hooks}/session-start/hook.py"]
+timeout: 10

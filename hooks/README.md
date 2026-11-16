@@ -138,6 +138,19 @@ key, and that an edit of an existing file reports the tool name `Write`, before 
 enabled anywhere. If either is wrong, every agent `Write` in a repository with hooks on is
 denied for the missing field.
 
+### `session-start` - agent hook on `session.start`, Claude Code only
+
+An `observer` with `tools: [claude]`. When `AI_TOOLBOX_HOOKS=off` it adds one line to the
+session's context, through Claude Code's `SessionStart` output
+(`hookSpecificOutput.additionalContext`):
+
+> Agent hooks are OFF on this machine: AI_TOOLBOX_HOOKS=off is set, so no hook guards this
+> session. Clear it to turn them back on.
+
+With the switch unset, or any value but `off`, it writes nothing. Input it cannot read, or a
+tool other than Claude Code, writes nothing and exits 0. It is the one hook that runs while
+the switch is off; see "The off switch". Cursor is not covered.
+
 ### `no-shell-file-edits` - Cursor hook, not shipped
 
 **Not rendered.** In Cursor it denied every agent `git commit` with "Blocked:
@@ -283,17 +296,28 @@ Before `sync.py --write` writes `.cursor/hooks.json`, it runs each hook's render
 
 A hook whose `run:` does not open with `{python}` has no rendered interpreter to probe. It is printed as `not launch-checked` and rendered anyway.
 
+## Claude Code adapter
+
+When `hooks: true` and `claude` is among the profile's tools, `sync.py` renders `.claude/settings.json`: the hook entries, and the profile's permission rules (see the core `README.md`, "Claude Code settings"). The file is committed and `--check` compares it, because it names no machine. It carries a top-level `_generated` key, and a `.claude/settings.json` without that key is hand-written, so sync refuses to overwrite it. Move its entries to the gitignored `.claude/settings.local.json`, which Claude Code merges in. The scripts and `lib/` render under `.claude/hooks/`.
+
+- **`{hooks}` in `run:`** is each adapter's own scripts folder: `.cursor/hooks` for Cursor, `${CLAUDE_PROJECT_DIR}/.claude/hooks` for Claude Code. Cursor still accepts a literal `.cursor/hooks/` path, because profiles carry one. The Claude Code adapter refuses an argument that starts with `.cursor/`, naming the file and asking for `{hooks}`.
+- **The command** is `python "${CLAUDE_PROJECT_DIR}/.claude/hooks/<name>/<script>" <args> --tool claude`. The double quotes let the shell expand the variable. Hooks run under bash, so arguments are quoted for it.
+- **The interpreter rule.** `{python}` renders as bare `python`, resolved from `PATH` on each machine, because a committed file cannot name one machine's interpreter. The Cursor adapter's refusal of a bare interpreter is unchanged.
+- **The launch probe.** Before `--write` writes a `.claude/settings.json` that has hook entries, it runs `python -c pass` the way Claude Code launches a hook: through `bash -c` on Windows (refusing, with the reason, when `bash` is not on `PATH`), through `sh -c` elsewhere, with a timeout. On a failure it refuses, writes nothing, and names the command, the shell, the exit code and the output. `--check` runs no probe.
+- **Events** map as `session.start` to `SessionStart`, `shell.before` to `PreToolUse` on `Bash|PowerShell`, `file.write.before` to `PreToolUse` on `Write|Edit`, `file.write.after` to `PostToolUse` on `Write|Edit`, and `turn.end` to `Stop`. There is no `reply.after`, so a hook on it must leave `claude` out with `tools:`.
+- **Fail mode.** A `permission` hook gets `"onFailure": "block"`, so a hook that cannot run blocks the action; an `observer` gets none. Entries with the same event and matcher share one matcher group, in hook-name order.
+
 ## Tool-neutral schema
 
 The rationale and rejected options are in `DECISIONS.md`, "A tool-neutral
 schema, and the off switch". Every `hook.yaml` is in this shape, and the old
-`command:` / `failClosed:` keys are refused by name. Only the Cursor adapter
-renders; Copilot's and OpenCode's are not built yet.
+`command:` / `failClosed:` keys are refused by name. The Cursor and Claude Code
+adapters render; Copilot's and OpenCode's are not built yet.
 
 ```yaml
 event: shell.before
 kind: permission
-run: ["{python}", ".cursor/hooks/<name>/hook.py", "--owner", "{owner}"]
+run: ["{python}", "{hooks}/<name>/hook.py", "--owner", "{owner}"]
 timeout: 10
 tools: [cursor, copilot]   # optional; default is every adapter
 ```
@@ -329,10 +353,12 @@ tools: [cursor, copilot]   # optional; default is every adapter
 - **A shared runtime library**, `hooks/lib/hookio.py`, rendered to
   `.cursor/hooks/lib/` whenever any hook renders. A hook puts the folder beside its
   own on `sys.path` and calls `run_permission(name, event, decide)` or
-  `run_observer(name, event, observe)`. The library reads stdin as bytes (BOM and
+  `run_observer(name, event, observe)`, or, for a hook that only reports the off switch,
+  `run_notice(name, event, notice)`. The library reads stdin as bytes (BOM and
   UTF-16 handled), hands the hook a neutral payload - `event`, the event's fields
   (`command` and `cwd` for `shell.before`, `path` and `cwd` for `file.write.before`),
-  `model`, `model_id`, `model_params`, and `raw` - and writes the tool's output. An
+  `model`, `model_id`, `model_params`, and `raw` - and writes the tool's output. `session.start` has no fields
+beyond those. An
   absent optional field is `None`; an absent required one (`command`, `path`) is not
   passed on. Input it cannot parse denies a permission hook and is skipped by an
   observer. Only `shell.before`'s and `file.write.before`'s fields are mapped; each other
@@ -373,10 +399,39 @@ tools: [cursor, copilot]   # optional; default is every adapter
 `AI_TOOLBOX_HOOKS=off`, set at setup as a user environment variable. The shared
 library reads it at run time: a permission hook allows and an observer does nothing.
 The value is trimmed and case-folded, and anything but `off` leaves hooks on.
-Built in `hookio.py`. Setting it at setup, and the `session.start` line, are
-separate work.
+Built in `hookio.py`.
+
+Set or clear it with `python setup_profile.py --hooks off` (or `--hooks on`; from a
+profile, `toolboxctl setup --hooks off`). That does only the machine switch: no profile
+questions and no `profile.yaml` write. It prints what it will write, and writes only
+after a typed `yes`.
+
+- **Windows:** `AI_TOOLBOX_HOOKS=off` as a string value in `HKCU\Environment`, then a
+  `WM_SETTINGCHANGE` broadcast so newly started processes see it. `--hooks on` deletes
+  the value. A failed broadcast only warns.
+- **Linux and other POSIX:** a marked block in `~/.profile`, created if missing and
+  written once however often it runs. `--hooks on` removes the block and leaves the rest
+  of the file as it was.
+
+  ```sh
+  # >>> ai-toolbox hooks switch >>>
+  export AI_TOOLBOX_HOOKS=off
+  # <<< ai-toolbox hooks switch <<<
+  ```
+
+  Setup refuses, and writes nothing, when a login shell would not read `~/.profile`:
+  a `~/.bash_profile` or `~/.bash_login` that does not source it, or a zsh login shell.
+  It names the reason and the line to add by hand (`export AI_TOOLBOX_HOOKS=off`, to
+  that file or to `~/.zprofile`).
+- **Restart the tool** after either change: a running process keeps the environment it
+  started with. On Linux, start it from a new login shell.
+
 Hooks still render, so running `sync.py` cannot change the state, and a hook process
 inherits the tool's environment rather than the agent shell's - the second is
-documented for neither tool and is the first thing the build checks live. The
-`session.start` hook runs regardless and tells the session the hooks are off, and
-the prime report carries the same line.
+documented for neither tool and is the first thing the build checks live.
+
+**`session-start` is the one hook that still runs while the switch is off.** It enters the
+library through `run_notice`, which the switch does not gate, and it is meant only for a hook
+whose job is to report the switch. Every other hook goes quiet when the switch is off, so
+without it nothing would tell a session that its guards are off. It tells the session the
+hooks are off, and the prime report carries the same line.

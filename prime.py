@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/prime.py
 # Created by: Ryan Severe
 # Created: 2026-09-28
-# Last Updated: 2026-11-08
+# Last Updated: 2026-11-15
 # Description: Collects the durable facts /prime reports - repository state,
 #              design-document status lines, nested AGENTS.md headings and run
 #              targets - for one or more repositories in one command. Prints
@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -70,8 +71,19 @@ FENCE = re.compile(r"^\s*(```|~~~)")
 GIT_TIMEOUT = 30
 
 
+# The hooks off switch. This file is rendered alone into every repository, so it cannot import
+# hooks/lib/hookio.py; tests/test_prime.py checks the name against the library's.
+HOOKS_VARIABLE = "AI_TOOLBOX_HOOKS"
+HOOKS_NOTICE = f"hooks: OFF on this machine ({HOOKS_VARIABLE}=off)"
+
+
 class PrimeError(Exception):
     """A step could not establish its fact. Reported, never swallowed."""
+
+
+def hooks_off() -> bool:
+    """Read the way hookio.hooks_off reads it."""
+    return os.environ.get(HOOKS_VARIABLE, "").strip().lower() == "off"
 
 
 def git(repo: Path, *args: str) -> str:
@@ -204,6 +216,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
+    if hooks_off():
+        print(HOOKS_NOTICE)
     results = [prime_one(arg, print) for arg in args.repos]
     return 0 if all(results) else 1
 
