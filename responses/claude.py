@@ -82,6 +82,9 @@ SESSION_ID = re.compile(r"[0-9A-Fa-f-]{8,64}")
 OPENERS = {"human": shape.OPERATOR, "task-notification": shape.NOTIFICATION}
 # A subagent's hand-back is a peer record. It opens a turn only after the previous one ended.
 PEER = "peer"
+# Fallback, used only when a record has no origin key: a note from a side session or a
+# CI monitor is written without one, with one of these tags in its text.
+ORIGINLESS_EVENTS = ("<side-sessions-event>", "<ci-monitor-event>")
 
 
 def detect(env: Mapping[str, str]) -> bool:
@@ -166,7 +169,20 @@ def handback(record: dict) -> bool:
         return False
     if any(b.get("type") == "tool_result" for b in blocks(record)):
         return False
-    return (record.get("origin") or {}).get("kind") == PEER
+    origin = record.get("origin")
+    if origin is None:
+        return any(tag in prompt_text(record) for tag in ORIGINLESS_EVENTS)
+    return (origin or {}).get("kind") == PEER
+
+
+def originless_prompt(record: dict) -> bool:
+    """A user prompt with no origin key and no meta or tool-result marking. Another
+    session's first prompt is written this way; turns() applies it to the first user
+    record only."""
+    return (record.get("type") == "user" and "origin" not in record
+            and opener(record) is None and not record.get("isMeta")
+            and "toolUseResult" not in record
+            and not any(b.get("type") == "tool_result" for b in blocks(record)))
 
 
 def prompt_text(record: dict) -> str:
@@ -232,8 +248,13 @@ def turns(path: Path) -> list[shape.Turn]:
     records = read_records(path)
     starts: list[int] = []
     kinds: list[str] = []
+    seen_user = False
     for i, r in enumerate(records):
         kind = opener(r)
+        if not kind and not seen_user and originless_prompt(r):
+            kind = shape.NOTIFICATION
+        if r.get("type") == "user":
+            seen_user = True
         if not kind and handback(r) and starts and ended(records[starts[-1]:i]):
             kind = shape.NOTIFICATION
         if kind:

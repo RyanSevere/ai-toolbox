@@ -368,6 +368,13 @@ It continues the previous reply's ID counters, per prefix: if that reply ended a
 operator replies with something other than steering. Without this, two replies in a row
 reuse `DC1`, and "DC1" no longer names one item.
 
+On Claude Code the checker finds such a turn from the record's `origin`. Three
+openers cover records that have no `origin` key, and they are a fallback used only
+when `origin` is absent: the transcript's first user prompt (a session another
+session started), a side-session note (`<side-sessions-event>`), and a CI monitor
+event (`<ci-monitor-event>`). Each opens a notification turn. The two notes open one
+only after a finished reply, as a hand-back does; the first prompt opens one always.
+
 The checker reads `--previous` for this, on Claude Code turns of that kind only. It
 reports a missing continuation line, and any item ID whose number is not above the
 highest of the same prefix in the preceding reply. `--stop` has no previous turn and
