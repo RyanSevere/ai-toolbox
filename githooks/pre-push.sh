@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/githooks/pre-push.sh
 # Created by: Ryan Severe
 # Created: 2026-09-23
-# Last Updated: 2026-11-07
+# Last Updated: 2026-11-16
 # Description: Runs the gates named in the pushed commit's .githooks/gates/enabled
 #              before a push, and names every gate it skips. A failing gate
 #              refuses the push here; a passing set is published as a report
@@ -48,8 +48,14 @@ fi
 # rendered list, so absence here is a target, not a default.
 consent_script="$(gate_config consent-check)" || consent_script=""
 
+# A gate's detail as a JSON string body. Colour sequences (ESC [ ... letter) are removed
+# whole, then every control character JSON forbids raw is dropped, after newlines become
+# spaces: coloured test output once made report.json invalid, so CI showed a parse error
+# in place of the gates' findings.
 json_escape() {
-  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' | tr '\n' ' '
+  je_esc="$(printf '\033')"
+  sed -e "s/${je_esc}\[[0-9;]*[A-Za-z]//g" -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' \
+    | tr '\n' ' ' | tr -d '\000-\037'
 }
 
 json_list() {
