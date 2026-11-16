@@ -72,7 +72,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import sync  # noqa: E402
 
 SHA = "abc1234"
-EXAMPLE = sync.ROOT / "examples" / "profile"
+# The example with every shipped gate consented, because a render refuses without a lock.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from locked_example import locked_example  # noqa: E402
+
+EXAMPLE = locked_example()
 MANIFEST = sync.load_profile(EXAMPLE)
 # The stamp a render from MANIFEST writes; sync.STAMP_MARKER is any stamp's shape.
 MARK = f"generated from {MANIFEST['source']['repo']}@"
