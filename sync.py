@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-14
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-16
 # Description: Renders the core and a profile's seeds into a consuming repository's
 #              per-tool formats and stamps each output with the source SHA.
 #              Dry-run by default; --write applies. Never writes Tier 3.
@@ -61,7 +61,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -2065,6 +2065,92 @@ def find_orphans(repo: Path, plan: dict[str, str]) -> list[str]:
     return sorted(orphans)
 
 
+READER_LIST_LIMIT = 20
+
+
+def _orphan_needles(repo: Path, orphans: list[str]) -> list[str]:
+    """What a reader would write to name an orphan: its path, and each folder two or more
+    levels deep that removing the orphans leaves empty (or removes with it)."""
+    doomed = set(orphans)
+    folders: dict[str, bool] = {}
+    for rel in orphans:
+        for parent in PurePosixPath(rel).parents:
+            name = parent.as_posix()
+            if len(parent.parts) < 2 or name in folders:
+                continue
+            base = repo / name
+            folders[name] = base.is_dir() and all(
+                path.relative_to(repo).as_posix() in doomed
+                for path in base.rglob("*") if path.is_file())
+    needles = set(orphans) | {name for name, empty in folders.items() if empty}
+    return sorted(needles, key=lambda needle: (-len(needle), needle))
+
+
+def orphan_readers(repo: Path, orphans: list[str], plan: dict[str, str]) -> list[str]:
+    """Tracked files that still name a path about to be removed, as 'file:line: needle'.
+
+    A rollout commit touches only rendered paths, so a target's pre-push gate selects no
+    suite for its own code, and code reading a removed file breaks unseen. Files the render
+    writes or stamps, the orphans themselves and binary files are not readers.
+    """
+    if not orphans:
+        return []
+    needles = _orphan_needles(repo, orphans)
+    variants = []
+    for needle in needles:
+        for form in (needle, needle.replace("/", "\\")):
+            variants.append((form, needle))
+    skip = set(plan) | set(orphans)
+    listed = git_at(repo, "ls-files", "-z").split("\0")
+    readers = []
+    for rel in sorted(rel for rel in listed if rel and rel not in skip):
+        path = repo / rel
+        if not path.is_file():
+            continue
+        raw = path.read_bytes()
+        if b"\0" in raw[:8192]:
+            continue
+        text = raw.decode("utf-8", errors="replace")
+        if is_stamped(text):
+            continue
+        for number, line in enumerate(text.splitlines(), 1):
+            hit = next((needle for form, needle in variants if form in line), None)
+            if hit:
+                readers.append(f"{rel}:{number}: {hit}")
+                break
+    return readers
+
+
+def orphan_readers_message(readers: list[str]) -> str:
+    lines = readers[:READER_LIST_LIMIT]
+    if len(readers) > READER_LIST_LIMIT:
+        lines.append(f"... and {len(readers) - READER_LIST_LIMIT} more")
+    return ("\n  ".join(lines))
+
+
+def report_orphan_readers(readers: list[str]) -> int:
+    """Print the readers a --check or dry run found, and return how many."""
+    if readers:
+        print(f"\n[WARN] {len(readers)} tracked file(s) still read a path about to be removed:")
+        print("  " + orphan_readers_message(readers))
+    return len(readers)
+
+
+def remove_orphans(repo: Path, orphans: list[str], plan: dict[str, str],
+                   on_remove=None) -> None:
+    """Remove the orphans, or refuse and remove nothing while a tracked file reads one."""
+    readers = orphan_readers(repo, orphans, plan)
+    if readers:
+        raise SyncError(
+            f"{len(readers)} tracked file(s) still read a rendered path that this render "
+            f"removes, so nothing was removed:\n  {orphan_readers_message(readers)}\n"
+            "Fix the reader, or point it at the path the new render uses, then render again.")
+    for rel in orphans:
+        (repo / rel).unlink()
+        if on_remove:
+            on_remove(rel)
+
+
 def find_foreign(repo: Path, plan: dict[str, str]) -> list[str]:
     """Hand-written files sitting in a directory this tool renders into.
 
@@ -2573,8 +2659,7 @@ def rollout_target(name: str, cfg: dict, root: Path, defaults: dict, sha: str,
     ensure_cursor_tracked(repo, True)
     ensure_hooks_local(repo, True)
     orphans = find_orphans(repo, plan)
-    for rel in orphans:
-        (repo / rel).unlink()
+    remove_orphans(repo, orphans, plan)
 
     hidden = hidden_plan_paths(repo, plan)
     if hidden:
@@ -3007,12 +3092,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {source_repo(manifest)} self: {self_changed} file(s)")
 
         orphans = find_orphans(repo, full_plan)
-        for rel in orphans:
-            if write:
-                (repo / rel).unlink()
-                print(f"  removed orphan {rel}")
-            else:
+        readers: list[str] = []
+        if write:
+            remove_orphans(repo, orphans, full_plan,
+                           on_remove=lambda rel: print(f"  removed orphan {rel}"))
+        else:
+            for rel in orphans:
                 print(f"  orphan (would remove): {rel}")
+            readers = orphan_readers(repo, orphans, full_plan)
+            report_orphan_readers(readers)
 
         print(f"\nresident footprint: {resident_lines(repo)} lines")
 
@@ -3026,9 +3114,10 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.check:
             # Foreign files are deliberately not a failure: sync does not own them.
-            if changed or orphans:
+            if changed or orphans or readers:
                 print(
-                    f"\n[FAIL] {changed} file(s) differ and {len(orphans)} orphan(s) remain. "
+                    f"\n[FAIL] {changed} file(s) differ and {len(orphans)} orphan(s) remain"
+                    f"{f', {len(readers)} still read' if readers else ''}. "
                     "The committed output is not what this source renders."
                 )
                 return 1
