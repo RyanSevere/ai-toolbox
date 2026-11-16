@@ -56,6 +56,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -2266,10 +2267,23 @@ def emit(repo: Path, plan: dict[str, str], write: bool, *, ident: dict[str, str]
 
 def ensure_ignored(repo: Path, write: bool, probe: str, rule: str, why: str) -> int:
     """Append rule to .gitignore unless git already ignores probe. Returns 1 when a change is
-    needed, so --check fails on it. A rule the repo already has in its own form counts."""
+    needed, so --check fails on it. A rule the repo already has in its own form counts.
+
+    Only the committed .gitignore files decide. .git/info/exclude and the global excludes file
+    are per machine, so a render that trusted them passed locally and drifted in CI. Git is
+    pointed at a throwaway empty git dir over the same work tree, which leaves the target's
+    .git/info/exclude out of the picture without touching it, and the global file is emptied."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    found = subprocess.run(("git", "check-ignore", "-q", probe), cwd=repo,
-                           capture_output=True, text=True, env=env, timeout=60)
+    with tempfile.TemporaryDirectory() as scratch:
+        git_dir = Path(scratch) / "git"
+        made = subprocess.run(("git", "init", "--bare", "--quiet", str(git_dir)),
+                              capture_output=True, text=True, env=env, timeout=60)
+        if made.returncode != 0:
+            raise SyncError(f"git init failed for the ignore check: {made.stderr.strip()}")
+        check_env = {**env, "GIT_DIR": str(git_dir), "GIT_WORK_TREE": str(repo)}
+        found = subprocess.run(("git", "-c", "core.excludesFile=", "check-ignore", "-q", probe),
+                               cwd=repo, capture_output=True, text=True, env=check_env,
+                               timeout=60)
     if found.returncode == 0:
         return 0
     if found.returncode != 1:
