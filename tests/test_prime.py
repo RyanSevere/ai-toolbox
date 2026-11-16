@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_prime.py
 # Created by: Ryan Severe
 # Created: 2026-09-28
-# Last Updated: 2026-11-08
+# Last Updated: 2026-11-15
 # Description: Tests for prime.py against a throwaway git repository: status
 #              lines parsed, excluded root documents, nested AGENTS.md headings
 #              with fenced code and ignored directories skipped, run targets
@@ -48,12 +48,15 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import io
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -188,6 +191,45 @@ class Isolation(PrimeTestCase):
     def test_main_exit_code_reflects_any_failure(self):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(prime.main([str(Path(TMP.name) / "gone")]), 1)
+
+
+class HooksNotice(PrimeTestCase):
+    """Intent: a session is told when the hooks off switch is set on this machine."""
+
+    NOTICE = "hooks: OFF on this machine (AI_TOOLBOX_HOOKS=off)"
+
+    def run_main(self, value: str | None, *repos: str) -> list[str]:
+        env = {k: v for k, v in os.environ.items() if k != "AI_TOOLBOX_HOOKS"}
+        if value is not None:
+            env["AI_TOOLBOX_HOOKS"] = value
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(out):
+            prime.main(list(repos))
+        return out.getvalue().splitlines()
+
+    def test_the_line_is_first_and_printed_once_when_the_variable_is_off(self):
+        lines = self.run_main("off", str(REPO), str(REPO))
+        self.assertEqual(lines[0], self.NOTICE)
+        self.assertEqual(lines.count(self.NOTICE), 1)
+
+    def test_the_value_is_read_as_the_hook_library_reads_it(self):
+        for value in ("OFF", "  Off  "):
+            with self.subTest(value=value):
+                self.assertEqual(self.run_main(value, str(REPO))[0], self.NOTICE)
+
+    def test_nothing_is_printed_when_the_variable_is_unset_or_not_off(self):
+        for value in (None, "", "on", "0"):
+            with self.subTest(value=value):
+                lines = self.run_main(value, str(REPO))
+                self.assertFalse(any(line.startswith("hooks:") for line in lines))
+                self.assertTrue(lines[0].startswith("=== REPO"))
+
+    def test_the_variable_name_is_the_library_constant(self):
+        spec = importlib.util.spec_from_file_location(
+            "hookio", Path(prime.__file__).parent / "hooks" / "lib" / "hookio.py")
+        hookio = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hookio)
+        self.assertEqual(prime.HOOKS_VARIABLE, hookio.OFF_VARIABLE)
 
 
 if __name__ == "__main__":

@@ -399,7 +399,33 @@ beyond those. An
 `AI_TOOLBOX_HOOKS=off`, set at setup as a user environment variable. The shared
 library reads it at run time: a permission hook allows and an observer does nothing.
 The value is trimmed and case-folded, and anything but `off` leaves hooks on.
-Built in `hookio.py`. Setting it at setup is separate work.
+Built in `hookio.py`.
+
+Set or clear it with `python setup_profile.py --hooks off` (or `--hooks on`; from a
+profile, `toolboxctl setup --hooks off`). That does only the machine switch: no profile
+questions and no `profile.yaml` write. It prints what it will write, and writes only
+after a typed `yes`.
+
+- **Windows:** `AI_TOOLBOX_HOOKS=off` as a string value in `HKCU\Environment`, then a
+  `WM_SETTINGCHANGE` broadcast so newly started processes see it. `--hooks on` deletes
+  the value. A failed broadcast only warns.
+- **Linux and other POSIX:** a marked block in `~/.profile`, created if missing and
+  written once however often it runs. `--hooks on` removes the block and leaves the rest
+  of the file as it was.
+
+  ```sh
+  # >>> ai-toolbox hooks switch >>>
+  export AI_TOOLBOX_HOOKS=off
+  # <<< ai-toolbox hooks switch <<<
+  ```
+
+  Setup refuses, and writes nothing, when a login shell would not read `~/.profile`:
+  a `~/.bash_profile` or `~/.bash_login` that does not source it, or a zsh login shell.
+  It names the reason and the line to add by hand (`export AI_TOOLBOX_HOOKS=off`, to
+  that file or to `~/.zprofile`).
+- **Restart the tool** after either change: a running process keeps the environment it
+  started with. On Linux, start it from a new login shell.
+
 Hooks still render, so running `sync.py` cannot change the state, and a hook process
 inherits the tool's environment rather than the agent shell's - the second is
 documented for neither tool and is the first thing the build checks live.
