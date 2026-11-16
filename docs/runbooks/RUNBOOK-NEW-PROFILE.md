@@ -30,14 +30,18 @@ Placeholders are in angle brackets. Replace each one, including the brackets.
 2. **Download a release archive into a scratch folder.** Shell: as above. Folder:
    `<scratch>`, any new folder outside the clone.
 
-   ```
-   gh release download vX.Y.Z --repo <owner>/<core-repo> --archive tar.gz
-   ```
-
-   Extract it. The archive holds one top-level folder, `<archive>`.
+   A release is a tag. The release workflow creates no GitHub Release, so
+   `gh release download` finds nothing. Fetch the tag's archive instead:
 
    ```
-   tar -xzf <core-repo>-X.Y.Z.tar.gz
+   gh api repos/<owner>/<core-repo>/tarball/vX.Y.Z > core.tar.gz
+   ```
+
+   Extract it. The archive holds one top-level folder, `<archive>`, named
+   `<owner>-<core-repo>-<short sha>`.
+
+   ```
+   tar -xzf core.tar.gz
    ```
 
 3. **Run `init`.** Shell: as above. Folder: `<scratch>`.
