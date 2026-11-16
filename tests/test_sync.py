@@ -1406,6 +1406,22 @@ class ClaudeSettings(unittest.TestCase):
         self.assertEqual([e["command"].split("/")[-2] for e in hooks["PreToolUse"][0]["hooks"]],
                          ["another", "guard"])
 
+    def test_the_core_session_start_hook_renders_for_claude_without_matcher_or_onfailure(self):
+        plan = build_plan("t", {"hooks": True}, DEFAULTS, SHA, self.CLAUDE_ONLY)
+        groups = self.settings(plan)["hooks"]["SessionStart"]
+        self.assertEqual(len(groups), 1)
+        self.assertNotIn("matcher", groups[0])
+        entry = groups[0]["hooks"][0]
+        self.assertEqual(entry["command"],
+                         'python "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start/hook.py" '
+                         '--tool claude')
+        self.assertNotIn("onFailure", entry)
+        self.assertIn(".claude/hooks/session-start/hook.py", plan)
+
+    def test_the_core_session_start_hook_does_not_render_for_cursor(self):
+        plan = build_plan("t", {"hooks": True}, DEFAULTS, SHA, self.CURSOR_ONLY)
+        self.assertFalse([path for path in plan if "session-start" in path])
+
     def test_the_scripts_and_library_render_under_claude_hooks(self):
         plan = self.plan({"guard/hook.yaml": self.GUARD, "guard/hook.py": "pass\n",
                           "lib/hookio.py": "pass\n"})
