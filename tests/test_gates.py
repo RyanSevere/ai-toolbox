@@ -376,7 +376,7 @@ class SecretScan(GateCase):
     gate = "secret-scan"
     # Fixtures are assembled at run time, so no scanner of this repository's own source
     # (the push gate, gitleaks in CI) ever sees a whole credential shape.
-    KEY = "0f1e2d3c4b5a6978" + "8796a5b4c3d2e1f0"
+    FAKE_HEX = "0f1e2d3c4b5a6978" + "8796a5b4c3d2e1f0"
 
     def pushed(self, rel: str, text: str):
         self.write("a.txt")
@@ -385,10 +385,10 @@ class SecretScan(GateCase):
         return self.run_gate(self.commit("second"), base)
 
     def test_bare_32_hex_is_refused_and_not_printed(self):
-        result = self.pushed("docs/NOTES.md", f"| Example | `{self.KEY}` |\n")
+        result = self.pushed("docs/NOTES.md", f"| Example | `{self.FAKE_HEX}` |\n")
         self.assertEqual(result.returncode, 1)
         self.assertIn("docs/NOTES.md:1", result.stdout)
-        self.assertNotIn(self.KEY, result.stdout + result.stderr)
+        self.assertNotIn(self.FAKE_HEX, result.stdout + result.stderr)
 
     def test_env_style_assignment_is_refused(self):
         line = "EXAMPLE_API_" + "KEY=" + "Zq9vXb4Lm2Tp" + "8Rk1Wn6Yc3Hd\n"
@@ -413,11 +413,11 @@ class SecretScan(GateCase):
         self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_allow_marker_exempts_a_line(self):
-        result = self.pushed("t.py", f'KEY = "{self.KEY}"  # secret-scan: allow - fixture\n')
+        result = self.pushed("t.py", f'VALUE = "{self.FAKE_HEX}"  # secret-scan: allow - fixture\n')
         self.assertEqual(result.returncode, 0)
 
     def test_only_added_lines_are_scanned(self):
-        self.write("old.md", f"`{self.KEY}`\n")
+        self.write("old.md", f"`{self.FAKE_HEX}`\n")
         base = self.commit()
         self.write("new.txt", "clean\n")
         result = self.run_gate(self.commit("second"), base)
