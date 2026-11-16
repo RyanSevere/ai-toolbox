@@ -4,10 +4,10 @@
 # Path: {PROJECT_ROOT}/githooks/README.md
 # Created by: Ryan Severe
 # Created: 2026-10-19
-# Last Updated: 2026-11-06
+# Last Updated: 2026-11-16
 # Description: The gate wireframe - what a gate is, how the pre-push hook runs
-#              it, and how a profile declares and enables one. Names no
-#              toolchain and no hosting service.
+#              it, how a profile declares and enables one, and the generic
+#              gates the core ships.
 ################################################################################
 # ===========================================================================
 #
@@ -71,6 +71,29 @@ publishes what they said.
   `seeds/githooks/gates/`. A name used by both is refused at render.
 - Helpers the gates share live in `lib/`, not `gates/`. A script in `gates/`
   that the enabled list leaves out is reported as a skipped gate.
+
+## The core gates
+
+Each is a script in `gates/`, and each reads only the repository it runs in.
+
+- `dead-variants`: refuses a tracked file named like a leftover copy, such as `x.bak` or `x.old`.
+- `eslint`: refuses a push that adds an eslint finding the baseline does not already hold.
+- `lockfile`: refuses a `package-lock.json` that npm calls an invalid tree.
+- `no-change-docs`: refuses markdown added outside the places documents live.
+- `ruff`: refuses a push that adds a ruff finding the baseline does not already hold.
+- `run-expressions`: refuses a `${{ }}` expression inside a workflow `run:` script.
+- `secret-defaults`: refuses a default value on a secret-named variable in compose, YAML or env-example files.
+- `secret-scan`: refuses added lines that carry a credential shape.
+- `self-render`: in a profile's source repository, refuses rendered copies that differ from what the source renders.
+- `shellcheck`: refuses a push that adds a ShellCheck finding the baseline does not already hold.
+- `test-orphans`: refuses a test file no declared test root covers, and a root that covers nothing.
+- `test-provenance`: reports an edited assertion beside a source change; never blocks.
+- `tests`: runs each test command the repository declares in `test-roots`.
+- `typecheck`: refuses TypeScript no tsconfig covers, then type-checks each project.
+
+A profile adds gates of its own under `seeds/githooks/gates/`. With none enabled
+the hook prints `no gates enabled - this push is not checked`, and with some
+enabled it prints one line per gate it runs.
 
 ## Which gates run
 
