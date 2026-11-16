@@ -182,8 +182,9 @@ Fail the first. Warn or fail the second, operator's choice.
 ## Report resident footprint
 
 After each run, report the number of always-resident instruction lines in the
-target repo - `AGENTS.md` plus `.github/copilot-instructions.md` plus any
-nested `AGENTS.md` on the path being worked in.
+target repo, once per tool the profile selects: the files that tool loads at the
+start of a session, `AGENTS.md` included where it reads it. Never add the tools
+into one total.
 
 **This measures residency, not quality.** Line count says nothing about whether
 the rules are any good, and a repo can have a small footprint and terrible
