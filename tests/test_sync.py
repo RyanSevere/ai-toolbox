@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-16
 # Description: Tests for sync.py - the renderer that decides what every AI
 #              session in the estate reads. Covers build_plan over every real
 #              manifest target, exclude validation, the hand-owned guard, stamp
@@ -698,6 +698,128 @@ class OrphansAndForeign(unittest.TestCase):
 
     def test_absent_retired_path_is_not_reported(self):
         self.assertFalse(set(sync.RETIRED) & set(sync.find_orphans(self.repo, self.plan)))
+
+
+class OrphanReaders(unittest.TestCase):
+    """Intent: removing a rendered file must not break code in the target that still reads
+    it. A rollout that deselected tools removed rendered folders, a target's own tests
+    errored, and its pre-push gate had not selected them (2026-11-15). The render refuses
+    instead, naming each reader."""
+
+    STAMP = f"<!-- {sync.STAMP_MARKER}x -->\n"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name)
+        git("init", "--quiet", "-b", "main", str(self.repo), cwd=self.repo)
+        self.plan = {".github/instructions/kept.instructions.md": ""}
+        self.skill = ".github/skills/gone/SKILL.md"
+        self.put(self.skill, self.STAMP, track=False)
+
+    def put(self, rel: str, text: str | bytes, track: bool = True) -> Path:
+        path = self.repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(text, bytes):
+            path.write_bytes(text)
+        else:
+            path.write_text(text, encoding="utf-8", newline="\n")
+        if track:
+            git("add", "--", rel, cwd=self.repo)
+        return path
+
+    def readers(self) -> list[str]:
+        return sync.orphan_readers(self.repo, sync.find_orphans(self.repo, self.plan), self.plan)
+
+    def test_a_tracked_script_naming_an_orphaned_folder_refuses_and_removes_nothing(self):
+        self.put("scripts/run.py", "import os\nroot = '.github/skills'\n")
+        orphans = sync.find_orphans(self.repo, self.plan)
+        self.assertEqual(orphans, [self.skill])
+        with self.assertRaises(sync.SyncError) as ctx:
+            sync.remove_orphans(self.repo, orphans, self.plan)
+        self.assertIn("scripts/run.py:2: .github/skills", str(ctx.exception))
+        self.assertTrue((self.repo / self.skill).is_file())
+
+    def test_the_refusal_says_how_to_clear_it(self):
+        self.put("scripts/run.py", ".github/skills\n")
+        with self.assertRaises(sync.SyncError) as ctx:
+            sync.remove_orphans(self.repo, sync.find_orphans(self.repo, self.plan), self.plan)
+        self.assertRegex(str(ctx.exception), r"fix the reader|point it at")
+
+    def test_without_a_reader_the_orphans_are_removed_as_before(self):
+        self.put("scripts/run.py", "print('hello')\n")
+        sync.remove_orphans(self.repo, sync.find_orphans(self.repo, self.plan), self.plan)
+        self.assertFalse((self.repo / self.skill).exists())
+
+    def test_removed_files_are_announced_through_the_callback(self):
+        seen: list[str] = []
+        sync.remove_orphans(self.repo, [self.skill], self.plan, on_remove=seen.append)
+        self.assertEqual(seen, [self.skill])
+
+    def test_a_stamped_file_is_not_a_reader(self):
+        self.put(".github/instructions/kept.instructions.md", f"{self.STAMP}see .github/skills\n")
+        self.assertEqual(self.readers(), [])
+
+    def test_a_file_in_the_plan_is_not_a_reader(self):
+        self.put("tool.py", ".github/skills\n")
+        self.plan["tool.py"] = ""
+        self.assertEqual(self.readers(), [])
+
+    def test_another_orphan_is_not_a_reader(self):
+        self.put(".github/agents/old.agent.md", f"{self.STAMP}.github/skills\n", track=False)
+        self.assertEqual(self.readers(), [])
+
+    def test_an_untracked_file_is_not_a_reader(self):
+        self.put("scripts/run.py", ".github/skills\n", track=False)
+        self.assertEqual(self.readers(), [])
+
+    def test_a_binary_file_is_skipped(self):
+        self.put("blob.bin", b"\x00.github/skills\n")
+        self.assertEqual(self.readers(), [])
+
+    def test_a_folder_counts_with_or_without_a_trailing_slash(self):
+        for text in (".github/skills", ".github/skills/"):
+            with self.subTest(text=text):
+                self.put("scripts/run.py", f"x = '{text}'\n")
+                self.assertEqual(self.readers(), ["scripts/run.py:1: .github/skills"])
+
+    def test_both_separators_match(self):
+        for text in (".github\\skills", ".github\\skills\\", ".github\\skills\\gone\\SKILL.md"):
+            with self.subTest(text=text):
+                self.put("scripts/run.ps1", f"$p = '{text}'\n")
+                self.assertEqual(len(self.readers()), 1)
+
+    def test_the_path_of_the_file_itself_counts(self):
+        self.put("scripts/run.py", f"open('{self.skill}')\n")
+        self.assertEqual(self.readers(), [f"scripts/run.py:1: {self.skill}"])
+
+    def test_a_folder_left_with_a_kept_file_is_not_a_needle(self):
+        """Intent: a folder that survives removal is not what a reader loses."""
+        self.put(".github/skills/mine/notes.md", "hand written\n")
+        self.put("scripts/run.py", "root = '.github/skills'\n")
+        self.assertEqual(self.readers(), [])
+        self.put("scripts/run.py", "root = '.github/skills/gone'\n")
+        self.assertEqual(self.readers(), ["scripts/run.py:1: .github/skills/gone"])
+
+    def test_a_top_level_folder_alone_is_not_a_needle(self):
+        self.put("scripts/run.py", "root = '.github'\n")
+        self.assertEqual(self.readers(), [])
+
+    def test_the_refusal_lists_twenty_readers_and_counts_the_rest(self):
+        for n in range(23):
+            self.put(f"scripts/r{n:02d}.py", ".github/skills\n")
+        with self.assertRaises(sync.SyncError) as ctx:
+            sync.remove_orphans(self.repo, sync.find_orphans(self.repo, self.plan), self.plan)
+        text = str(ctx.exception)
+        self.assertEqual(len(re.findall(r"scripts/r\d\d\.py:1:", text)), 20)
+        self.assertIn("... and 3 more", text)
+
+    def test_check_reports_the_readers_as_drift(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            report = sync.report_orphan_readers(["scripts/run.py:2: .github/skills"])
+        self.assertIn("scripts/run.py:2: .github/skills", out.getvalue())
+        self.assertEqual(report, 1)
 
 
 class CursorHooks(unittest.TestCase):
