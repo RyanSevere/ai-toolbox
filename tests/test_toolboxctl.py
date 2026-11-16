@@ -170,6 +170,14 @@ class PassThrough(Fixture):
         self.assertEqual(code, 3)
         delegate.assert_called_once_with(["--profile", str(self.profile), "--answers", "a.yaml"])
 
+    def test_setup_passes_hooks_through(self):
+        """Intent: setup --hooks off reaches setup_profile.main untouched,
+        after the --profile toolboxctl adds."""
+        with mock.patch("setup_profile.main", return_value=0) as delegate:
+            code, _, _ = self.run_main("setup", "--hooks", "off")
+        self.assertEqual(code, 0)
+        delegate.assert_called_once_with(["--profile", str(self.profile), "--hooks", "off"])
+
     def test_gate_lists_reaches_gate_lists_with_this_profile(self):
         """Intent: gate-lists passes its arguments through to
         gate_lists.main, adding --profile <profile> when none is given."""
