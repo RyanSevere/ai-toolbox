@@ -65,8 +65,17 @@ EXERCISES = ["capabilities/**", "examples/**"]
 
 MANIFEST = sync.load_profile(sync.ROOT / "examples" / "profile")
 SYSTEM = "ExampleTracker, a hosted tracker."
-TYPED = {"identity.name": "Example Person", "identity.email": "person@example.invalid",
+TYPED = {"identity.name": "Example Person", "identity.email": "person@acme.example",
+         "source.repo": "acme-profile", "source.key": "acm", "source.owner": "acme-owner",
+         "personal": "acme-private\nacme-notes", "profile_name": "acme-profile-name",
+         "leak_extra": "internal.acme.example",
+         "not_onboarded": "acme-archived: Retired project.",
          "tracker.system": SYSTEM}
+# The same values as an --answers file.
+LEAK_FILE = ("source: {repo: acme-profile, key: acm, owner: acme-owner}\n"
+             "personal: [acme-private, acme-notes]\nprofile_name: acme-profile-name\n"
+             "leak_extra: [internal.acme.example]\n"
+             "not_onboarded: {acme-archived: Retired project.}\n")
 
 
 def fake_consent(calls: list):
@@ -89,7 +98,12 @@ class Fixture(unittest.TestCase):
         self.folder = Path(tmp.name) / "profile"
         self.consented: list = []
         self.confirms: list = []
+        self.asked: dict = {}
         self.addCleanup(sync.set_stamp_source, MANIFEST)
+        # The machine's own git identity must not decide a test.
+        patcher = mock.patch.object(setup_profile, "git_config", return_value="", create=True)
+        self.git_config = patcher.start()
+        self.addCleanup(patcher.stop)
 
     @property
     def profile(self) -> Path:
@@ -99,12 +113,13 @@ class Fixture(unittest.TestCase):
                   confirm: bool = True) -> tuple[int, str]:
         typed = TYPED if typed is None else typed
 
-        def ask(key: str, prompt: str, current: str | None) -> str:
-            return typed.get(key, "")
-
         def say_yes(diff: str) -> bool:
             self.confirms.append(diff)
             return confirm
+
+        def ask(key: str, prompt: str, current: str | None) -> str:
+            self.asked[key] = (prompt, current)
+            return typed.get(key, "")
 
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
@@ -130,7 +145,7 @@ class FromEmpty(Fixture):
         self.assertEqual(code, 0, out)
         data = self.data()
         self.assertEqual(data["identity"], {"name": "Example Person",
-                                            "email": "person@example.invalid"})
+                                            "email": "person@acme.example"})
         self.assertEqual(data["answers"], {"tracker.system": SYSTEM})
         profile = sync.load_profile(self.folder)
         for name, cfg in profile["targets"].items():
@@ -216,6 +231,190 @@ class FromEmpty(Fixture):
         self.assertIn("identity.email", out)
 
 
+class ConsoleAsk(unittest.TestCase):
+    """The console prompt: a free-text answer ends at an empty line, a one-line field at
+    its first line."""
+
+    def ask(self, key: str, lines: list, current: str | None = None) -> str:
+        with mock.patch("builtins.input", side_effect=lines), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return setup_profile.console_ask(key, "A question.", current)
+
+    def test_a_multi_line_answer_ends_at_an_empty_line(self):
+        self.assertEqual(self.ask("tracker.body", ["Impact first.", "Then Problem.", "", "x"]),
+                         "Impact first.\nThen Problem.")
+
+    def test_a_single_line_answer_still_works(self):
+        self.assertEqual(self.ask("tracker.system", ["One line.", ""]), "One line.")
+
+    def test_an_empty_first_line_is_a_blank_answer(self):
+        self.assertEqual(self.ask("tracker.system", [""]), "")
+
+    def test_a_one_line_field_takes_its_first_line_only(self):
+        """Intent: a name or an email is one line, so it needs no empty line after it."""
+        self.assertEqual(self.ask("identity.name", ["Dev Example"]), "Dev Example")
+        self.assertEqual(self.ask("source.repo", ["acme-profile"]), "acme-profile")
+
+    def test_closed_input_after_some_lines_ends_the_answer_and_before_any_refuses(self):
+        self.assertEqual(self.ask("tracker.body", ["Only this.", EOFError()]), "Only this.")
+        with self.assertRaises(setup_profile.SetupError):
+            self.ask("tracker.body", [EOFError()])
+
+    def test_the_prompt_says_how_a_multi_line_answer_ends(self):
+        out = io.StringIO()
+        with mock.patch("builtins.input", side_effect=[""]), contextlib.redirect_stdout(out):
+            setup_profile.console_ask("tracker.body", "A question.", None)
+        self.assertIn("empty line", out.getvalue())
+
+
+class Questions(Fixture):
+    """The question text, and the n/a answer."""
+
+    def prompt(self, key: str) -> str:
+        self.run_setup()
+        return self.asked[key][0]
+
+    def test_operations_lists_the_operations(self):
+        operations = yaml.safe_load(
+            (sync.ROOT / "capabilities" / "tracker.yaml").read_text(encoding="utf-8"))["operations"]
+        prompt = self.prompt("tracker.operations")
+        for name in operations:
+            with self.subTest(operation=name):
+                self.assertIn(name, prompt)
+
+    def test_system_says_any_system_works_and_what_the_answer_feeds(self):
+        prompt = self.prompt("tracker.system").lower()
+        self.assertIn("any system works", prompt)
+        self.assertIn("nothing is built", prompt)
+        self.assertIn("until a skill is bound", prompt)
+
+    def test_every_answer_prompt_offers_n_a(self):
+        self.run_setup()
+        for key, (prompt, _) in self.asked.items():
+            if key.startswith("tracker."):
+                with self.subTest(key=key):
+                    self.assertIn("n/a", prompt)
+
+    def test_n_a_is_accepted_and_stored_as_n_a(self):
+        code, out = self.run_setup({**TYPED, "tracker.system": "n/a", "tracker.relations": "n/a"})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.data()["answers"], {"tracker.system": "n/a",
+                                                  "tracker.relations": "n/a"})
+
+    def test_n_a_for_the_system_declares_no_system(self):
+        """Intent: no system is nothing to build, so nothing is listed as unbuilt."""
+        _, out = self.run_setup({**TYPED, "tracker.system": "n/a"})
+        self.assertNotIn("unbuilt", out)
+        self.assertNotIn("build:", out)
+
+
+class Identity(Fixture):
+    GIT = {"user.name": "Git Person", "user.email": "git.person@acme.example"}
+
+    def test_the_git_identity_is_the_default(self):
+        self.git_config.side_effect = lambda key, folder=None: self.GIT.get(key, "")
+        typed = {k: v for k, v in TYPED.items() if not k.startswith("identity.")}
+        code, out = self.run_setup(typed)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.asked["identity.name"][1], "Git Person")
+        self.assertEqual(self.asked["identity.email"][1], "git.person@acme.example")
+        self.assertEqual(self.data()["identity"], {"name": "Git Person",
+                                                   "email": "git.person@acme.example"})
+
+    def test_what_is_typed_wins_over_the_git_identity(self):
+        self.git_config.side_effect = lambda key, folder=None: self.GIT.get(key, "")
+        self.run_setup()
+        self.assertEqual(self.data()["identity"]["name"], "Example Person")
+
+    def test_with_no_git_identity_the_example_is_not_kept(self):
+        """Intent: a blank answer with nothing to default to keeps the example email, which is
+        then refused rather than written."""
+        typed = {k: v for k, v in TYPED.items() if not k.startswith("identity.")}
+        code, out = self.run_setup(typed)
+        self.assertEqual(code, 1, out)
+        self.assertFalse(self.profile.exists())
+
+    def test_an_example_invalid_email_is_refused(self):
+        for source in ("typed", "file"):
+            with self.subTest(source=source):
+                self.profile.unlink(missing_ok=True)
+                if source == "typed":
+                    code, out = self.run_setup({**TYPED, "identity.email": "me@acme.example.invalid"})
+                else:
+                    text = "identity: {name: A, email: me@example.invalid}\n" + LEAK_FILE
+                    code, out = self.run_setup({}, self.answers_file(text))
+                self.assertEqual(code, 1, out)
+                self.assertFalse(self.profile.exists())
+                self.assertIn("example.invalid", out)
+
+
+class ExampleValues(Fixture):
+    """Source and leak-gate values are asked, and an example value never survives."""
+
+    ASKED = ("source.repo", "source.key", "source.owner", "personal", "profile_name",
+             "leak_extra", "not_onboarded")
+
+    def test_they_are_asked_after_identity_and_written(self):
+        code, out = self.run_setup()
+        self.assertEqual(code, 0, out)
+        keys = list(self.asked)
+        for key in self.ASKED:
+            self.assertIn(key, keys)
+        self.assertLess(keys.index("identity.email"), keys.index("source.repo"))
+        data = self.data()
+        self.assertEqual(data["source"], {"repo": "acme-profile", "key": "acm",
+                                          "owner": "acme-owner"})
+        self.assertEqual(data["personal"], ["acme-private", "acme-notes"])
+        self.assertEqual(data["profile_name"], "acme-profile-name")
+        self.assertEqual(data["leak_extra"], ["internal.acme.example"])
+        self.assertEqual(data["not_onboarded"], {"acme-archived": "Retired project."})
+
+    def test_a_blank_answer_that_keeps_an_example_value_is_refused(self):
+        for key in self.ASKED:
+            with self.subTest(key=key):
+                self.profile.unlink(missing_ok=True)
+                code, out = self.run_setup({k: v for k, v in TYPED.items() if k != key})
+                self.assertEqual(code, 1, out)
+                self.assertFalse(self.profile.exists())
+                self.assertIn(key, out)
+                self.assertIn("example", out)
+
+    def test_an_answers_file_that_leaves_an_example_value_is_refused(self):
+        text = ("identity: {name: A, email: a@acme.example}\n"
+                "source: {repo: acme-profile, key: acm}\n")
+        code, out = self.run_setup({}, self.answers_file(text))
+        self.assertEqual(code, 1, out)
+        self.assertFalse(self.profile.exists())
+        self.assertIn("source.owner", out)
+
+    def test_n_a_means_none_for_the_leak_inputs(self):
+        typed = {**TYPED, "personal": "n/a", "profile_name": "n/a", "leak_extra": "n/a",
+                 "not_onboarded": "n/a"}
+        code, out = self.run_setup(typed)
+        self.assertEqual(code, 0, out)
+        data = self.data()
+        self.assertEqual((data["personal"], data["profile_name"], data["leak_extra"],
+                          data["not_onboarded"]), ([], "", [], {}))
+
+    def test_n_a_is_no_value_for_the_source(self):
+        code, out = self.run_setup({**TYPED, "source.repo": "n/a"})
+        self.assertEqual(code, 1, out)
+        self.assertFalse(self.profile.exists())
+
+    def test_a_rerun_with_the_same_values_changes_nothing(self):
+        self.run_setup()
+        before = self.profile.read_bytes()
+        code, out = self.run_setup()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.confirms, [])
+        self.assertEqual(self.profile.read_bytes(), before)
+
+    def test_the_explaining_comments_of_the_source_block_survive(self):
+        self.run_setup()
+        self.assertIn("# The GitHub owner of every repository",
+                      self.profile.read_text(encoding="utf-8"))
+
+
 class Unbuilt(Fixture):
     """a tracker system with no binding produces a build-list entry."""
 
@@ -234,8 +433,8 @@ class Unbuilt(Fixture):
 class AnswersFile(Fixture):
     """--answers leaves every feature off and profile.lock absent."""
 
-    GOOD = ("identity: {name: Example Person, email: person@example.invalid}\n"
-            f"answers: {{tracker.system: '{SYSTEM}'}}\n")
+    GOOD = ("identity: {name: Example Person, email: person@acme.example}\n"
+            f"answers: {{tracker.system: '{SYSTEM}'}}\n" + LEAK_FILE)
 
     def test_it_writes_everything_but_features(self):
         code, out = self.run_setup({}, self.answers_file(self.GOOD))
@@ -254,8 +453,8 @@ class AnswersFile(Fixture):
         """Intent: features are set only through the consent command."""
         for text in (self.GOOD + "features: {gates: {}}\n", self.GOOD + "targets: {}\n",
                      "- not a mapping\n",
-                     "identity: {name: A, email: a@b.invalid, signing: x}\n",
-                     "identity: {name: A, email: a@b.invalid}\nanswers: [tracker.system]\n"):
+                     "identity: {name: A, email: a@acme.example, signing: x}\n",
+                     "identity: {name: A, email: a@acme.example}\nanswers: [tracker.system]\n"):
             with self.subTest(text=text):
                 self.profile.unlink(missing_ok=True)
                 code, out = self.run_setup({}, self.answers_file(text))
@@ -263,7 +462,7 @@ class AnswersFile(Fixture):
                 self.assertFalse(self.profile.exists())
 
     def test_an_answer_no_capability_asks_refuses_before_writing(self):
-        text = "identity: {name: A, email: a@b.invalid}\nanswers: {tracker.sytem: x}\n"
+        text = "identity: {name: A, email: a@acme.example}\nanswers: {tracker.sytem: x}\n" + LEAK_FILE
         code, out = self.run_setup({}, self.answers_file(text))
         self.assertEqual(code, 1, out)
         self.assertFalse(self.profile.exists())

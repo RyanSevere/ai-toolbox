@@ -603,7 +603,11 @@ class InitFixture(unittest.TestCase):
         git(self.profile, "init", "-q")
         self.answers = Path(tmp.name) / "answers.yaml"
         self.answers.write_text(
-            "identity:\n  name: Example Person\n  email: person@example.invalid\n"
+            "identity:\n  name: Example Person\n  email: person@acme.example\n"
+            "source:\n  repo: acme-profile\n  key: acm\n  owner: acme-owner\n"
+            "personal: [acme-private]\nprofile_name: acme-profile-name\n"
+            "leak_extra: [internal.acme.example]\n"
+            "not_onboarded: {acme-archived: Retired project.}\n"
             "answers:\n  tracker.system: ExampleTracker, a hosted tracker.\n", encoding="utf-8")
         self.urls: list[str] = []
 
@@ -651,6 +655,19 @@ class Init(InitFixture):
         self.assertTrue((self.profile / "profile.yaml").is_file())
         self.assertIn("[UNKNOWN] render not checked", out)
         self.assertTrue(any(url.endswith("/commits/v0.9.9") for url in self.urls))
+
+    def test_its_output_ends_with_a_next_steps_block(self):
+        """Intent: after the dry-run render, init says what to do next and where the answers
+        went, as the last thing it prints."""
+        code, out, err = self.run_init()
+        self.assertEqual(code, 0, out + err)
+        head, _, steps = out.rpartition("Next steps")
+        self.assertTrue(head.strip(), "the block came before the render")
+        self.assertIn("[OK] render:", head)
+        self.assertIn("profile.yaml", steps)
+        self.assertIn("git add -A", steps)
+        self.assertIn("git push", steps)
+        self.assertNotIn("[OK] render:", steps)
 
     def test_the_repository_it_made_has_no_remote(self):
         """Intent: nothing init does leaves a remote that names the core."""

@@ -378,6 +378,8 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
     # so it is a finished profile and stays.
     if code == 1:
         remove_unfinished(profile, before)
+    if code in (0, 3):
+        print(next_steps(profile))
     return code
 
 
@@ -399,6 +401,27 @@ def remove_unfinished(profile: Path, before: set[str]) -> None:
         removed.append(entry.name)
     print(f"[NOTE] init did not finish; removed {', '.join(removed) or 'nothing'} from "
           f"{profile}. Run init again.", file=sys.stderr)
+
+
+def next_steps(profile: Path) -> str:
+    """What to do after init wrote the profile, and where the answers went."""
+    return ("\nNext steps\n"
+            f"  Your answers are in {profile / sync.PROFILE_NAME}, under identity:, source:, "
+            "answers: and the leak-gate keys. Edit that file in any editor to change one.\n"
+            "  The build: lines above list what is still to author. They are not errors.\n"
+            + ("" if consent.read_lock(profile) is not None else
+               "  0. Lock the push gates. Setup did not, because its answers came from a file."
+               f" In {profile}, run:\n"
+               "       python core/consent.py --profile . --init\n")
+            + f"  1. Review the render. In {profile}, run:\n"
+            "       git status\n"
+            "  2. Commit it:\n"
+            "       git add -A\n"
+            "       git commit -m \"Create the profile\"\n"
+            "  3. Push it:\n"
+            "       git push -u origin main\n"
+            "  4. Confirm the core from inside the profile:\n"
+            "       python core/toolboxctl.py version")
 
 
 def build_parser() -> argparse.ArgumentParser:
