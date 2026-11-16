@@ -67,6 +67,9 @@ PROFILE_NAME = "profile.yaml"
 LOCK_NAME = "profile.lock"
 # The prompt times out after 2 minutes of inactivity, and a timeout fails.
 TIMEOUT_SECONDS = 120
+# Shown with every change: a gate whose tool is missing refuses the push.
+TOOLS_NOTE = ("The enabled gates need git, python with PyYAML, ruff and shellcheck (and Node "
+              "where eslint or typecheck run) on this machine before the first push.")
 GATE_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
 HASH = re.compile(r"[0-9a-f]{64}")
 LOCK_HEADER = (
@@ -329,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:
         console = open_console()
         print(f"Gate flag changes for {profile_dir / PROFILE_NAME}:")
         print("\n".join(changes))
+        print(TOOLS_NOTE)
         print(f"Type yes to apply. Anything else, or {TIMEOUT_SECONDS:g} seconds of silence, "
               "refuses.")
         sys.stdout.flush()
@@ -345,6 +349,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSED: {error}", file=sys.stderr)
         return 1
     print(f"Written: {PROFILE_NAME} features: and {LOCK_NAME}. Commit both together.")
+    if args.set:
+        # The rendered gates/enabled list follows the lock only once the profile renders.
+        print("Then re-render, so the hooks follow: python core/sync.py --profile . --self --write")
     return 0
 
 

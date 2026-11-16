@@ -99,6 +99,7 @@ class Fixture(unittest.TestCase):
         self.consented: list = []
         self.confirms: list = []
         self.asked: dict = {}
+        self.printed_before: dict = {}
         self.addCleanup(sync.set_stamp_source, MANIFEST)
         # The machine's own git identity must not decide a test.
         patcher = mock.patch.object(setup_profile, "git_config", return_value="", create=True)
@@ -117,11 +118,17 @@ class Fixture(unittest.TestCase):
             self.confirms.append(diff)
             return confirm
 
+        out = io.StringIO()
+
         def ask(key: str, prompt: str, current: str | None) -> str:
             self.asked[key] = (prompt, current)
-            return typed.get(key, "")
+            self.printed_before.setdefault(key, out.getvalue())
+            value = typed.get(key, "")
+            # A list is one answer per time the question is asked, the last one repeating.
+            if isinstance(value, list):
+                value = value.pop(0) if len(value) > 1 else value[0]
+            return value
 
-        out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             code = setup_profile.run_setup(self.folder, answers_file=answers_file, ask=ask,
                                            confirm=say_yes,
@@ -260,6 +267,35 @@ class ConsoleAsk(unittest.TestCase):
         with self.assertRaises(setup_profile.SetupError):
             self.ask("tracker.body", [EOFError()])
 
+    def test_a_multi_line_prompt_says_to_press_enter_again_once_the_first_line_is_in(self):
+        """Intent: `n/a` shows an empty `>` that waits for a second Enter. After the first
+        line, and not before it, the prompt says so."""
+        out, hinted = io.StringIO(), []
+
+        def typed(_prompt):
+            hinted.append("Press Enter again to finish" in out.getvalue())
+            return ["n/a", ""][len(hinted) - 1]
+
+        with mock.patch("builtins.input", side_effect=typed), contextlib.redirect_stdout(out):
+            self.assertEqual(setup_profile.console_ask("personal", "A question.", None), "n/a")
+        self.assertEqual(hinted, [False, True])
+
+    def test_a_blank_first_line_and_a_one_line_field_get_no_hint(self):
+        for key, lines in (("personal", [""]), ("source.repo", ["acme-profile"])):
+            with self.subTest(key=key):
+                out = io.StringIO()
+                with mock.patch("builtins.input", side_effect=lines), \
+                        contextlib.redirect_stdout(out):
+                    setup_profile.console_ask(key, "A question.", None)
+                self.assertNotIn("Press Enter again", out.getvalue())
+
+    def test_a_current_value_that_ends_in_a_full_stop_is_not_given_a_second(self):
+        out = io.StringIO()
+        with mock.patch("builtins.input", side_effect=[""]), contextlib.redirect_stdout(out):
+            setup_profile.console_ask("not_onboarded", "A question.", "old: Retired project.")
+        self.assertIn("Current: old: Retired project. Enter keeps it.", out.getvalue())
+        self.assertNotIn("..", out.getvalue())
+
     def test_the_prompt_says_how_a_multi_line_answer_ends(self):
         out = io.StringIO()
         with mock.patch("builtins.input", side_effect=[""]), contextlib.redirect_stdout(out):
@@ -346,6 +382,116 @@ class Identity(Fixture):
                 self.assertEqual(code, 1, out)
                 self.assertFalse(self.profile.exists())
                 self.assertIn("example.invalid", out)
+
+
+class IdentityAtThePrompt(Fixture):
+    """With no git identity, setup says so first, and an example email is refused where it
+    is typed, not after every other answer is thrown away."""
+
+    def test_no_git_email_is_said_before_the_identity_questions(self):
+        typed = {**TYPED}
+        self.run_setup(typed)
+        before = self.printed_before["identity.name"]
+        self.assertIn("git config user.email", before)
+        self.assertIn("not set", before)
+
+    def test_a_git_email_means_nothing_is_said(self):
+        self.git_config.side_effect = lambda key, folder=None: {
+            "user.name": "Git Person", "user.email": "git.person@acme.example"}.get(key, "")
+        self.run_setup()
+        self.assertNotIn("git config user.email", self.printed_before["identity.name"])
+
+    def test_an_example_email_is_asked_again_at_the_prompt(self):
+        code, out = self.run_setup({**TYPED, "identity.email": ["me@example.invalid",
+                                                                "me@acme.example"]})
+        self.assertEqual(code, 0, out)
+        self.assertIn("example.invalid", out)
+        self.assertEqual(self.data()["identity"]["email"], "me@acme.example")
+
+    def test_a_blank_answer_that_would_keep_the_example_email_is_asked_again(self):
+        code, out = self.run_setup({**TYPED, "identity.email": ["", "me@acme.example"]})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.data()["identity"]["email"], "me@acme.example")
+
+    def test_setup_stops_after_three_refused_emails(self):
+        code, out = self.run_setup({**TYPED, "identity.email": "me@example.invalid"})
+        self.assertEqual(code, 1, out)
+        self.assertFalse(self.profile.exists())
+
+
+class SourceValidation(Fixture):
+    """source.owner and source.repo are letters, digits, - _ and .; source.key is 1 to 12
+    lowercase letters and digits. A value with a space breaks owner/repo."""
+
+    BAD = {"source.owner": ["Tester McFacyTest", "a/b", "own?er"],
+           "source.repo": ["acme profile", "acme/profile"],
+           "source.key": ["Acm", "has space", "abcdefghijklm", "a-b"]}
+
+    def test_a_bad_value_is_asked_again_at_the_prompt(self):
+        for field, values in self.BAD.items():
+            for bad in values:
+                with self.subTest(field=field, bad=bad):
+                    self.setUp()
+                    code, out = self.run_setup({**TYPED, field: [bad, TYPED[field]]})
+                    self.assertEqual(code, 0, out)
+                    self.assertIn(field, out)
+                    self.assertEqual(self.data()["source"][field.split(".")[1]], TYPED[field])
+
+    def test_the_edges_of_what_is_accepted(self):
+        typed = {**TYPED, "source.owner": "Acme_Owner-1.x", "source.repo": "A.b_c-9",
+                 "source.key": "abcdefghijkl"}
+        code, out = self.run_setup(typed)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.data()["source"], {"repo": "A.b_c-9", "key": "abcdefghijkl",
+                                                 "owner": "Acme_Owner-1.x"})
+
+    def test_a_value_still_wrong_after_three_asks_refuses_and_writes_nothing(self):
+        code, out = self.run_setup({**TYPED, "source.owner": "Tester McFacyTest"})
+        self.assertEqual(code, 1, out)
+        self.assertFalse(self.profile.exists())
+
+    def test_an_answers_file_with_a_bad_value_refuses_at_once(self):
+        for field, bad in (("owner", "Tester McFacyTest"), ("repo", "acme profile"),
+                           ("key", "ACM")):
+            with self.subTest(field=field):
+                source = {"repo": "acme-profile", "key": "acm", "owner": "acme-owner"}
+                source[field] = bad
+                text = ("identity: {name: A, email: a@acme.example}\n"
+                        f"source: {{repo: '{source['repo']}', key: '{source['key']}', "
+                        f"owner: '{source['owner']}'}}\n"
+                        + LEAK_FILE.split("\n", 1)[1])
+                code, out = self.run_setup({}, self.answers_file(text))
+                self.assertEqual(code, 1, out)
+                self.assertFalse(self.profile.exists())
+                self.assertIn(f"source.{field}", out)
+
+
+class ExampleWarning(Fixture):
+    """A shipped example value that will be refused is not offered as one Enter keeps."""
+
+    def test_an_example_source_or_leak_value_is_flagged_and_not_kept_by_enter(self):
+        for key in ("source.repo", "source.key", "source.owner", "personal", "profile_name",
+                    "leak_extra", "not_onboarded"):
+            with self.subTest(key=key):
+                self.run_setup({k: v for k, v in TYPED.items() if k != key})
+                prompt, current = self.asked[key]
+                self.assertIn("shipped example", prompt)
+                self.assertIn("refused", prompt)
+                self.assertIsNone(current)
+
+    def test_the_example_email_default_is_flagged(self):
+        self.run_setup({k: v for k, v in TYPED.items() if k != "identity.email"})
+        prompt, current = self.asked["identity.email"]
+        self.assertIn("shipped example", prompt)
+        self.assertIsNone(current)
+
+    def test_a_value_of_your_own_is_offered_as_one_enter_keeps(self):
+        self.run_setup()
+        code, out = self.run_setup()
+        self.assertEqual(code, 0, out)
+        prompt, current = self.asked["source.repo"]
+        self.assertEqual(current, "acme-profile")
+        self.assertNotIn("shipped example", prompt)
 
 
 class ExampleValues(Fixture):

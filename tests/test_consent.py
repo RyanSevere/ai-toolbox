@@ -211,6 +211,16 @@ class Command(ProfileCase):
         self.assertEqual(self.features(), {"gates": {"alpha": True, "beta": True}})
         consent.check(self.dir, self.features(), self.known)
 
+    def test_the_screen_says_the_gates_need_their_tools_before_the_first_push(self):
+        """Intent: a gate whose tool is missing refuses the push, so the screen that turns
+        gates on names the tools, in one line, before anyone pushes."""
+        with self.answer("yes"):
+            self.run_main("--init")
+        needs = [line for line in self.output.splitlines() if "before the first push" in line]
+        self.assertEqual(len(needs), 1, self.output)
+        for tool in ("ruff", "shellcheck", "PyYAML"):
+            self.assertIn(tool, needs[0])
+
     def test_set_changes_one_flag_and_states_its_consequence(self):
         """Intent: states each change and its consequence, applies on yes."""
         with self.answer("yes"):
@@ -221,6 +231,16 @@ class Command(ProfileCase):
         self.assertIn("no longer run", self.output)
         self.assertEqual(self.features(), {"gates": {"alpha": True, "beta": False}})
         consent.check(self.dir, self.features(), self.known)
+
+    def test_set_ends_by_telling_you_to_render_again(self):
+        """Intent: profile.yaml and profile.lock change, but .githooks/gates/enabled is a
+        rendered file and stays stale until the profile renders into itself."""
+        with self.answer("yes"):
+            self.run_main("--init")
+        with self.answer("yes"):
+            self.assertEqual(self.run_main("--set", "beta=off"), 0, self.output)
+        last = self.output.strip().splitlines()[-1]
+        self.assertIn("python core/sync.py --profile . --self --write", last)
 
     def test_the_rest_of_profile_yaml_is_left_alone(self):
         """Intent: the consent command owns features:, not the file - comments elsewhere in
