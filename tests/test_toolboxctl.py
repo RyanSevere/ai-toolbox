@@ -603,7 +603,11 @@ class InitFixture(unittest.TestCase):
         git(self.profile, "init", "-q")
         self.answers = Path(tmp.name) / "answers.yaml"
         self.answers.write_text(
-            "identity:\n  name: Example Person\n  email: person@example.invalid\n"
+            "identity:\n  name: Example Person\n  email: person@acme.example\n"
+            "source:\n  repo: acme-profile\n  key: acm\n  owner: acme-owner\n"
+            "personal: [acme-private]\nprofile_name: acme-profile-name\n"
+            "leak_extra: [internal.acme.example]\n"
+            "not_onboarded: {acme-archived: Retired project.}\n"
             "answers:\n  tracker.system: ExampleTracker, a hosted tracker.\n", encoding="utf-8")
         self.urls: list[str] = []
 
@@ -640,14 +644,32 @@ class Init(InitFixture):
         """Intent: init in an empty repository writes core/ and a VENDORED recording the
         archive's own VERSION as a tag and the SHA it resolved to, then renders a profile."""
         code, out, err = self.run_init()
-        self.assertEqual(code, 0, out + err)
+        # The core ships gates and an answers file leaves consent for the operator's own
+        # console, so the render is unchecked (3) until `consent.py --init`.
+        self.assertEqual(code, 3, out + err)
+        self.assertIn("consent.py --profile . --init", out + err)
         record = vendor.read_record(self.profile / "core")
         self.assertEqual((record.source, record.tag, record.sha),
                          (self.SOURCE, "v0.9.9", SHA))
         self.assertTrue((self.profile / "core" / "sync.py").is_file())
         self.assertTrue((self.profile / "profile.yaml").is_file())
-        self.assertIn("[OK] render:", out)
+        self.assertIn("[UNKNOWN] render not checked", out)
         self.assertTrue(any(url.endswith("/commits/v0.9.9") for url in self.urls))
+
+    def test_its_output_ends_with_a_next_steps_block(self):
+        """Intent: after the dry-run render, init says what to do next and where the answers
+        went, as the last thing it prints. An answers file locks no gates, so the render
+        is unchecked (exit 3) and the first step is to lock them."""
+        code, out, err = self.run_init()
+        self.assertEqual(code, 3, out + err)
+        head, _, steps = out.rpartition("Next steps")
+        self.assertTrue(head.strip(), "the block came before the render")
+        self.assertIn("render not checked", head)
+        self.assertIn("consent.py --profile . --init", steps)
+        self.assertIn("profile.yaml", steps)
+        self.assertIn("git add -A", steps)
+        self.assertIn("git push", steps)
+        self.assertNotIn("render not checked", steps)
 
     def test_the_repository_it_made_has_no_remote(self):
         """Intent: nothing init does leaves a remote that names the core."""
@@ -669,6 +691,68 @@ class Init(InitFixture):
                 self.assertIn(name, err)
                 self.assertEqual(self.listing(self.profile), before)
                 self.assertEqual(self.urls, [])
+
+    def test_a_setup_that_raises_leaves_no_core_and_no_profile(self):
+        """Intent: a setup step that fails after vendoring removes the core/ this run
+        wrote, so the folder is as init found it."""
+        before = self.listing(self.profile)
+        with mock.patch("setup_profile.main", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                self.run_init()
+        self.assertFalse((self.profile / "core").exists())
+        self.assertFalse((self.profile / "profile.yaml").exists())
+        self.assertEqual(self.listing(self.profile), before)
+
+    def test_a_setup_refusal_removes_everything_this_run_wrote(self):
+        """Intent: a refused setup (exit 1) removes core/, profile.yaml and the seeds/ setup
+        copied in, so a retry starts clean; a file that was there before init stays."""
+        (self.profile / "notes.txt").write_text("mine\n", encoding="utf-8")
+        before = self.listing(self.profile)
+
+        def half_setup(_argv):
+            (self.profile / "profile.yaml").write_text("x: 1\n", encoding="utf-8")
+            (self.profile / "seeds").mkdir()
+            (self.profile / "seeds" / "a.md").write_text("a\n", encoding="utf-8")
+            return 1
+
+        with mock.patch("setup_profile.main", side_effect=half_setup):
+            code, _, _ = self.run_init()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.listing(self.profile), before)
+
+    def test_a_written_profile_whose_render_was_not_checked_is_kept(self):
+        """Intent: setup's exit 3 means the profile was written; init keeps it."""
+        def written(_argv):
+            (self.profile / "profile.yaml").write_text("x: 1\n", encoding="utf-8")
+            return 3
+
+        with mock.patch("setup_profile.main", side_effect=written):
+            code, _, _ = self.run_init()
+        self.assertEqual(code, 3)
+        self.assertTrue((self.profile / "core").exists())
+        self.assertTrue((self.profile / "profile.yaml").exists())
+
+    def test_an_interrupted_setup_leaves_no_core_and_no_profile(self):
+        """Intent: Ctrl+C at a prompt removes the core/ this run wrote."""
+        with mock.patch("setup_profile.main", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_init()
+        self.assertFalse((self.profile / "core").exists())
+        self.assertFalse((self.profile / "profile.yaml").exists())
+
+    def test_a_folder_with_core_and_no_profile_names_the_unfinished_init(self):
+        """Intent: core/ without profile.yaml is an unfinished init: the message says so,
+        says to delete core/ and run init again, and does not send the operator to update."""
+        (self.profile / "core").mkdir()
+        before = self.listing(self.profile)
+        code, _, err = self.run_init()
+        self.assertNotEqual(code, 0)
+        self.assertIn("unfinished init", err)
+        self.assertIn("Delete", err)
+        self.assertIn("run init again", err)
+        self.assertNotIn("toolboxctl update", err)
+        self.assertEqual(self.listing(self.profile), before)
+        self.assertEqual(self.urls, [])
 
     def test_it_refuses_a_folder_that_is_not_a_git_work_tree(self):
         """Intent: no repository, no bootstrap, and nothing written."""
@@ -700,7 +784,10 @@ class InitGate2(InitFixture):
         if sh is None:
             self.skipTest("no POSIX shell available; not reporting a pass")
         code, out, err = self.run_init()
-        self.assertEqual(code, 0, out + err)
+        # The core ships gates and an answers file leaves consent for the operator's own
+        # console, so the render is unchecked (3) until `consent.py --init`.
+        self.assertEqual(code, 3, out + err)
+        self.assertIn("consent.py --profile . --init", out + err)
         git(self.profile, "remote", "add", "origin", self.CORE_URL)
         push_url = git(self.profile, "remote", "get-url", "--push", "origin")
         script = (Path(toolboxctl.__file__).resolve().parent / "githooks" / "one-way"

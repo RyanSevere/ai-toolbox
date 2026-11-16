@@ -1503,11 +1503,16 @@ def validate_answers(manifest: dict, questions: dict[str, Questions]) -> dict[st
     return answers
 
 
+def declared(answers: dict[str, str], key: str) -> bool:
+    """Whether the answer under `key` names a system: present, and not `n/a`."""
+    return key in answers and str(answers[key]).strip().lower() != "n/a"
+
+
 def unbuilt_answers(answers: dict[str, str], questions: dict[str, Questions],
                     bound: dict[str, str]) -> list[str]:
     """Each answer that declares a system while nothing binds a capability its file defines."""
     return [f"{stem}.{entry.declares}" for stem, entry in sorted(questions.items())
-            if entry.declares and f"{stem}.{entry.declares}" in answers
+            if entry.declares and declared(answers, f"{stem}.{entry.declares}")
             and not entry.capabilities & set(bound)]
 
 
@@ -1520,7 +1525,7 @@ def conventions(answers: dict[str, str], questions: dict[str, Questions]
     declared. Undeclared renders nothing and reports nothing: no system, no conventions."""
     rules = []
     for stem, entry in sorted(questions.items()):
-        if not entry.renders or f"{stem}.{entry.declares}" not in answers:
+        if not entry.renders or not declared(answers, f"{stem}.{entry.declares}"):
             continue
         lines = [f"# {stem.capitalize()} conventions", "",
                  f"This profile's answers to the setup questions in `capabilities/{stem}.yaml`.",
