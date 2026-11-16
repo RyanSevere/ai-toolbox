@@ -1701,6 +1701,15 @@ def k_peer(text: str) -> str:
                        "message": {"role": "user", "content": "A made-up report: " + text}})
 
 
+def k_originless(text: str, prompt_id: str | None = "p-9") -> str:
+    """A user record with no origin key, as another session or a monitor writes it."""
+    record = {"type": "user", "uuid": "o-" + text[:8], "isSidechain": False,
+              "message": {"role": "user", "content": text}}
+    if prompt_id:
+        record["promptId"] = prompt_id
+    return json.dumps(record)
+
+
 def k_result(text: str = "ok") -> str:
     return json.dumps({"type": "user", "uuid": "r-1", "isSidechain": False,
                        "toolUseResult": {"stdout": text},
@@ -1911,6 +1920,53 @@ class ClaudeCodeTurns(TranscriptCase):
         turns = self.kturns(k_user("one"), k_text("Starting."), k_tool(), k_result(),
                             k_peer("a report"), k_final("done"))
         self.assertEqual(len(turns), 1)
+
+    def test_a_side_session_note_after_a_finished_turn_opens_a_notification_turn(self):
+        turns = self.kturns(k_user("one"), k_final("reply one"),
+                            k_originless("<side-sessions-event>a note</side-sessions-event>",
+                                         prompt_id=None),
+                            k_final("reply two"), k_user("three - in progress"))
+        self.assertEqual([t.kind for t in turns],
+                         [shape.OPERATOR, shape.NOTIFICATION, shape.OPERATOR])
+        picked, _, _ = shape.lookback(turns)
+        self.assertEqual([(back, t.key) for back, t in picked], [(0, "t1"), (1, "t0")])
+
+    def test_a_side_session_note_while_a_turn_runs_stays_inside_it(self):
+        turns = self.kturns(k_user("one"), k_text("Working."), k_tool(), k_result(),
+                            k_originless("<side-sessions-event>a note</side-sessions-event>",
+                                         prompt_id=None),
+                            k_final("done"))
+        self.assertEqual(len(turns), 1)
+
+    def test_a_ci_monitor_event_after_a_finished_turn_opens_a_notification_turn(self):
+        turns = self.kturns(k_user("one"), k_final("reply one"),
+                            k_originless("<ci-monitor-event>green</ci-monitor-event>",
+                                         prompt_id=None),
+                            k_final("reply two"), k_user("three - in progress"))
+        self.assertEqual([t.kind for t in turns],
+                         [shape.OPERATOR, shape.NOTIFICATION, shape.OPERATOR])
+
+    def test_a_ci_monitor_event_after_a_cut_short_turn_does_not_open_one(self):
+        turns = self.kturns(k_user("one"), k_text("Starting."), k_tool(), k_result(),
+                            k_originless("<ci-monitor-event>green</ci-monitor-event>",
+                                         prompt_id=None),
+                            k_final("done"))
+        self.assertEqual(len(turns), 1)
+
+    def test_a_first_prompt_with_no_origin_opens_a_notification_turn(self):
+        turns = self.kturns(k_originless("a brief from another session"),
+                            k_final(CONDENSED_CLEAN), k_user("two - in progress"))
+        self.assertEqual([t.kind for t in turns], [shape.NOTIFICATION, shape.OPERATOR])
+        picked, _, _ = shape.lookback(turns)
+        self.assertEqual([(back, t.key) for back, t in picked], [(0, "t0")])
+
+    def test_an_originless_record_that_is_not_first_and_has_no_marker_opens_nothing(self):
+        turns = self.kturns(k_user("one"), k_final("reply one"),
+                            k_originless("plain text, no marker"), k_final("reply two"))
+        self.assertEqual(len(turns), 1)
+
+    def test_an_originless_tool_result_first_opens_nothing(self):
+        self.assertEqual(len(self.kturns(k_result(), k_final("done"))), 1)
 
     def test_a_peer_message_before_any_turn_opens_nothing(self):
         self.assertEqual(len(self.kturns(k_peer("a report"), k_final("done"))), 1)

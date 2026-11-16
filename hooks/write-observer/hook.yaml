@@ -1,0 +1,5 @@
+event: file.write.after
+kind: observer
+tools: [claude]
+run: ["{python}", "{hooks}/write-observer/hook.py"]
+timeout: 10

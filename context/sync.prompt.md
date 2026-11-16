@@ -64,7 +64,7 @@ State, in this order:
 
 - source SHA and target
 - how many files change, and how many would be **removed** as orphans
-- the resident footprint line, and how it compares to before if a previous
+- the resident footprint lines, one per tool, and how each compares to before if a previous
   number is known
 - any file whose removal looks surprising
 - any `[WARN] hand-written file(s) in rendered directories` block, in full

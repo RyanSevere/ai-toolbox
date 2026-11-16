@@ -328,6 +328,41 @@ def preview(core: Path, root: Path | None) -> int:
     return 3 if unknown else 0
 
 
+def init(core: Path, profile: Path, source: str, answers: Path | None,
+         fetch: vendor.Fetch | None = None) -> int:
+    """Bootstrap a new profile from a release archive: vendor the tag this archive carries
+    into <profile>/core/, then run setup. Refuses, changing nothing, where a profile is
+    already there. Run from the archive, not from a vendored core."""
+    profile = profile.resolve()
+    for name in (vendor.CORE_DIR, sync.PROFILE_NAME):
+        if (profile / name).exists() or (profile / name).is_symlink():
+            print(f"[ERROR] {profile / name} already exists, so this is not a new profile. "
+                  "Nothing was changed. Update an existing profile with toolboxctl update.",
+                  file=sys.stderr)
+            return 1
+    inside = git(profile, "rev-parse", "--is-inside-work-tree") if profile.is_dir() else None
+    if inside is None or inside.returncode != 0 or inside.stdout.strip() != "true":
+        print(f"[ERROR] {profile} is not a git work tree. Create the repository first. "
+              "Nothing was changed.", file=sys.stderr)
+        return 1
+    try:
+        tag = "v" + (core / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError as error:
+        print(f"[ERROR] could not read this archive's VERSION: {error}", file=sys.stderr)
+        return 1
+    try:
+        record, notes = vendor.vendor_core(profile, f"{source}@{tag}", fetch or vendor.http_get)
+    except vendor.VendorError as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        return 1
+    for note in notes:
+        print(f"[NOTE] {note}")
+    print(f"[OK] vendored {record.source} {record.tag} {record.sha[:12]} into "
+          f"{profile / vendor.CORE_DIR}")
+    return setup_profile.main(["--profile", str(profile),
+                               *(["--answers", str(answers)] if answers else [])])
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The subcommands, each help line naming what running it changes."""
     parser = argparse.ArgumentParser(
@@ -335,6 +370,17 @@ def build_parser() -> argparse.ArgumentParser:
         description="One entry point for a profile's vendored core. Run as "
                     "python core/toolboxctl.py <subcommand>.")
     sub = parser.add_subparsers(dest="command", required=True, metavar="SUBCOMMAND")
+    init_parser = sub.add_parser(
+        "init", help="bootstrap a new profile: vendor the release this archive is into "
+                     "<profile>/core/ and run setup. The one subcommand run from a release "
+                     "archive, not core/. Writes core/ and profile.yaml in a new git "
+                     "repository; refuses where either exists")
+    init_parser.add_argument("--profile", type=Path, required=True,
+                             help="the new, empty git repository")
+    init_parser.add_argument("--source", required=True, metavar="OWNER/REPO",
+                             help="the GitHub repository this archive was released from")
+    init_parser.add_argument("--answers", type=Path, default=None,
+                             help="answer setup from this YAML file instead of the console")
     sub.add_parser("version", help="print the source, tag and SHA core/VENDORED records; "
                                    "reads only")
     sub.add_parser("check", help="verify core/ against VENDORED, then list newer releases. "
@@ -363,12 +409,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None, core: Path = HERE) -> int:
+def main(argv: list[str] | None = None, core: Path = HERE,
+         fetch: vendor.Fetch | None = None) -> int:
     """Dispatch one subcommand and return its delegate's exit code."""
     parser = build_parser()
     args, rest = parser.parse_known_args(argv)
     if rest and args.command not in PASS_THROUGH:
         parser.error(f"unrecognized arguments: {' '.join(rest)}")
+    if args.command == "init":
+        return init(core, args.profile, args.source, args.answers, fetch)
     if not (core / vendor.VENDORED).is_file():
         print(f"[ERROR] {core / vendor.VENDORED} does not exist. toolboxctl is meant for a "
               "profile's vendored core, run as python core/toolboxctl.py; in the source "

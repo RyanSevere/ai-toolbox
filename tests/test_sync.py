@@ -700,6 +700,63 @@ class OrphansAndForeign(unittest.TestCase):
         self.assertFalse(set(sync.RETIRED) & set(sync.find_orphans(self.repo, self.plan)))
 
 
+class ResidentFootprint(unittest.TestCase):
+    """Each tool's resident count is its own: the files it loads at session start."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name)
+
+    def put(self, rel, text):
+        path = self.repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def count(self, tool):
+        row = next(t for t in sync.TOOLS if t.name == tool)
+        return row.resident(self.repo)
+
+    def test_copilot_counts_agents_instructions_and_star_scoped_files(self):
+        self.put("AGENTS.md", "a\nb\n")
+        self.put(".github/copilot-instructions.md", "c\n")
+        self.put(".github/instructions/x.instructions.md", "---\napplyTo: '**'\n---\nd\n")
+        self.put(".github/instructions/y.instructions.md", "---\napplyTo: '**/*.py'\n---\ne\n")
+        self.assertEqual(self.count("copilot"), 2 + 1 + 4)
+
+    def test_cursor_counts_agents_and_always_apply_rules_only(self):
+        self.put("AGENTS.md", "a\nb\n")
+        self.put(".cursor/rules/on.mdc", "---\nalwaysApply: true\n---\nx\n")
+        self.put(".cursor/rules/off.mdc", "---\nalwaysApply: false\n---\ny\n")
+        self.put(".github/copilot-instructions.md", "not cursor\n")
+        self.assertEqual(self.count("cursor"), 2 + 4)
+
+    def test_claude_counts_claude_md_agents_and_rules_without_paths(self):
+        self.put("CLAUDE.md", "c\n")
+        self.put("AGENTS.md", "a\nb\n")
+        self.put(".claude/rules/plain.md", "no frontmatter\nsecond\n")
+        self.put(".claude/rules/fm.md", "---\nname: n\n---\nbody\n")
+        self.put(".claude/rules/scoped.md", "---\npaths:\n  - \"**/*.py\"\n---\nbody\n")
+        self.assertEqual(self.count("claude"), 1 + 2 + 2 + 4)
+
+    def test_claude_without_claude_md_still_counts(self):
+        self.put("AGENTS.md", "a\n")
+        self.assertEqual(self.count("claude"), 1)
+
+    def test_report_has_one_line_per_tool(self):
+        self.put("AGENTS.md", "a\n")
+        lines = sync.resident_report(self.repo, sync.TOOLS)
+        self.assertEqual(len(lines), len(sync.TOOLS))
+        self.assertEqual(lines[0], "resident footprint (copilot): 1 lines")
+
+    def test_extra_row_gets_its_own_line_with_no_other_change(self):
+        import dataclasses
+        extra = dataclasses.replace(sync.TOOLS[0], name="fake", resident=lambda repo: 7)
+        lines = sync.resident_report(self.repo, sync.TOOLS + (extra,))
+        self.assertEqual(lines[-1], "resident footprint (fake): 7 lines")
+        self.assertEqual(len(lines), len(sync.TOOLS) + 1)
+
+
 class OrphanReaders(unittest.TestCase):
     """Intent: removing a rendered file must not break code in the target that still reads
     it. A rollout that deselected tools removed rendered folders, a target's own tests
