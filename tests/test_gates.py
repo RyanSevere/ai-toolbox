@@ -743,7 +743,7 @@ class Tests(GateCase):
 
     def test_parallel_yes_never_exceeds_16(self):
         """Intent: ruled 'yes' is one per CPU and no more than 16.
-        Measured on System-Setup's 39 commands, 36 at once saved 4 percent over 16 and
+        Measured on a 39-command suite, 36 at once saved 4 percent over 16 and
         more than doubled the load. The summary is asserted, not a count of running
         commands: starting 17 overlapping ones under Git Bash is not reliable."""
         self.marked_suite("parallel: yes\n", commands=2)
