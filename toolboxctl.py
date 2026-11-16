@@ -371,6 +371,11 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
     try:
         code = setup_profile.main(["--profile", str(profile),
                                    *(["--answers", str(answers)] if answers else [])])
+    except KeyboardInterrupt:
+        # Ctrl+C is the operator stopping, not a crash: take back what was written, say so,
+        # and give the shell's 130 with no traceback.
+        remove_unfinished(profile, before)
+        return 130
     except BaseException:
         remove_unfinished(profile, before)
         raise
@@ -416,12 +421,18 @@ def next_steps(profile: Path) -> str:
                "       python core/consent.py --profile . --init\n")
             + f"  1. Review the render. In {profile}, run:\n"
             "       git status\n"
-            "  2. Commit it:\n"
+            "  2. In profile.yaml, replace the example targets (example-app, example-scratch)"
+            " with your own repositories, in any editor.\n"
+            "  3. Commit it:\n"
             "       git add -A\n"
             "       git commit -m \"Create the profile\"\n"
-            "  3. Push it:\n"
+            "  4. Render the profile into itself, then commit that too:\n"
+            "       python core/sync.py --profile . --self --write\n"
+            "       git add -A\n"
+            "       git commit -m \"Render the profile\"\n"
+            "  5. Push it:\n"
             "       git push -u origin main\n"
-            "  4. Confirm the core from inside the profile:\n"
+            "  6. Confirm the core from inside the profile:\n"
             "       python core/toolboxctl.py version")
 
 
