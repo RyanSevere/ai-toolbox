@@ -1440,6 +1440,62 @@ class PycacheIgnored(unittest.TestCase):
                          .count("__pycache__/"), 1)
 
 
+class CommittedIgnores(unittest.TestCase):
+    """Intent: only the committed .gitignore decides whether a rule is rendered. A clone
+    that ignores a path through .git/info/exclude or a global excludes file used to render
+    nothing and pass --check, then drift in CI and in every fresh clone (2026-11-15)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.repo = self.root / "repo"
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        subprocess.run(["git", "init", "--quiet", str(self.repo)], check=True, env=env,
+                       capture_output=True, timeout=60)
+
+    def gitignore(self) -> Path:
+        return self.repo / ".gitignore"
+
+    def assert_rule_is_rendered(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(sync.ensure_scratch_ignored(self.repo, write=False), 1)
+        self.assertIn("would add scratch/ to .gitignore", out.getvalue())
+        self.assertFalse(self.gitignore().exists())
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(sync.ensure_scratch_ignored(self.repo, write=True), 1)
+        self.assertIn("scratch/", self.gitignore().read_text(encoding="utf-8").splitlines())
+
+    def test_a_rule_only_in_info_exclude_is_still_rendered(self):
+        exclude = self.repo / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(exist_ok=True)
+        exclude.write_text("scratch/\n", encoding="utf-8")
+        self.assert_rule_is_rendered()
+        self.assertEqual(exclude.read_text(encoding="utf-8"), "scratch/\n")
+
+    def test_b_rule_only_in_a_global_excludes_file_is_still_rendered(self):
+        home = self.root / "home"
+        home.mkdir()
+        globals_file = home / "global-ignore"
+        globals_file.write_text("scratch/\n", encoding="utf-8")
+        (home / ".gitconfig").write_text(
+            f"[core]\n\texcludesFile = {globals_file.as_posix()}\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
+            self.assert_rule_is_rendered()
+
+    def test_c_a_committed_rule_in_another_form_is_left_alone(self):
+        for text, run in (
+            ("/scratch/\n", sync.ensure_scratch_ignored),
+            ("scratch\n", sync.ensure_scratch_ignored),
+            (".github/scripts/\n", sync.ensure_pycache_ignored),
+        ):
+            with self.subTest(rule=text):
+                self.gitignore().write_text(text, encoding="utf-8")
+                self.assertEqual(run(self.repo, write=True), 0)
+                self.assertEqual(self.gitignore().read_text(encoding="utf-8"), text)
+
+
 class CursorTracked(unittest.TestCase):
     """Intent: track the rendered Cursor output. Eight of nine estate repos carry a
     hand-added .cursor/ ignore from 2026-09-18. Only what sync renders is re-included:
