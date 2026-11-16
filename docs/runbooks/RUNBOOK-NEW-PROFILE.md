@@ -22,8 +22,11 @@ the same values in every step.
 - `git`, Python 3 and a signed-in `gh` (`gh auth status`).
 - On Linux, a `python` on `PATH`. On Debian and Ubuntu: `sudo apt install python-is-python3`.
 - The core repository and a release tag that carries `init`.
-- Be ready to answer setup's questions at the console, or write an answers file
-  (identity and answers only) and pass it with `--answers answers.yaml`.
+- Be ready to answer setup's questions at the console. Or write an answers file holding
+  `identity:`, `source:`, `answers:` and the leak-gate keys (`personal`, `profile_name`,
+  `leak_extra`, `not_onboarded`), and pass it with `--answers answers.yaml`. Setup locks
+  the push gates only when you answer at the console; after an answers file, `init`'s next
+  steps tell you to run `python core/consent.py --profile . --init`.
 - Any text editor works for `profile.yaml`. Notepad, nano and VS Code are all fine.
 
 ## Steps
