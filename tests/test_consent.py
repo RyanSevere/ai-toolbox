@@ -222,6 +222,16 @@ class Command(ProfileCase):
         self.assertEqual(self.features(), {"gates": {"alpha": True, "beta": False}})
         consent.check(self.dir, self.features(), self.known)
 
+    def test_set_ends_by_telling_you_to_render_again(self):
+        """Intent: profile.yaml and profile.lock change, but .githooks/gates/enabled is a
+        rendered file and stays stale until the profile renders into itself."""
+        with self.answer("yes"):
+            self.run_main("--init")
+        with self.answer("yes"):
+            self.assertEqual(self.run_main("--set", "beta=off"), 0, self.output)
+        last = self.output.strip().splitlines()[-1]
+        self.assertIn("python core/sync.py --profile . --self --write", last)
+
     def test_the_rest_of_profile_yaml_is_left_alone(self):
         """Intent: the consent command owns features:, not the file - comments elsewhere in
         profile.yaml survive it."""

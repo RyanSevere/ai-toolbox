@@ -734,11 +734,35 @@ class Init(InitFixture):
 
     def test_an_interrupted_setup_leaves_no_core_and_no_profile(self):
         """Intent: Ctrl+C at a prompt removes the core/ this run wrote."""
+        before = self.listing(self.profile)
         with mock.patch("setup_profile.main", side_effect=KeyboardInterrupt):
-            with self.assertRaises(KeyboardInterrupt):
-                self.run_init()
+            code, _, _ = self.run_init()
+        self.assertEqual(code, 130)
         self.assertFalse((self.profile / "core").exists())
         self.assertFalse((self.profile / "profile.yaml").exists())
+        self.assertEqual(self.listing(self.profile), before)
+
+    def test_ctrl_c_prints_the_clean_up_note_and_exits_130_with_no_traceback(self):
+        """Intent: an interrupt is not a crash. The note says what was removed, the exit status
+        is the shell's 130, and nothing is raised for the caller to print as a traceback."""
+        with mock.patch("setup_profile.main", side_effect=KeyboardInterrupt):
+            code, out, err = self.run_init()
+        self.assertEqual(code, 130)
+        self.assertIn("init did not finish", err)
+        self.assertIn("removed core", err)
+        self.assertNotIn("Traceback", out + err)
+
+    def test_its_next_steps_replace_the_targets_then_render_the_profile_into_itself(self):
+        """Intent: the steps the rehearsal left out, in the order they are done: replace the
+        example targets, commit, render the profile into itself, then push."""
+        code, out, err = self.run_init()
+        steps = out.rpartition("Next steps")[2]
+        self.assertIn("replace the example targets", steps)
+        self.assertIn("python core/sync.py --profile . --self --write", steps)
+        self.assertLess(steps.index("replace the example targets"),
+                        steps.index("python core/sync.py --profile . --self --write"))
+        self.assertLess(steps.index("python core/sync.py --profile . --self --write"),
+                        steps.index("git push"))
 
     def test_a_folder_with_core_and_no_profile_names_the_unfinished_init(self):
         """Intent: core/ without profile.yaml is an unfinished init: the message says so,

@@ -121,7 +121,8 @@ the same values in every step.
    ```
 
    Read `profile.yaml` and the files `init` listed, in any editor. Nothing is committed
-   yet.
+   yet. Replace the example targets (`example-app`, `example-scratch`) under `targets:`
+   with your own repositories.
 
 5. **Commit.** Shell and folder as step 4.
 
@@ -135,6 +136,20 @@ the same values in every step.
 
    Replace `v0.1.19` with your tag. The commit needs the identity from step 1; if it
    reports `unable to auto-detect email address`, go back and set it.
+
+   Then render the profile into itself, and commit that render too:
+
+   ```
+   python core/sync.py --profile . --self --write
+   ```
+
+   ```
+   git add -A
+   ```
+
+   ```
+   git commit -m "Render the profile"
+   ```
 
 6. **Push.** Shell and folder as step 4.
 

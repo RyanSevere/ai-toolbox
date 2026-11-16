@@ -345,6 +345,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSED: {error}", file=sys.stderr)
         return 1
     print(f"Written: {PROFILE_NAME} features: and {LOCK_NAME}. Commit both together.")
+    if args.set:
+        # The rendered gates/enabled list follows the lock only once the profile renders.
+        print("Then re-render, so the hooks follow: python core/sync.py --profile . --self --write")
     return 0
 
 
