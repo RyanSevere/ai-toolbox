@@ -104,6 +104,37 @@ def tracked(sha: str) -> list[str]:
 # and a runner, given those files extracted under root, returning findings as
 # (path, code, line number).
 
+# The render stamp, as githooks/lib/stamp.sh reads it: within the first 40 lines, either form.
+STAMP = re.compile(rb"generated from [^ @]+(@[0-9a-f]{7}| - edit the source)")
+STAMP_LINES = 40
+VENDORED_CORE = "core"
+
+
+def is_stamped(content: bytes) -> bool:
+    """True for a rendered file: the repository does not own it, its source does."""
+    head = b"\n".join(content.split(b"\n", STAMP_LINES)[:STAMP_LINES])
+    return bool(STAMP.search(head))
+
+
+def vendored_prefix(sha: str) -> str | None:
+    """'core/' where this commit carries a vendored copy of the core, else None."""
+    return f"{VENDORED_CORE}/" if blob(sha, f"{VENDORED_CORE}/VENDORED") is not None else None
+
+
+def owned(sha: str, selector):
+    """Wraps a tool's own selection so every linter skips what the repository does not own:
+    the vendored core, and any rendered file. Linting them blocks a push on code nobody
+    here can change."""
+    prefix = vendored_prefix(sha)
+    wanted = selector(sha)
+
+    def owns(path: str, content: bytes) -> bool:
+        if prefix and path.startswith(prefix):
+            return False
+        return wanted(path, content) and not is_stamped(content)
+    return owns
+
+
 def is_shell(path: str, content: bytes) -> bool:
     return path.endswith(".sh") or bool(SHEBANG.match(content.split(b"\n", 1)[0]))
 
@@ -319,7 +350,7 @@ def main(argv: list[str] | None = None) -> int:
         sha = resolve(args.sha)
         if sha is None:
             raise LintError(f"--sha {args.sha!r} is not a commit here")
-        owns = selector(sha)
+        owns = owned(sha, selector)
         base = None if args.write else resolve(args.base)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

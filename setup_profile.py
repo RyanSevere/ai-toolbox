@@ -81,6 +81,14 @@ EXAMPLE_EMAIL_SUFFIX = "example.invalid"
 # console, and what is asked. A list is one entry per line; not_onboarded is `name: reason`.
 LEAK_KINDS = {"personal": "list", "profile_name": "text", "leak_extra": "list",
               "not_onboarded": "map"}
+# What source.owner, source.repo and source.key may hold. A space breaks `owner/repo`.
+OWNER_REPO_PATTERN = re.compile(r"[A-Za-z0-9_.-]+")
+KEY_PATTERN = re.compile(r"[a-z0-9]{1,12}")
+SOURCE_RULES = {"owner": (OWNER_REPO_PATTERN, "letters, digits, - _ and ., with no spaces"),
+                "repo": (OWNER_REPO_PATTERN, "letters, digits, - _ and ., with no spaces"),
+                "key": (KEY_PATTERN, "1 to 12 lowercase letters and digits")}
+# How many times a prompt refuses an answer before setup stops.
+MAX_ASKS = 3
 SOURCE_ASKS = {
     "repo": "The name of this profile repository. It is the name in every generated stamp.",
     "key": "The prefix of an issue reference, such as ex-12.",
@@ -145,7 +153,8 @@ def console_ask(key: str, prompt: str, current: str | None) -> str:
     an empty line, so a pasted paragraph is one answer."""
     print(f"\n{key}: {prompt}")
     if current:
-        print(f"  Current: {current}. Enter keeps it.")
+        stop = "" if current.endswith(".") else "."
+        print(f"  Current: {current}{stop} Enter keeps it.")
     if not one_line(key):
         print("  Answer on as many lines as you need, then finish with an empty line. "
               "To answer from a file instead, run with --answers <file>.")
@@ -163,6 +172,8 @@ def console_ask(key: str, prompt: str, current: str | None) -> str:
         if not line.strip():
             break
         lines.append(line.rstrip())
+        if len(lines) == 1:
+            print("  Press Enter again to finish.")
     return "\n".join(lines)
 
 
@@ -235,6 +246,55 @@ def shown(value) -> str | None:
     return str(value) if value else None
 
 
+def is_example_email(email: str) -> bool:
+    return str(email or "").lower().endswith(EXAMPLE_EMAIL_SUFFIX)
+
+
+def check_email(email: str) -> None:
+    """Refuse an address at the example's domain, which is never a real one."""
+    if is_example_email(email):
+        raise SetupError(f"identity.email {email!r} is an example address, which ends "
+                         f"{EXAMPLE_EMAIL_SUFFIX}. Use your own email")
+
+
+def check_source_value(field: str, value: str) -> None:
+    """Refuse a source.owner, source.repo or source.key that would break `owner/repo` or the
+    issue reference. An empty value is for the example check to refuse, not this one."""
+    if not value:
+        return
+    if value.lower() == NOT_APPLICABLE:
+        raise SetupError(f"source.{field} needs a value of your own, not {value!r}")
+    pattern, allowed = SOURCE_RULES[field]
+    if not pattern.fullmatch(value):
+        raise SetupError(f"source.{field} {value!r} is not allowed. Use {allowed}")
+
+
+def flag_example(prompt: str, current: str | None, is_example: bool) -> tuple[str, str | None]:
+    """The prompt and the current value to offer. A shipped example value will be refused, so
+    the prompt says so and offers nothing for Enter to keep."""
+    if not is_example:
+        return prompt, current
+    return (f"{prompt}\n  The current value, {current}, is a shipped example and will be "
+            "refused. Type your own.", None)
+
+
+def ask_checked(ask: Ask, key: str, prompt: str, offered: str | None, default: str | None,
+                check: Callable[[str], None] | None) -> str:
+    """One answer, asked again where `check` refuses it, up to MAX_ASKS times. A blank answer
+    is checked as the `default` it keeps."""
+    for _ in range(MAX_ASKS):
+        typed = ask(key, prompt, offered).strip()
+        try:
+            if check is not None and (typed or default):
+                check(typed or default)
+        except SetupError as error:
+            print(f"REFUSED: {error}")
+            continue
+        return typed
+    raise SetupError(f"{key} was refused {MAX_ASKS} times. Run setup again, or answer from a "
+                     "file with --answers <file>")
+
+
 def collect(current: dict, ask: Ask, folder: Path | None = None) -> tuple[dict, dict, dict]:
     """Identity, answers and the other profile blocks typed at the prompts. A blank answer
     keeps what is there, except that an identity still holding the example's is offered the
@@ -242,23 +302,39 @@ def collect(current: dict, ask: Ask, folder: Path | None = None) -> tuple[dict, 
     source, personal, profile_name, leak_extra and not_onboarded that were typed."""
     example = example_profile()
     identity = dict(current.get("identity") or {})
+    if not git_config("user.email", folder):
+        print("git config user.email is not set, so there is no git identity to offer. Set one "
+              "with `git config user.email you@yourdomain`, or type it below.")
     for field in sorted(IDENTITY_KEYS, reverse=True):
         default = identity.get(field)
         if not default or default == (example.get("identity") or {}).get(field):
             default = git_config(f"user.{field}", folder) or default
-        typed = ask(f"identity.{field}", f"The commit {field} for every target.",
-                    default).strip()
+        prompt = f"The commit {field} for every target."
+        check = None
+        if field == "email":
+            check = check_email
+            prompt, offered = flag_example(prompt, default, bool(default) and is_example_email(default))
+        else:
+            offered = default
+        typed = ask_checked(ask, f"identity.{field}", prompt, offered, default, check)
         if typed or default:
             identity[field] = typed or default
     blocks: dict = {}
     source = dict(current.get("source") or {})
     for field in SOURCE_FIELDS:
-        typed = ask(f"source.{field}", SOURCE_ASKS[field], source.get(field)).strip()
+        value = source.get(field)
+        prompt, offered = flag_example(SOURCE_ASKS[field], value,
+                                       bool(value) and value == (example.get("source") or {}).get(field))
+        typed = ask_checked(ask, f"source.{field}", prompt, offered, None,
+                            lambda text, field=field: check_source_value(field, text))
         if typed:
             source[field] = typed
     blocks["source"] = source
     for key, kind in LEAK_KINDS.items():
-        typed = ask(key, LEAK_ASKS[key], shown(current.get(key))).strip()
+        value = current.get(key)
+        prompt, offered = flag_example(LEAK_ASKS[key], shown(value),
+                                       value not in (None, "", [], {}) and value == example.get(key))
+        typed = ask(key, prompt, offered).strip()
         if typed:
             blocks[key] = PARSERS[kind](typed)
     answers = dict(current.get("answers") or {})
@@ -278,6 +354,8 @@ def check_blocks(blocks: dict, kinds: dict) -> None:
     if source is not None and (not isinstance(source, dict) or not set(source) <= set(SOURCE_FIELDS)
                                or not all(isinstance(v, str) for v in source.values())):
         raise SetupError("source: must hold repo:, key: and owner: strings only")
+    for field, value in (source or {}).items():
+        check_source_value(field, value.strip())
     for key, kind in kinds.items():
         value = blocks.get(key)
         if value is None:
@@ -294,10 +372,7 @@ def refuse_examples(identity: dict, current: dict, blocks: dict) -> None:
     """Refuse a profile that still holds an example value the operator was never asked to
     keep: an identity at the example's domain, or any source or leak-gate value equal to
     the example's."""
-    email = str(identity.get("email") or "")
-    if email.lower().endswith(EXAMPLE_EMAIL_SUFFIX):
-        raise SetupError(f"identity.email {email!r} is an example address, which ends "
-                         f"{EXAMPLE_EMAIL_SUFFIX}. Use your own email")
+    check_email(str(identity.get("email") or ""))
     example = example_profile()
     source = {**(current.get("source") or {}), **(blocks.get("source") or {})}
     for field in SOURCE_FIELDS:
