@@ -53,6 +53,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -581,6 +582,134 @@ class Preview(unittest.TestCase):
         code, out = self.run_preview({"AGENTS.md": "x\n"}, root=elsewhere)
         self.assertEqual(code, 3)
         self.assertIn(str(elsewhere / "app"), out)
+
+
+class InitFixture(unittest.TestCase):
+    """A release archive's folder (a VERSION, no VENDORED), an empty git repository to
+    bootstrap, and a fetch that stands in for GitHub."""
+
+    SOURCE = "example-owner/example-core"
+    CORE_URL = "https://github.com/example-owner/example-core.git"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(sync.set_stamp_source, MANIFEST)
+        self.archive = Path(tmp.name) / "archive"
+        self.archive.mkdir()
+        (self.archive / "VERSION").write_text("0.9.9\n", encoding="utf-8")
+        self.profile = Path(tmp.name) / "profile"
+        self.profile.mkdir()
+        git(self.profile, "init", "-q")
+        self.answers = Path(tmp.name) / "answers.yaml"
+        self.answers.write_text(
+            "identity:\n  name: Example Person\n  email: person@example.invalid\n"
+            "answers:\n  tracker.system: ExampleTracker, a hosted tracker.\n", encoding="utf-8")
+        self.urls: list[str] = []
+
+    def fetch(self, url: str, accept: str) -> bytes:
+        self.urls.append(url)
+        if "/commits/" in url:
+            return SHA.encode()
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            for name, text in (("VERSION", "0.9.9\n"), ("sync.py", "print('core')\n")):
+                data = text.encode()
+                member = tarfile.TarInfo(f"example-core-{SHA}/{name}")
+                member.size = len(data)
+                tar.addfile(member, io.BytesIO(data))
+        return buffer.getvalue()
+
+    def run_init(self, *extra: str, profile: Path | None = None,
+                 answers: bool = True) -> tuple[int, str, str]:
+        argv = ["init", "--profile", str(profile or self.profile), "--source", self.SOURCE]
+        if answers:
+            argv += ["--answers", str(self.answers)]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = toolboxctl.main([*argv, *extra], core=self.archive, fetch=self.fetch)
+        return code, out.getvalue(), err.getvalue()
+
+    def listing(self, folder: Path) -> list[tuple[str, bytes | None]]:
+        return sorted((str(p.relative_to(folder)), p.read_bytes() if p.is_file() else None)
+                      for p in folder.rglob("*") if ".git" not in p.relative_to(folder).parts)
+
+
+class Init(InitFixture):
+    def test_it_vendors_the_archives_version_and_sets_up_a_profile(self):
+        """Intent: init in an empty repository writes core/ and a VENDORED recording the
+        archive's own VERSION as a tag and the SHA it resolved to, then renders a profile."""
+        code, out, err = self.run_init()
+        self.assertEqual(code, 0, out + err)
+        record = vendor.read_record(self.profile / "core")
+        self.assertEqual((record.source, record.tag, record.sha),
+                         (self.SOURCE, "v0.9.9", SHA))
+        self.assertTrue((self.profile / "core" / "sync.py").is_file())
+        self.assertTrue((self.profile / "profile.yaml").is_file())
+        self.assertIn("[OK] render:", out)
+        self.assertTrue(any(url.endswith("/commits/v0.9.9") for url in self.urls))
+
+    def test_the_repository_it_made_has_no_remote(self):
+        """Intent: nothing init does leaves a remote that names the core."""
+        self.run_init()
+        self.assertEqual(git(self.profile, "remote", "-v"), "")
+
+    def test_it_refuses_a_profile_that_is_already_there_and_changes_nothing(self):
+        """Intent: an existing core/ or profile.yaml is refused, naming it, with no file
+        touched."""
+        for name, make in (("core", lambda p: (p / "core").mkdir()),
+                           ("profile.yaml",
+                            lambda p: (p / "profile.yaml").write_text("x: 1\n", encoding="utf-8"))):
+            with self.subTest(existing=name):
+                self.setUp()
+                make(self.profile)
+                before = self.listing(self.profile)
+                code, out, err = self.run_init()
+                self.assertNotEqual(code, 0)
+                self.assertIn(name, err)
+                self.assertEqual(self.listing(self.profile), before)
+                self.assertEqual(self.urls, [])
+
+    def test_it_refuses_a_folder_that_is_not_a_git_work_tree(self):
+        """Intent: no repository, no bootstrap, and nothing written."""
+        plain = self.profile.parent / "plain"
+        plain.mkdir()
+        code, _, err = self.run_init(profile=plain)
+        self.assertNotEqual(code, 0)
+        self.assertIn("git", err)
+        self.assertEqual(list(plain.iterdir()), [])
+
+    def test_every_other_subcommand_still_refuses_without_vendored(self):
+        """Intent: only init runs from outside a vendored core."""
+        for command in ("version", "check", "update"):
+            with self.subTest(command=command):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                    code = toolboxctl.main([command], core=self.archive)
+                self.assertEqual(code, 1)
+                self.assertIn("vendored core", err.getvalue())
+
+
+class InitGate2(InitFixture):
+    def test_a_hand_added_core_remote_is_refused_by_gate_2(self):
+        """Intent: in the repository init made, the one-way gate refuses a push to a remote
+        that names the core."""
+        sh = shutil.which("sh") or next(
+            (p for p in (r"C:\Program Files\Git\usr\bin\sh.exe", "/bin/sh") if Path(p).exists()),
+            None)
+        if sh is None:
+            self.skipTest("no POSIX shell available; not reporting a pass")
+        code, out, err = self.run_init()
+        self.assertEqual(code, 0, out + err)
+        git(self.profile, "remote", "add", "origin", self.CORE_URL)
+        push_url = git(self.profile, "remote", "get-url", "--push", "origin")
+        script = (Path(toolboxctl.__file__).resolve().parent / "githooks" / "one-way"
+                  / "no-core-remote.sh").as_posix()
+        env = {**os.environ, "LC_ALL": "C",
+               "PATH": str(Path(sh).parent) + os.pathsep + os.environ.get("PATH", "")}
+        result = subprocess.run([sh, script, self.CORE_URL, push_url], cwd=self.profile,
+                                capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

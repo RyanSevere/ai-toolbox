@@ -112,6 +112,7 @@ Run `python core/toolboxctl.py <subcommand>` inside the profile:
 
 | Subcommand | What it does |
 |---|---|
+| `init --profile PATH --source OWNER/REPO [--answers FILE]` | Bootstraps a new profile: vendors the release the archive is into `PATH/core/` and runs setup. The one subcommand run from a release archive rather than `core/`; see `docs/runbooks/RUNBOOK-NEW-PROFILE.md`. |
 | `version` | Prints the source, tag and commit `core/VENDORED` records. Reads only. |
 | `check` | Verifies `core/` against `VENDORED`, then lists newer releases. Changes nothing. |
 | `update [vX.Y.Z]` | Replaces `core/` with the newest or a named release, previews the render, and keeps it only after you type yes. On a yes it commits `core/` as one change and renders the profile from it, leaving the rendered output uncommitted for review. Otherwise it restores `core/` from git and commits and renders nothing. |

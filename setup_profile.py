@@ -93,6 +93,9 @@ WM_SETTINGCHANGE = 0x001A
 SMTO_ABORTIFHUNG = 0x0002
 BROADCAST_TIMEOUT_MS = 5000
 
+# What a new profile repository holds before setup: its git folder and a vendored core.
+NEW_REPOSITORY_ENTRIES = frozenset({".git", "core"})
+
 Ask = Callable[[str, str, "str | None"], str]
 Confirm = Callable[[str], bool]
 Consent = Callable[[Path], int]
@@ -228,7 +231,8 @@ def run_setup(folder: Path, *, answers_file: Path | None = None, ask: Ask = cons
     path = folder / sync.PROFILE_NAME
     try:
         existing = path.is_file()
-        if not existing and folder.exists() and any(folder.iterdir()):
+        if (not existing and folder.exists()
+                and any(entry.name not in NEW_REPOSITORY_ENTRIES for entry in folder.iterdir())):
             raise SetupError(f"{folder} is not empty and holds no {sync.PROFILE_NAME}. Setup "
                              "creates a profile only in an empty or new folder")
         text = (path if existing else EXAMPLE).read_text(encoding="utf-8")
