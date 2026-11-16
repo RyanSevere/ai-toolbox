@@ -214,6 +214,7 @@ run_gates() {
       printf '%s\n' "$detail" | sed 's/^/    /' >&2
     fi
     seconds=$(( $(date +%s) - started ))
+    [ "$status" = "fail" ] || echo "pre-push: $name passed (${seconds}s)" >&2
     [ "$first" -eq 1 ] || printf ',\n'
     first=0
     printf '    "%s": {"status": "%s", "seconds": %s, "detail": "%s"}' \
@@ -305,6 +306,12 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
     changes="$(flag_changes "$before" "$enabled")"
   fi
   [ -z "$changes" ] || printf '%s\n' "$changes" | sed 's/^/pre-push: flag changed: /' >&2
+
+  # An empty list passes everything, so it is said aloud: a repo whose owner
+  # believes it is gated must not push unchecked without a word.
+  if [ -z "$enabled" ]; then
+    echo "pre-push: no gates enabled - this push is not checked" >&2
+  fi
 
   skipped="$(skipped_gates "$enabled")"
   [ -z "$skipped" ] || printf '%s\n' "$skipped" \

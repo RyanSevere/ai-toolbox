@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/githooks/README.md
 # Created by: Ryan Severe
 # Created: 2026-10-19
-# Last Updated: 2026-11-06
+# Last Updated: 2026-11-16
 # Description: The gate wireframe - what a gate is, how the pre-push hook runs
 #              it, and how a profile declares and enables one. Names no
 #              toolchain and no hosting service.
@@ -71,6 +71,13 @@ publishes what they said.
   `seeds/githooks/gates/`. A name used by both is refused at render.
 - Helpers the gates share live in `lib/`, not `gates/`. A script in `gates/`
   that the enabled list leaves out is reported as a skipped gate.
+
+## The core gates
+
+The core ships generic gates in `gates/`, each described in one line in
+`gates/README.md`. A profile adds its own under `seeds/githooks/gates/`. With
+none enabled the hook prints `no gates enabled - this push is not checked`, and
+with some enabled it prints one line per gate it runs.
 
 ## Which gates run
 

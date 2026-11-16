@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/setup_profile.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-16
 # Description: The setup process. Creates a profile from the
 #              example, asks each capability file's setup questions (or reads
 #              them from --answers), hands features to the consent command,
@@ -265,9 +265,11 @@ def run_setup(folder: Path, *, answers_file: Path | None = None, ask: Ask = cons
                 step(folder)
         else:
             print(f"[OK] nothing to change in {path}")
-        if (answers_file is None and consent.read_lock(folder) is None
-                and consent.known_gates(folder)):
-            if consent_init(folder) != 0:
+        if answers_file is None and consent.read_lock(folder) is None:
+            if not consent.known_gates(folder):
+                print("[WARN] no push gates are known, so consent was skipped: add gates "
+                      "under seeds/githooks/gates/")
+            elif consent_init(folder) != 0:
                 print("[WARN] consent did not complete, so every feature stays off. Run "
                       f"`python core/consent.py --init --profile {folder}` to set them")
     except (SetupError, sync.SyncError, consent.ConsentError, OSError, yaml.YAMLError) as error:

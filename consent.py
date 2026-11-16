@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/consent.py
 # Created by: Ryan Severe
 # Created: 2026-10-15
-# Last Updated: 2026-11-06
+# Last Updated: 2026-11-16
 # Description: The only writer of gate flags. Changes profile.yaml's features:
 #              and profile.lock together, and only on an explicit yes typed at
 #              an interactive console within two minutes. check() is what
@@ -315,7 +315,9 @@ def main(argv: list[str] | None = None) -> int:
             raise ConsentError(f"no {PROFILE_NAME} in {profile_dir}")
         known = known_gates(profile_dir)
         if not known:
-            raise ConsentError("no gates found to flag")
+            raise ConsentError(
+                "no gates found to flag. Add one as seeds/githooks/gates/<name>.sh in the "
+                f"profile at {profile_dir}, then run this again")
         if args.check:
             data = yaml.safe_load((profile_dir / PROFILE_NAME).read_text(encoding="utf-8"))
             gates = check(profile_dir, (data or {}).get("features"), known)
