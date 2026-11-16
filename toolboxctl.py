@@ -409,6 +409,7 @@ def next_steps(profile: Path) -> str:
             f"  Your answers are in {profile / sync.PROFILE_NAME}, under identity:, source:, "
             "answers: and the leak-gate keys. Edit that file in any editor to change one.\n"
             "  The build: lines above list what is still to author. They are not errors.\n"
+            f"  {consent.TOOLS_NOTE}\n"
             + ("" if consent.read_lock(profile) is not None else
                "  0. Lock the push gates. Setup did not, because its answers came from a file."
                f" In {profile}, run:\n"

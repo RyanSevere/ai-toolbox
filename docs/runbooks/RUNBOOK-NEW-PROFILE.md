@@ -19,8 +19,21 @@ the same values in every step.
 
 ## Before you start
 
-- `git`, Python 3 and a signed-in `gh` (`gh auth status`).
-- On Linux, a `python` on `PATH`. On Debian and Ubuntu: `sudo apt install python-is-python3`.
+- These tools on the machine. The push gates the profile turns on run them, and a gate
+  whose tool is missing refuses the push, so install them before the first push.
+
+  | Tool | Why | Debian or Ubuntu | Windows (PowerShell) |
+  |---|---|---|---|
+  | `git` | everything | `sudo apt install git` | `winget install --id Git.Git` |
+  | `python` (3) | setup, sync, the gates | `sudo apt install python3 python-is-python3` | `winget install --id Python.Python.3.12` |
+  | PyYAML | reads `profile.yaml` | `sudo apt install python3-yaml` | `python -m pip install pyyaml` |
+  | `gh`, signed in (`gh auth status`) | creates the repository | `sudo apt install gh` | `winget install --id GitHub.cli` |
+  | `ruff` | the `ruff` gate | `sudo apt install pipx`, then `pipx install ruff` | `python -m pip install ruff` |
+  | `shellcheck` | the `shellcheck` gate | `sudo apt install shellcheck` | `winget install --id koalaman.shellcheck` |
+  | Node.js | the `eslint` and `typecheck` gates, only where the repository has JavaScript or TypeScript | `sudo apt install nodejs npm` | `winget install --id OpenJS.NodeJS.LTS` |
+
+  On Linux, `python` has to be on `PATH`; `python-is-python3` does that. Open a new
+  terminal after installing, so `PATH` is read again.
 - The core repository and a release tag that carries `init`.
 - Be ready to answer setup's questions at the console. Or write an answers file holding
   `identity:`, `source:`, `answers:` and the leak-gate keys (`personal`, `profile_name`,
