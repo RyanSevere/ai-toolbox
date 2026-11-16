@@ -1186,13 +1186,73 @@ def render_copilot_agent(meta: dict, body: str, sha: str, warn) -> str:
     return render_agent(meta, body, sha)
 
 
+def _line_count(path: Path) -> int:
+    return len(path.read_text(encoding="utf-8").splitlines()) if path.is_file() else 0
+
+
+def _frontmatter(text: str) -> str:
+    """The text between a file's leading `---` lines, or '' when it has none."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ""
+    for i, line in enumerate(lines[1:], 1):
+        if line.strip() == "---":
+            return "\n".join(lines[1:i])
+    return ""
+
+
+def _resident_total(repo: Path, fixed: tuple[str, ...], glob: str, resident) -> int:
+    """Lines of the fixed files, plus those of each file matching `glob` (a path
+    relative to the repo) whose text `resident` accepts."""
+    total = sum(_line_count(repo / name) for name in fixed)
+    for path in sorted(repo.glob(glob)):
+        text = path.read_text(encoding="utf-8")
+        if resident(text):
+            total += len(text.splitlines())
+    return total
+
+
+def resident_copilot(repo: Path) -> int:
+    """AGENTS.md, copilot-instructions.md, and instruction files with an applyTo of '**'.
+
+    An earlier version omitted the applyTo '**' files and under-reported by 76 lines,
+    precisely the false-reading defect this estate keeps producing.
+    """
+    return _resident_total(repo, ("AGENTS.md", ".github/copilot-instructions.md"),
+                           ".github/instructions/*.md", lambda t: "applyTo: '**'" in t)
+
+
+def resident_cursor(repo: Path) -> int:
+    """AGENTS.md, and the .cursor/rules files whose frontmatter has alwaysApply: true."""
+    return _resident_total(repo, ("AGENTS.md",), ".cursor/rules/*.mdc",
+                           lambda t: re.search(r"^alwaysApply:\s*true\s*$", _frontmatter(t), re.M)
+                           is not None)
+
+
+def resident_claude(repo: Path) -> int:
+    """CLAUDE.md, AGENTS.md, and the .claude/rules files with no `paths:` key."""
+    return _resident_total(repo, ("CLAUDE.md", "AGENTS.md"), ".claude/rules/*.md",
+                           lambda t: re.search(r"^paths:", _frontmatter(t), re.M) is None)
+
+
+def resident_report(repo: Path, tools: tuple) -> list[str]:
+    """One resident-footprint line per tool. Counts are never summed across tools: an
+    always-on rule would be counted once for every tool that loads it.
+
+    Measures residency, not quality. Resident lines are paid for in every session
+    forever, so the number should be known and should not creep.
+    """
+    return [f"resident footprint ({t.name}): {t.resident(repo)} lines" for t in tools]
+
+
 @dataclass(frozen=True)
 class Tool:
     """One interactive tool's output for rules, skills and agents. A new tool is a new row.
 
     `rule_path` takes {id}; `rule` returns the file, or None when the tool does not render
     that rule. `skill_root` and `agent_path` (takes {name}) are None for a tool without them,
-    and `agent` takes (meta, body, sha, warn). Hooks are not here.
+    and `agent` takes (meta, body, sha, warn). `resident` takes the repo and returns the
+    lines this tool loads at the start of a session. Hooks are not here.
     """
     name: str
     rule_path: str
@@ -1200,14 +1260,15 @@ class Tool:
     skill_root: str | None
     agent_path: str | None
     agent: object
+    resident: object
 
 
 TOOLS = (
     Tool("copilot", ".github/instructions/{id}.instructions.md", render_copilot_rule,
-         ".github/skills", ".github/agents/{name}.agent.md", render_copilot_agent),
-    Tool("cursor", ".cursor/rules/{id}.mdc", render_cursor, ".cursor/skills", None, None),
+         ".github/skills", ".github/agents/{name}.agent.md", render_copilot_agent, resident_copilot),
+    Tool("cursor", ".cursor/rules/{id}.mdc", render_cursor, ".cursor/skills", None, None, resident_cursor),
     Tool("claude", ".claude/rules/{id}.md", render_claude_rule, ".claude/skills",
-         ".claude/agents/{name}.md", render_claude_agent),
+         ".claude/agents/{name}.md", render_claude_agent, resident_claude),
 )
 # Derived, for what reads the roots without the rest of a row.
 SKILL_ROOTS = tuple(t.skill_root for t in TOOLS if t.skill_root)
@@ -2209,30 +2270,6 @@ def find_foreign(repo: Path, plan: dict[str, str]) -> list[str]:
     return sorted(foreign)
 
 
-def resident_lines(repo: Path) -> int:
-    """Instruction lines loaded in every session, regardless of what is being edited.
-
-    Counts any instruction file with an applyTo of '**' as resident - it is.
-    An earlier version omitted those and under-reported by 76 lines, which is
-    precisely the false-reading defect this estate keeps producing.
-
-    Measures residency, not quality. Tracked because resident lines are paid for
-    in every session forever, so the number should be known and should not creep.
-    """
-    total = 0
-    for name in ("AGENTS.md", ".github/copilot-instructions.md"):
-        path = repo / name
-        if path.exists():
-            total += len(path.read_text(encoding="utf-8").splitlines())
-    inst = repo / ".github" / "instructions"
-    if inst.exists():
-        for path in inst.glob("*.md"):
-            text = path.read_text(encoding="utf-8")
-            if "applyTo: '**'" in text:
-                total += len(text.splitlines())
-    return total
-
-
 def activate_hooks(repo: Path, write: bool) -> None:
     """Point git at the rendered hooks, and make the file executable.
 
@@ -3143,7 +3180,9 @@ def main(argv: list[str] | None = None) -> int:
             readers = orphan_readers(repo, orphans, full_plan)
             report_orphan_readers(readers)
 
-        print(f"\nresident footprint: {resident_lines(repo)} lines")
+        print()
+        for line in resident_report(repo, selected_tools(manifest)):
+            print(line)
 
         foreign = find_foreign(repo, full_plan)
         if foreign:
