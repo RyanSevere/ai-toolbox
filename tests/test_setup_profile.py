@@ -3,7 +3,7 @@
 # Path: {PROJECT_ROOT}/tests/test_setup_profile.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-08
+# Last Updated: 2026-11-15
 # Description: The setup process: a profile created from the
 #              example, answers collected interactively or from a file, features
 #              left to the consent command, a diff confirmed before any re-run
@@ -45,6 +45,7 @@
 
 
 import contextlib
+import importlib.util
 import io
 import sys
 import tempfile
@@ -282,6 +283,261 @@ class PostCreate(Fixture):
             self.assertEqual(seen, [True])
             self.run_setup()
         self.assertEqual(seen, [True], "a run that wrote nothing ran the steps again")
+
+
+BLOCK = ("# >>> ai-toolbox hooks switch >>>\n"
+         "export AI_TOOLBOX_HOOKS=off\n"
+         "# <<< ai-toolbox hooks switch <<<\n")
+
+
+class HooksFixture(unittest.TestCase):
+    """Intent: the per-machine hooks switch. Every writer is a fake or points into
+    a temporary folder; the real registry and home folder are never touched."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        self.profile_file = self.home / ".profile"
+        self.registry: list = []
+        self.broadcasts: list = []
+        self.asked: list = []
+
+    def run_hooks(self, state: str, *, platform: str = "linux", shell: str = "/bin/bash",
+                  answer: bool = True, broadcast=None) -> tuple[int, str]:
+        def confirm(text: str) -> bool:
+            self.asked.append(text)
+            return answer
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = setup_profile.run_hooks(
+                state, confirm=confirm, platform=platform, home=self.home, shell=shell,
+                registry=lambda name, value: self.registry.append((name, value)),
+                broadcast=broadcast or (lambda: self.broadcasts.append("Environment")))
+        return code, out.getvalue()
+
+    def profile_bytes(self) -> bytes | None:
+        return self.profile_file.read_bytes() if self.profile_file.exists() else None
+
+
+class HooksWindows(HooksFixture):
+    def test_off_writes_the_variable_and_broadcasts_after_a_yes(self):
+        code, out = self.run_hooks("off", platform="win32")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.registry, [(setup_profile.HOOKS_VARIABLE, "off")])
+        self.assertEqual(self.broadcasts, ["Environment"])
+
+    def test_on_deletes_the_variable(self):
+        code, out = self.run_hooks("on", platform="win32")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.registry, [(setup_profile.HOOKS_VARIABLE, None)])
+
+    def test_nothing_is_written_without_a_yes(self):
+        for state in ("off", "on"):
+            with self.subTest(state=state):
+                code, _ = self.run_hooks(state, platform="win32", answer=False)
+                self.assertEqual(code, 1)
+        self.assertEqual(self.registry, [])
+        self.assertEqual(self.broadcasts, [])
+
+    def test_the_question_names_the_variable_and_the_place(self):
+        self.run_hooks("off", platform="win32")
+        self.assertIn("AI_TOOLBOX_HOOKS", self.asked[0])
+        self.assertIn(r"HKCU\Environment", self.asked[0])
+
+    def test_a_failed_broadcast_warns_and_the_write_stands(self):
+        def broken():
+            raise OSError("no window")
+
+        code, out = self.run_hooks("off", platform="win32", broadcast=broken)
+        self.assertEqual(code, 0)
+        self.assertIn("[WARN]", out)
+        self.assertEqual(self.registry, [(setup_profile.HOOKS_VARIABLE, "off")])
+
+    def test_the_variable_name_is_the_library_constant(self):
+        spec = importlib.util.spec_from_file_location(
+            "hookio", sync.ROOT / "hooks" / "lib" / "hookio.py")
+        hookio = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hookio)
+        self.assertEqual(setup_profile.HOOKS_VARIABLE, hookio.OFF_VARIABLE)
+
+
+class FakeWinreg:
+    HKEY_CURRENT_USER = "HKCU"
+    KEY_SET_VALUE = 2
+    REG_SZ = 1
+
+    def __init__(self, present: bool = True):
+        self.calls: list = []
+        self.present = present
+
+    def OpenKey(self, hive, path, reserved, access):  # noqa: N802 - the winreg name
+        self.calls.append(("open", hive, path, access))
+        return contextlib.nullcontext("key")
+
+    def SetValueEx(self, key, name, reserved, kind, value):  # noqa: N802
+        self.calls.append(("set", name, kind, value))
+
+    def DeleteValue(self, key, name):  # noqa: N802
+        self.calls.append(("delete", name))
+        if not self.present:
+            raise FileNotFoundError(name)
+
+
+class HooksRegistryWriter(unittest.TestCase):
+    def test_off_sets_a_string_value_under_hkcu_environment(self):
+        fake = FakeWinreg()
+        setup_profile.write_registry("AI_TOOLBOX_HOOKS", "off", winreg_module=fake)
+        self.assertEqual(fake.calls, [("open", "HKCU", "Environment", 2),
+                                      ("set", "AI_TOOLBOX_HOOKS", 1, "off")])
+
+    def test_on_deletes_the_value_and_a_missing_value_is_fine(self):
+        for present in (True, False):
+            with self.subTest(present=present):
+                fake = FakeWinreg(present=present)
+                setup_profile.write_registry("AI_TOOLBOX_HOOKS", None, winreg_module=fake)
+                self.assertEqual(fake.calls[-1], ("delete", "AI_TOOLBOX_HOOKS"))
+
+    def test_the_broadcast_sends_setting_change_with_environment(self):
+        calls: list = []
+
+        class User32:
+            def SendMessageTimeoutW(self, *args):  # noqa: N802
+                calls.append(args)
+                return 1
+
+        setup_profile.broadcast_environment(user32=User32())
+        hwnd, message, wparam, lparam, flags, timeout, _result = calls[0]
+        self.assertEqual((hwnd, message, wparam, lparam, timeout),
+                         (0xFFFF, 0x001A, 0, "Environment", 5000))
+
+
+class HooksPosix(HooksFixture):
+    def test_off_creates_the_profile_with_the_block_after_a_yes(self):
+        code, out = self.run_hooks("off")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.profile_bytes(), BLOCK.encode())
+        self.assertEqual(self.registry, [])
+
+    def test_off_appends_to_an_existing_profile(self):
+        self.profile_file.write_bytes(b"export A=1\n")
+        self.run_hooks("off")
+        self.assertEqual(self.profile_bytes(), b"export A=1\n" + BLOCK.encode())
+
+    def test_off_twice_leaves_one_block(self):
+        self.run_hooks("off")
+        once = self.profile_bytes()
+        code, _ = self.run_hooks("off")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.profile_bytes(), once)
+        self.assertEqual(len(self.asked), 1, "a run with nothing to change asked anyway")
+
+    def test_on_removes_the_block_and_the_rest_is_byte_identical(self):
+        original = b"# mine\r\nexport A=1\n\n  alias x='y'\n"
+        self.profile_file.write_bytes(original)
+        self.run_hooks("off")
+        self.assertNotEqual(self.profile_bytes(), original)
+        code, _ = self.run_hooks("on")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.profile_bytes(), original)
+
+    def test_on_with_no_block_changes_nothing(self):
+        self.profile_file.write_bytes(b"export A=1\n")
+        code, _ = self.run_hooks("on")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.profile_bytes(), b"export A=1\n")
+        self.assertEqual(self.asked, [])
+
+    def test_nothing_is_written_without_a_yes(self):
+        code, _ = self.run_hooks("off", answer=False)
+        self.assertEqual(code, 1)
+        self.assertIsNone(self.profile_bytes())
+        self.profile_file.write_bytes(BLOCK.encode())
+        code, _ = self.run_hooks("on", answer=False)
+        self.assertEqual(code, 1)
+        self.assertEqual(self.profile_bytes(), BLOCK.encode())
+
+    def test_the_question_names_the_variable_and_the_file(self):
+        self.run_hooks("off")
+        self.assertIn("AI_TOOLBOX_HOOKS", self.asked[0])
+        self.assertIn(str(self.profile_file), self.asked[0])
+
+
+class HooksRefusals(HooksFixture):
+    def assert_refused(self, state: str, expect: str, **kwargs) -> None:
+        before = self.profile_bytes()
+        code, out = self.run_hooks(state, **kwargs)
+        self.assertEqual(code, 1, out)
+        self.assertIn(expect, out)
+        self.assertEqual(self.asked, [], "it asked before refusing")
+        self.assertEqual(self.profile_bytes(), before)
+
+    def test_a_bash_profile_that_does_not_source_profile_refuses(self):
+        for name in (".bash_profile", ".bash_login"):
+            for state in ("off", "on"):
+                with self.subTest(file=name, state=state):
+                    (self.home / name).write_text("export B=1\n", encoding="utf-8")
+                    self.assert_refused(state, name)
+                    self.assertIn("export AI_TOOLBOX_HOOKS=off", self.run_hooks(state)[1])
+                    (self.home / name).unlink()
+
+    def test_a_bash_profile_that_sources_profile_does_not_refuse(self):
+        for line in (". ~/.profile", '. "$HOME/.profile"', "source ~/.profile",
+                     'source "${HOME}/.profile"', "if [ -f ~/.profile ]; then . ~/.profile; fi",
+                     "  . $HOME/.profile"):
+            with self.subTest(line=line):
+                (self.home / ".bash_profile").write_text(f"export B=1\n{line}\n",
+                                                         encoding="utf-8")
+                code, out = self.run_hooks("off")
+                self.assertEqual(code, 0, out)
+                self.profile_file.unlink()
+
+    def test_a_commented_out_source_line_does_not_count(self):
+        (self.home / ".bash_login").write_text("# . ~/.profile\n", encoding="utf-8")
+        self.assert_refused("off", ".bash_login")
+
+    def test_a_zsh_login_shell_refuses(self):
+        self.assert_refused("off", "zsh", shell="/usr/bin/zsh")
+        self.assert_refused("on", "zsh", shell="/bin/zsh")
+
+    def test_the_refusal_names_the_line_to_add_by_hand(self):
+        _, out = self.run_hooks("off", shell="/bin/zsh")
+        self.assertIn("export AI_TOOLBOX_HOOKS=off", out)
+
+
+class HooksMain(unittest.TestCase):
+    def test_hooks_does_only_the_machine_switch_and_needs_no_profile(self):
+        with mock.patch.object(setup_profile, "run_hooks", return_value=0) as hooks, \
+                mock.patch.object(setup_profile, "run_setup") as setup:
+            code = setup_profile.main(["--hooks", "off"])
+        self.assertEqual(code, 0)
+        self.assertEqual(hooks.call_args.args, ("off",))
+        setup.assert_not_called()
+
+    def test_a_profile_alongside_hooks_is_ignored(self):
+        with mock.patch.object(setup_profile, "run_hooks", return_value=0), \
+                mock.patch.object(setup_profile, "run_setup") as setup:
+            setup_profile.main(["--profile", "somewhere", "--hooks", "on"])
+        setup.assert_not_called()
+
+    def test_without_hooks_a_profile_is_still_required(self):
+        with self.assertRaises(SystemExit) as raised, \
+                contextlib.redirect_stderr(io.StringIO()):
+            setup_profile.main([])
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_answers_with_hooks_is_an_error(self):
+        with self.assertRaises(SystemExit) as raised, \
+                contextlib.redirect_stderr(io.StringIO()):
+            setup_profile.main(["--hooks", "off", "--answers", "a.yaml"])
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_hooks_takes_off_or_on_only(self):
+        with self.assertRaises(SystemExit) as raised, \
+                contextlib.redirect_stderr(io.StringIO()):
+            setup_profile.main(["--hooks", "maybe"])
+        self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":

@@ -200,6 +200,20 @@ python core/consent.py --profile . --check
 The prompt reads the terminal itself, never standard input, so piped or
 scripted input is refused.
 
+### Claude Code settings
+
+When a profile's `tools:` includes `claude`, `sync.py` renders one committed,
+machine-independent `.claude/settings.json` per target: the agent hooks (when
+the target has `hooks: true`) and the permission rules. The rules come from the
+profile's `seeds/permissions.yaml`, a list of tool-neutral `command` prefixes,
+each with a `kind` (`allow`, `ask` or `deny`) and the tool-methods `job` it
+backs. The core renders each as `Bash(<command> *)` and `PowerShell(<command> *)`
+and ships no rule of its own. An optional `classifier:` block of prose lines is
+validated but not rendered into a repository. `--check` also fails when an
+entry's `job` is not the first cell of exactly one row of the tool-methods
+table, or that row does not hold the entry's command. A `.claude/settings.json`
+that sync did not generate is never overwritten; see `hooks/README.md`.
+
 ## One-way gates
 
 A profile is private and the core is public. The scripts in `githooks/one-way/`
