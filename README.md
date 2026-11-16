@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/README.md
 # Created by: Ryan Severe
 # Created: 2026-11-08
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-16
 # Description: The front page of the ai-toolbox repository - what the core is,
 #              how a private profile builds on it, how to run it, and what the
 #              one-way gates are for.
@@ -157,6 +157,14 @@ render only when `cursor` is. An empty list, an unknown name or a duplicate is
 refused. A tool left out stops receiving files, and the stamped ones it already
 holds are removed on the next write.
 
+Before it removes any such file, sync looks for readers. A reader is a tracked,
+text, unstamped file outside the render that names a removed path, or a folder
+two or more levels deep that the removal empties (`.github/skills`, with or
+without a trailing slash, `/` or `\`). Any reader makes `--write` and a rollout
+refuse with `file:line: path` for each (the first 20), removing nothing, and
+`--check` reports them as drift. To clear a refusal, fix the reader, or point it
+at the path the new render uses.
+
 ```yaml
 tools: [claude]
 ```
@@ -210,8 +218,10 @@ each with a `kind` (`allow`, `ask` or `deny`) and the tool-methods `job` it
 backs. The core renders each as `Bash(<command> *)` and `PowerShell(<command> *)`
 and ships no rule of its own. An optional `classifier:` block of prose lines is
 validated but not rendered into a repository. `--check` also fails when an
-entry's `job` is not the first cell of exactly one row of the tool-methods
-table, or that row does not hold the entry's command. A `.claude/settings.json`
+entry's `job` is not the first cell of exactly one row across the `Job` tables
+(tables whose first header cell is `Job`) of the core's rules and of the
+profile's own `seeds/rules/`, or that row does not hold the entry's command.
+The profile's rules can carry `Job` tables for its own scripts. A `.claude/settings.json`
 that sync did not generate is never overwritten; see `hooks/README.md`.
 
 ## One-way gates
