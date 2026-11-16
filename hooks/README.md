@@ -138,6 +138,19 @@ key, and that an edit of an existing file reports the tool name `Write`, before 
 enabled anywhere. If either is wrong, every agent `Write` in a repository with hooks on is
 denied for the missing field.
 
+### `session-start` - agent hook on `session.start`, Claude Code only
+
+An `observer` with `tools: [claude]`. When `AI_TOOLBOX_HOOKS=off` it adds one line to the
+session's context, through Claude Code's `SessionStart` output
+(`hookSpecificOutput.additionalContext`):
+
+> Agent hooks are OFF on this machine: AI_TOOLBOX_HOOKS=off is set, so no hook guards this
+> session. Clear it to turn them back on.
+
+With the switch unset, or any value but `off`, it writes nothing. Input it cannot read, or a
+tool other than Claude Code, writes nothing and exits 0. It is the one hook that runs while
+the switch is off; see "The off switch". Cursor is not covered.
+
 ### `no-shell-file-edits` - Cursor hook, not shipped
 
 **Not rendered.** In Cursor it denied every agent `git commit` with "Blocked:
@@ -340,10 +353,12 @@ tools: [cursor, copilot]   # optional; default is every adapter
 - **A shared runtime library**, `hooks/lib/hookio.py`, rendered to
   `.cursor/hooks/lib/` whenever any hook renders. A hook puts the folder beside its
   own on `sys.path` and calls `run_permission(name, event, decide)` or
-  `run_observer(name, event, observe)`. The library reads stdin as bytes (BOM and
+  `run_observer(name, event, observe)`, or, for a hook that only reports the off switch,
+  `run_notice(name, event, notice)`. The library reads stdin as bytes (BOM and
   UTF-16 handled), hands the hook a neutral payload - `event`, the event's fields
   (`command` and `cwd` for `shell.before`, `path` and `cwd` for `file.write.before`),
-  `model`, `model_id`, `model_params`, and `raw` - and writes the tool's output. An
+  `model`, `model_id`, `model_params`, and `raw` - and writes the tool's output. `session.start` has no fields
+beyond those. An
   absent optional field is `None`; an absent required one (`command`, `path`) is not
   passed on. Input it cannot parse denies a permission hook and is skipped by an
   observer. Only `shell.before`'s and `file.write.before`'s fields are mapped; each other
@@ -384,10 +399,13 @@ tools: [cursor, copilot]   # optional; default is every adapter
 `AI_TOOLBOX_HOOKS=off`, set at setup as a user environment variable. The shared
 library reads it at run time: a permission hook allows and an observer does nothing.
 The value is trimmed and case-folded, and anything but `off` leaves hooks on.
-Built in `hookio.py`. Setting it at setup, and the `session.start` line, are
-separate work.
+Built in `hookio.py`. Setting it at setup is separate work.
 Hooks still render, so running `sync.py` cannot change the state, and a hook process
 inherits the tool's environment rather than the agent shell's - the second is
-documented for neither tool and is the first thing the build checks live. The
-`session.start` hook runs regardless and tells the session the hooks are off, and
-the prime report carries the same line.
+documented for neither tool and is the first thing the build checks live.
+
+**`session-start` is the one hook that still runs while the switch is off.** It enters the
+library through `run_notice`, which the switch does not gate, and it is meant only for a hook
+whose job is to report the switch. Every other hook goes quiet when the switch is off, so
+without it nothing would tell a session that its guards are off. It tells the session the
+hooks are off, and the prime report carries the same line.

@@ -7,7 +7,7 @@
 # Last Updated: 2026-11-15
 # Description: Tests for the editor safety hooks, hooks/no-secret-defaults,
 #              hooks/no-shell-file-edits, hooks/no-destructive-shell and
-#              hooks/no-generated-edits, and the
+#              hooks/no-generated-edits, hooks/session-start, and the
 #              shared runtime library hooks/lib/hookio.py. Per hook: a violation it must
 #              catch, a near-miss it must allow, and malformed input it must
 #              not crash on. A guard that silently stops matching looks the

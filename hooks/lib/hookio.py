@@ -73,6 +73,7 @@ FIELD_PATHS = {
     "claude": {
         "shell.before": {"command": ("tool_input", "command"), "cwd": ("cwd",)},
         "file.write.before": {"path": ("tool_input", "file_path"), "cwd": ("cwd",)},
+        "session.start": {},
     },
 }
 
@@ -171,6 +172,17 @@ def claude_verdict(verdict: "tuple[str, str] | None") -> str:
 VERDICT_WRITERS = {"cursor": cursor_verdict, "claude": claude_verdict}
 
 
+def claude_notice(text: str) -> str:
+    """Claude Code adds additionalContext to the session before its first prompt."""
+    return json.dumps({"hookSpecificOutput": {
+        "hookEventName": "SessionStart", "additionalContext": text}})
+
+
+# Per tool, the writer from a notice's text to the text printed on stdout. A tool with no entry
+# gets no notice.
+NOTICE_WRITERS = {"claude": claude_notice}
+
+
 def emit(text: str) -> None:
     if text:
         print(text)
@@ -219,4 +231,29 @@ def run_observer(name: str, event: str, observe: Callable[[dict], None]) -> int:
     except PayloadError:
         return 0
     observe(seen)
+    return 0
+
+
+def run_notice(name: str, event: str, notice: Callable[[dict], "str | None"]) -> int:
+    """Run a hook that tells the session something. notice returns the text, or None to say
+    nothing, and the text is written as the tool's context output.
+
+    The off switch does not gate it. Use it only for a hook whose job is to report the switch:
+    every other hook goes quiet when the switch is off, and this one is how a session finds out.
+    It fails open, like run_observer: input it cannot read, a tool with no notice shape or a
+    field it cannot find writes nothing.
+    """
+    tool = tool_from_argv(sys.argv[1:])
+    if tool not in NOTICE_WRITERS:
+        return 0
+    payload, _ = read_payload(sys.stdin.buffer)
+    if payload is None:
+        return 0
+    try:
+        seen = neutral(event, payload, tool)
+    except PayloadError:
+        return 0
+    text = notice(seen)
+    if text:
+        emit(NOTICE_WRITERS[tool](text))
     return 0
