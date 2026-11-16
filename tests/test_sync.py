@@ -1611,6 +1611,79 @@ class ClaudeSettings(unittest.TestCase):
         self.assertEqual(sync.permission_problems(example_copy(self)), [])
 
 
+class PermissionTables(unittest.TestCase):
+    """Intent: the permissions drift check reads every table whose first header cell is `Job`,
+    in the core's rules and in the profile's own seeds/rules/. An entry's job must still be the
+    first cell of exactly one row across them, and that row must hold its command."""
+
+    OWN = ("| Job | Command |\n|---|---|\n"
+           "| Run the sync | `python sync.py` |\n")
+
+    def profile(self, permissions: str, rules: dict[str, str] | None = None) -> Path:
+        folder = example_copy(self)
+        (folder / "seeds").mkdir(exist_ok=True)
+        (folder / "seeds" / "permissions.yaml").write_text(permissions, encoding="utf-8")
+        for name, text in (rules or {}).items():
+            path = folder / "seeds" / "rules" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        return folder
+
+    @staticmethod
+    def entries(job: str, command: str) -> str:
+        return f"entries:\n  - command: {command}\n    kind: allow\n    job: {job}\n"
+
+    def test_a_job_only_in_a_profile_rules_table_passes(self):
+        folder = self.profile(self.entries("Run the sync", "python sync.py"),
+                              {"spec-mine.md": "# Mine\n\n" + self.OWN})
+        self.assertEqual(sync.permission_problems(folder), [])
+
+    def test_the_problem_names_the_file_of_the_row_that_lacks_the_command(self):
+        folder = self.profile(self.entries("Run the sync", "python other.py"),
+                              {"spec-mine.md": self.OWN})
+        problems = sync.permission_problems(folder)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("spec-mine.md", problems[0])
+
+    def test_a_job_in_a_core_table_and_a_profile_table_is_ambiguous(self):
+        folder = self.profile(self.entries("Commit", "git commit"),
+                              {"spec-mine.md": "| Job | Command |\n|---|---|\n"
+                                               "| Commit | `git commit` |\n"})
+        problems = sync.permission_problems(folder)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("2", problems[0])
+
+    def test_a_job_in_no_table_is_refused_saying_none(self):
+        folder = self.profile(self.entries("Nowhere", "git push"), {"spec-mine.md": self.OWN})
+        problems = sync.permission_problems(folder)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("0", problems[0])
+
+    def test_a_table_whose_first_header_cell_is_not_job_is_ignored(self):
+        other = "| Task | Command |\n|---|---|\n| Run the sync | `python sync.py` |\n"
+        folder = self.profile(self.entries("Run the sync", "python sync.py"),
+                              {"spec-mine.md": other})
+        self.assertTrue(sync.permission_problems(folder))
+
+    def test_rows_count_only_below_a_job_header(self):
+        text = ("| Task | Command |\n|---|---|\n| Run the sync | `python sync.py` |\n\n"
+                "Prose between.\n\n" + self.OWN)
+        rows = sync.permission_table_problems(
+            [{"command": "python sync.py", "kind": "allow", "job": "Run the sync"}],
+            {"spec-mine.md": text})
+        self.assertEqual(rows, [])
+
+    def test_a_profile_with_no_rules_folder_checks_the_core_table_alone(self):
+        folder = self.profile(self.entries("Commit", "git commit"))
+        self.assertFalse((folder / "seeds" / "rules").exists())
+        self.assertEqual(sync.permission_problems(folder), [])
+        bad = self.profile(self.entries("Commit", "git pull"))
+        self.assertTrue(sync.permission_problems(bad))
+
+    def test_with_no_permissions_file_the_check_passes_empty(self):
+        self.assertEqual(sync.permission_problems(example_copy(self)), [])
+
+
 class LockWrite(unittest.TestCase):
     """Intent: a file-sync client holding the lock file for a moment must not end a rollout
     in a traceback. The rename retries, a heartbeat that still fails warns and carries on, and
