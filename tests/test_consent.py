@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_consent.py
 # Created by: Ryan Severe
 # Created: 2026-10-15
-# Last Updated: 2026-11-06
+# Last Updated: 2026-11-16
 # Description: The consent command and profile.lock. A gate flag
 #              changes only through an interactive yes, the lock records what
 #              was consented to, and any disagreement between the lock and
@@ -327,6 +327,29 @@ class CheckCommand(ProfileCase):
         self.assertNotEqual(self.run_main("--check"), 0)
         self.assertIn("beta", self.output)
         self.assertEqual(self.lock_path().read_text(encoding="utf-8"), lock)
+
+
+CORE_GATES = [
+    "dead-variants", "eslint", "lockfile", "no-change-docs", "ruff", "run-expressions",
+    "secret-defaults", "secret-scan", "self-render", "shellcheck", "test-orphans",
+    "test-provenance", "tests", "typecheck",
+]
+
+
+class CoreGates(ProfileCase):
+    """The gates the core itself ships, with no help from the profile."""
+
+    def test_a_profile_with_no_seeded_gates_knows_the_core_gates(self):
+        """Intent: a profile made from the core alone has gates to consent to."""
+        self.assertFalse((self.dir / "seeds").exists())
+        self.assertEqual(consent.known_gates(self.dir), CORE_GATES)
+
+    def test_set_with_no_gates_names_where_to_add_one(self):
+        """Intent: the refusal says how to fix it, not only that nothing was found."""
+        self.known = []
+        self.assertEqual(self.run_main("--set", "alpha=off"), 1)
+        self.assertIn("no gates found to flag", self.output)
+        self.assertIn("seeds/githooks/gates/", self.output)
 
 
 class NoConsole(unittest.TestCase):

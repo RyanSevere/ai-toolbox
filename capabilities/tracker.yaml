@@ -88,8 +88,8 @@ guarantees:
 setup:
   - id: system
     declares: true
-    ask: Which ticket system does this profile use?
-    why: Every other answer depends on it, and the core binds no system by default.
+    ask: Which ticket system does this profile use? Any system works.
+    why: Every other answer depends on it. Nothing is built from the answer until a skill is bound to it, so naming a system only records it.
     feeds: [issue]
     example: "ExampleTracker, a hosted tracker with projects."
   - id: connection
@@ -145,7 +145,7 @@ setup:
     feeds: [relation, link]
     example: "Parent and child, and blocks and blocked by."
   - id: operations
-    ask: Which operations will this profile bind?
+    ask: "Which operations will this profile bind? The operations are create, edit, query, comment, close, link, status and priority. Name the ones you will bind."
     why: An unbound operation is reported as unavailable, never silently skipped.
     feeds: [create, edit, query, comment, close, link, status, priority]
     example: "All of them except link, because the system has no relations."

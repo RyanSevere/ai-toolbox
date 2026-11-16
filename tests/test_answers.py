@@ -53,13 +53,18 @@ from unittest import mock
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import consent  # noqa: E402
 import sync  # noqa: E402
 
 # Data coverage cannot see.
 EXERCISES = ["capabilities/**"]
 
 SHA = "abc1234"
-EXAMPLE = sync.ROOT / "examples" / "profile"
+# The example with every shipped gate consented, because a render refuses without a lock.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from locked_example import locked_example  # noqa: E402
+
+EXAMPLE = locked_example()
 MANIFEST = sync.load_profile(EXAMPLE)
 DEFAULTS = MANIFEST.get("defaults") or {}
 WIREFRAME = (
@@ -183,6 +188,9 @@ class Unbuilt(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(tmp.cleanup)
         cls.profile = Path(tmp.name)
+        # The same consent the manifest declares, because a render refuses without a lock.
+        (cls.profile / "profile.lock").write_text(
+            consent.render_lock(MANIFEST["features"]), encoding="utf-8", newline="\n")
         skill = cls.profile / "seeds" / "skills" / "example-tracker"
         skill.mkdir(parents=True)
         (skill / "procedure.md").write_text(

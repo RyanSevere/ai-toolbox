@@ -72,7 +72,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import sync  # noqa: E402
 
 SHA = "abc1234"
-EXAMPLE = sync.ROOT / "examples" / "profile"
+# The example with every shipped gate consented, because a render refuses without a lock.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from locked_example import locked_example  # noqa: E402
+
+EXAMPLE = locked_example()
 MANIFEST = sync.load_profile(EXAMPLE)
 # The stamp a render from MANIFEST writes; sync.STAMP_MARKER is any stamp's shape.
 MARK = f"generated from {MANIFEST['source']['repo']}@"
@@ -102,11 +106,15 @@ def example_copy(test: unittest.TestCase, gates: tuple[str, ...] = ()) -> Path:
     tmp = tempfile.TemporaryDirectory()
     test.addCleanup(tmp.cleanup)
     folder = Path(tmp.name) / "profile"
-    shutil.copytree(EXAMPLE, folder)
+    shutil.copytree(sync.ROOT / "examples" / "profile", folder)  # as shipped: no lock
     for name in gates:
         gate = folder / "seeds" / "githooks" / "gates" / f"{name}.sh"
         gate.parent.mkdir(parents=True, exist_ok=True)
         gate.write_text("exit 0\n", encoding="utf-8")
+    if not gates:
+        # The core ships gates, so a render refuses without a lock. The manifest's features
+        # (the example's, consented on) match this one. With gates seeded it stays as shipped.
+        lock_all_on(folder)
     return folder
 
 

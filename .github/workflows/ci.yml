@@ -3,7 +3,7 @@
 # Path: {PROJECT_ROOT}/.github/workflows/ci.yml
 # Created by: Ryan Severe
 # Created: 2026-11-08
-# Last Updated: 2026-11-14
+# Last Updated: 2026-11-16
 # Description: Tests, lint and secret scan. Runs the sharded test suite on the
 #              stated Python floor and the newest stable, runs a pinned ruff
 #              with default rules, and scans the full history with a pinned,
@@ -123,4 +123,5 @@ jobs:
       - name: Scan the full history
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --exit-code 1 .
+          # --verbose prints each finding's file, line and rule; --redact still hides the value.
+          "$RUNNER_TEMP/gitleaks" git --redact --verbose --no-banner --exit-code 1 .
