@@ -302,7 +302,7 @@ When `hooks: true` and `claude` is among the profile's tools, `sync.py` renders 
 
 - **`{hooks}` in `run:`** is each adapter's own scripts folder: `.cursor/hooks` for Cursor, `${CLAUDE_PROJECT_DIR}/.claude/hooks` for Claude Code. Cursor still accepts a literal `.cursor/hooks/` path, because profiles carry one. The Claude Code adapter refuses an argument that starts with `.cursor/`, naming the file and asking for `{hooks}`.
 - **The command** is `python "${CLAUDE_PROJECT_DIR}/.claude/hooks/<name>/<script>" <args> --tool claude`. The double quotes let the shell expand the variable. Hooks run under bash, so arguments are quoted for it.
-- **The interpreter rule.** `{python}` renders as bare `python`, resolved from `PATH` on each machine, because a committed file cannot name one machine's interpreter. The Cursor adapter's refusal of a bare interpreter is unchanged.
+- **The interpreter rule.** `{python}` renders as bare `python`, resolved from `PATH` on each machine, because a committed file cannot name one machine's interpreter. The Cursor adapter's refusal of a bare interpreter is unchanged. A Linux machine that ships only `python3` (Debian, for one) needs a `python` on `PATH`, for example from the `python-is-python3` package. Without it no hook can launch, and every permission hook blocks its tool.
 - **The launch probe.** Before `--write` writes a `.claude/settings.json` that has hook entries, it runs `python -c pass` the way Claude Code launches a hook: through `bash -c` on Windows (refusing, with the reason, when `bash` is not on `PATH`), through `sh -c` elsewhere, with a timeout. On a failure it refuses, writes nothing, and names the command, the shell, the exit code and the output. `--check` runs no probe.
 - **Events** map as `session.start` to `SessionStart`, `shell.before` to `PreToolUse` on `Bash|PowerShell`, `file.write.before` to `PreToolUse` on `Write|Edit`, `file.write.after` to `PostToolUse` on `Write|Edit`, and `turn.end` to `Stop`. There is no `reply.after`, so a hook on it must leave `claude` out with `tools:`.
 - **Fail mode.** A `permission` hook gets `"onFailure": "block"`, so a hook that cannot run blocks the action; an `observer` gets none. Entries with the same event and matcher share one matcher group, in hook-name order.
@@ -384,7 +384,7 @@ beyond those. An
   | `claude` | `tool_input.file_path`, absolute, for `Write` and `Edit` | top-level `cwd` |
 
   Claude Code's shapes are from its hooks documentation (`PreToolUse` on the `Bash`,
-  `Write` and `Edit` tools); no Claude Code hook is rendered yet. A required field that is absent, or a
+  `Write` and `Edit` tools), and seen live (see "Live checks, Claude Code"). A required field that is absent, or a
   `tool_input` that is not an object, denies a permission hook with a message naming
   the field, and skips an observer. An empty-string command is a command. An unknown
   tool has no verdict shape, so a permission hook denies it by exit code 2 with the
@@ -427,11 +427,25 @@ after a typed `yes`.
   started with. On Linux, start it from a new login shell.
 
 Hooks still render, so running `sync.py` cannot change the state, and a hook process
-inherits the tool's environment rather than the agent shell's - the second is
-documented for neither tool and is the first thing the build checks live.
+inherits the tool's environment rather than the agent shell's. Neither tool documents
+the second; it is checked live for Claude Code (see "Live checks, Claude Code").
 
 **`session-start` is the one hook that still runs while the switch is off.** It enters the
 library through `run_notice`, which the switch does not gate, and it is meant only for a hook
 whose job is to report the switch. Every other hook goes quiet when the switch is off, so
 without it nothing would tell a session that its guards are off. It tells the session the
 hooks are off, and the prime report carries the same line.
+
+### Live checks, Claude Code
+
+Recorded with Claude Code 2.1.325. The runs were headless (`claude -p`), in a profile repository whose committed `.claude/settings.json` registers `session-start`, `no-destructive-shell`, `no-raw-gh` and `no-generated-edits`. Each was run against a control: the same steps with the switch unset.
+
+| Check | Windows 11 | Linux (Debian, under WSL) |
+|---|---|---|
+| A bare `gh` call is denied by `no-raw-gh`; the passthrough script is not | pass, 2026-11-16 | pass, 2026-11-16 |
+| `no-destructive-shell` denies `git reset --hard` and `git checkout -- .`; `no-generated-edits` denies an edit to a stamped file and allows its source | pass, 2026-11-16 | `no-destructive-shell` pass, 2026-11-16 |
+| `sed -i`: no rendered hook guards it; it is carried with `no-shell-file-edits` | not applicable | not applicable |
+| `AI_TOOLBOX_HOOKS=off`: `session-start` shows the line, the guards stop denying, prime shows the line | pass, 2026-11-16 | pass, 2026-11-16 |
+| The hook inherits the tool's environment: the agent shell clears the variable in the same command, and the guard still stays quiet | pass, 2026-11-16 | pass, 2026-11-16 |
+
+A permission rule is separate from a hook. A `deny` rule for a command still applies while the switch is off. In a folder whose trust prompt was never accepted, a project's `allow` rules were not applied, but its `deny` rules and hooks were (Linux, 2026-11-16; cause inferred, not confirmed).
