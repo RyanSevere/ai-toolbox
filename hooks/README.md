@@ -283,17 +283,28 @@ Before `sync.py --write` writes `.cursor/hooks.json`, it runs each hook's render
 
 A hook whose `run:` does not open with `{python}` has no rendered interpreter to probe. It is printed as `not launch-checked` and rendered anyway.
 
+## Claude Code adapter
+
+When `hooks: true` and `claude` is among the profile's tools, `sync.py` renders `.claude/settings.json`: the hook entries, and the profile's permission rules (see the core `README.md`, "Claude Code settings"). The file is committed and `--check` compares it, because it names no machine. It carries a top-level `_generated` key, and a `.claude/settings.json` without that key is hand-written, so sync refuses to overwrite it. Move its entries to the gitignored `.claude/settings.local.json`, which Claude Code merges in. The scripts and `lib/` render under `.claude/hooks/`.
+
+- **`{hooks}` in `run:`** is each adapter's own scripts folder: `.cursor/hooks` for Cursor, `${CLAUDE_PROJECT_DIR}/.claude/hooks` for Claude Code. Cursor still accepts a literal `.cursor/hooks/` path, because profiles carry one. The Claude Code adapter refuses an argument that starts with `.cursor/`, naming the file and asking for `{hooks}`.
+- **The command** is `python "${CLAUDE_PROJECT_DIR}/.claude/hooks/<name>/<script>" <args> --tool claude`. The double quotes let the shell expand the variable. Hooks run under bash, so arguments are quoted for it.
+- **The interpreter rule.** `{python}` renders as bare `python`, resolved from `PATH` on each machine, because a committed file cannot name one machine's interpreter. The Cursor adapter's refusal of a bare interpreter is unchanged.
+- **The launch probe.** Before `--write` writes a `.claude/settings.json` that has hook entries, it runs `python -c pass` the way Claude Code launches a hook: through `bash -c` on Windows (refusing, with the reason, when `bash` is not on `PATH`), through `sh -c` elsewhere, with a timeout. On a failure it refuses, writes nothing, and names the command, the shell, the exit code and the output. `--check` runs no probe.
+- **Events** map as `session.start` to `SessionStart`, `shell.before` to `PreToolUse` on `Bash|PowerShell`, `file.write.before` to `PreToolUse` on `Write|Edit`, `file.write.after` to `PostToolUse` on `Write|Edit`, and `turn.end` to `Stop`. There is no `reply.after`, so a hook on it must leave `claude` out with `tools:`.
+- **Fail mode.** A `permission` hook gets `"onFailure": "block"`, so a hook that cannot run blocks the action; an `observer` gets none. Entries with the same event and matcher share one matcher group, in hook-name order.
+
 ## Tool-neutral schema
 
 The rationale and rejected options are in `DECISIONS.md`, "A tool-neutral
 schema, and the off switch". Every `hook.yaml` is in this shape, and the old
-`command:` / `failClosed:` keys are refused by name. Only the Cursor adapter
-renders; Copilot's and OpenCode's are not built yet.
+`command:` / `failClosed:` keys are refused by name. The Cursor and Claude Code
+adapters render; Copilot's and OpenCode's are not built yet.
 
 ```yaml
 event: shell.before
 kind: permission
-run: ["{python}", ".cursor/hooks/<name>/hook.py", "--owner", "{owner}"]
+run: ["{python}", "{hooks}/<name>/hook.py", "--owner", "{owner}"]
 timeout: 10
 tools: [cursor, copilot]   # optional; default is every adapter
 ```
