@@ -106,11 +106,15 @@ def example_copy(test: unittest.TestCase, gates: tuple[str, ...] = ()) -> Path:
     tmp = tempfile.TemporaryDirectory()
     test.addCleanup(tmp.cleanup)
     folder = Path(tmp.name) / "profile"
-    shutil.copytree(EXAMPLE, folder)
+    shutil.copytree(sync.ROOT / "examples" / "profile", folder)  # as shipped: no lock
     for name in gates:
         gate = folder / "seeds" / "githooks" / "gates" / f"{name}.sh"
         gate.parent.mkdir(parents=True, exist_ok=True)
         gate.write_text("exit 0\n", encoding="utf-8")
+    if not gates:
+        # The core ships gates, so a render refuses without a lock. The manifest's features
+        # (the example's, consented on) match this one. With gates seeded it stays as shipped.
+        lock_all_on(folder)
     return folder
 
 

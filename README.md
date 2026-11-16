@@ -111,7 +111,7 @@ To change the core, change it here and release it.
 The core ships generic push gates in `githooks/gates/`, so a profile made from
 it is gated from its first push: secret and lockfile checks, linters, type
 checks and a test runner. They are listed, one line each, in
-`githooks/README.md`. A profile adds its own under `seeds/githooks/gates/`;
+`githooks/gates/README.md`. A profile adds its own under `seeds/githooks/gates/`;
 setup puts every known gate to the operator for consent. When no gate is
 enabled, the pre-push hook says so aloud rather than passing quietly.
 
