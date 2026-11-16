@@ -2136,15 +2136,21 @@ def report_orphan_readers(readers: list[str]) -> int:
     return len(readers)
 
 
-def remove_orphans(repo: Path, orphans: list[str], plan: dict[str, str],
-                   on_remove=None) -> None:
-    """Remove the orphans, or refuse and remove nothing while a tracked file reads one."""
+def refuse_orphan_readers(repo: Path, orphans: list[str], plan: dict[str, str]) -> None:
+    """Refuse while a tracked file reads an orphan. A write calls it before emit, so a
+    refused target is left exactly as it was rather than half rendered."""
     readers = orphan_readers(repo, orphans, plan)
     if readers:
         raise SyncError(
             f"{len(readers)} tracked file(s) still read a rendered path that this render "
-            f"removes, so nothing was removed:\n  {orphan_readers_message(readers)}\n"
+            f"removes, so nothing was written or removed:\n  {orphan_readers_message(readers)}\n"
             "Fix the reader, or point it at the path the new render uses, then render again.")
+
+
+def remove_orphans(repo: Path, orphans: list[str], plan: dict[str, str],
+                   on_remove=None) -> None:
+    """Remove the orphans, or refuse and remove nothing while a tracked file reads one."""
+    refuse_orphan_readers(repo, orphans, plan)
     for rel in orphans:
         (repo / rel).unlink()
         if on_remove:
@@ -2649,6 +2655,7 @@ def rollout_target(name: str, cfg: dict, root: Path, defaults: dict, sha: str,
 
     plan = build_plan(name, cfg, defaults, sha, manifest, profile_dir)
     report_drops(plan)
+    refuse_orphan_readers(repo, find_orphans(repo, plan), plan)
     ident = identity(manifest)
     emit(repo, plan, True, ident=ident)
     verify_identity(repo, ident)
@@ -3068,6 +3075,8 @@ def main(argv: list[str] | None = None) -> int:
         full_plan = plan
         if args.check:
             plan = {k: v for k, v in plan.items() if k not in LOCAL_RENDERED}
+        if write:
+            refuse_orphan_readers(repo, find_orphans(repo, full_plan), full_plan)
         ident = identity(manifest)
         changed = emit(repo, plan, write, ident=ident)
         changed += ensure_scratch_ignored(repo, write)
