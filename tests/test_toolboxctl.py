@@ -670,6 +670,47 @@ class Init(InitFixture):
                 self.assertEqual(self.listing(self.profile), before)
                 self.assertEqual(self.urls, [])
 
+    def test_a_setup_that_raises_leaves_no_core_and_no_profile(self):
+        """Intent: a setup step that fails after vendoring removes the core/ this run
+        wrote, so the folder is as init found it."""
+        before = self.listing(self.profile)
+        with mock.patch("setup_profile.main", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                self.run_init()
+        self.assertFalse((self.profile / "core").exists())
+        self.assertFalse((self.profile / "profile.yaml").exists())
+        self.assertEqual(self.listing(self.profile), before)
+
+    def test_a_setup_that_returns_non_zero_leaves_no_core_and_no_profile(self):
+        """Intent: a non-zero setup exit removes the core/ this run wrote."""
+        with mock.patch("setup_profile.main", return_value=2):
+            code, _, _ = self.run_init()
+        self.assertEqual(code, 2)
+        self.assertFalse((self.profile / "core").exists())
+        self.assertFalse((self.profile / "profile.yaml").exists())
+
+    def test_an_interrupted_setup_leaves_no_core_and_no_profile(self):
+        """Intent: Ctrl+C at a prompt removes the core/ this run wrote."""
+        with mock.patch("setup_profile.main", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_init()
+        self.assertFalse((self.profile / "core").exists())
+        self.assertFalse((self.profile / "profile.yaml").exists())
+
+    def test_a_folder_with_core_and_no_profile_names_the_unfinished_init(self):
+        """Intent: core/ without profile.yaml is an unfinished init: the message says so,
+        says to delete core/ and run init again, and does not send the operator to update."""
+        (self.profile / "core").mkdir()
+        before = self.listing(self.profile)
+        code, _, err = self.run_init()
+        self.assertNotEqual(code, 0)
+        self.assertIn("unfinished init", err)
+        self.assertIn("Delete", err)
+        self.assertIn("run init again", err)
+        self.assertNotIn("toolboxctl update", err)
+        self.assertEqual(self.listing(self.profile), before)
+        self.assertEqual(self.urls, [])
+
     def test_it_refuses_a_folder_that_is_not_a_git_work_tree(self):
         """Intent: no repository, no bootstrap, and nothing written."""
         plain = self.profile.parent / "plain"

@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -334,6 +335,13 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
     into <profile>/core/, then run setup. Refuses, changing nothing, where a profile is
     already there. Run from the archive, not from a vendored core."""
     profile = profile.resolve()
+    core_dir, manifest = profile / vendor.CORE_DIR, profile / sync.PROFILE_NAME
+    if ((core_dir.exists() or core_dir.is_symlink())
+            and not (manifest.exists() or manifest.is_symlink())):
+        print(f"[ERROR] {core_dir} exists but {manifest} does not: this is an unfinished "
+              f"init. Delete {core_dir}, then run init again. Nothing was changed.",
+              file=sys.stderr)
+        return 1
     for name in (vendor.CORE_DIR, sync.PROFILE_NAME):
         if (profile / name).exists() or (profile / name).is_symlink():
             print(f"[ERROR] {profile / name} already exists, so this is not a new profile. "
@@ -359,8 +367,30 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
         print(f"[NOTE] {note}")
     print(f"[OK] vendored {record.source} {record.tag} {record.sha[:12]} into "
           f"{profile / vendor.CORE_DIR}")
-    return setup_profile.main(["--profile", str(profile),
-                               *(["--answers", str(answers)] if answers else [])])
+    try:
+        code = setup_profile.main(["--profile", str(profile),
+                                   *(["--answers", str(answers)] if answers else [])])
+    except BaseException:
+        remove_unfinished(profile)
+        raise
+    if code != 0:
+        remove_unfinished(profile)
+    return code
+
+
+def remove_unfinished(profile: Path) -> None:
+    """Take back what a failed or cancelled init wrote: the core/ it vendored, and a
+    profile.yaml setup left part-written. Both were absent when init started."""
+    def writable(func, path, _error):
+        os.chmod(path, 0o700)
+        func(path)
+    core_dir = profile / vendor.CORE_DIR
+    if core_dir.is_symlink() or core_dir.is_file():
+        core_dir.unlink()
+    elif core_dir.exists():
+        shutil.rmtree(core_dir, onerror=writable)
+    (profile / sync.PROFILE_NAME).unlink(missing_ok=True)
+    print(f"[NOTE] init did not finish; removed {core_dir}. Run init again.", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
