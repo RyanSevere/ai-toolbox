@@ -658,16 +658,18 @@ class Init(InitFixture):
 
     def test_its_output_ends_with_a_next_steps_block(self):
         """Intent: after the dry-run render, init says what to do next and where the answers
-        went, as the last thing it prints."""
+        went, as the last thing it prints. An answers file locks no gates, so the render
+        is unchecked (exit 3) and the first step is to lock them."""
         code, out, err = self.run_init()
-        self.assertEqual(code, 0, out + err)
+        self.assertEqual(code, 3, out + err)
         head, _, steps = out.rpartition("Next steps")
         self.assertTrue(head.strip(), "the block came before the render")
-        self.assertIn("[OK] render:", head)
+        self.assertIn("render not checked", head)
+        self.assertIn("consent.py --profile . --init", steps)
         self.assertIn("profile.yaml", steps)
         self.assertIn("git add -A", steps)
         self.assertIn("git push", steps)
-        self.assertNotIn("[OK] render:", steps)
+        self.assertNotIn("render not checked", steps)
 
     def test_the_repository_it_made_has_no_remote(self):
         """Intent: nothing init does leaves a remote that names the core."""
