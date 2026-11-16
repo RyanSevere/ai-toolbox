@@ -26,9 +26,10 @@ paraphrase it from memory.
 ## Steps
 
 1. Read the runbook and run its steps in order, each in the shell and folder it names.
-2. `init` asks setup's questions at the console. **The operator answers them**; do not
-   invent identity or answers. If the operator supplies an answers file, pass it with
-   `--answers`.
+2. `init` asks setup's questions at the console: identity, the source repository, key and
+   owner, the leak-gate lists, then the capability questions. **The operator answers
+   them**; do not invent any answer, and setup refuses an example value left in place. If
+   the operator supplies an answers file, pass it with `--answers`.
 3. Stop after the render for the operator to review before the commit and push.
 
 ---

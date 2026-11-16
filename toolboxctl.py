@@ -359,8 +359,28 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
         print(f"[NOTE] {note}")
     print(f"[OK] vendored {record.source} {record.tag} {record.sha[:12]} into "
           f"{profile / vendor.CORE_DIR}")
-    return setup_profile.main(["--profile", str(profile),
+    code = setup_profile.main(["--profile", str(profile),
                                *(["--answers", str(answers)] if answers else [])])
+    if code in (0, 3):
+        print(next_steps(profile))
+    return code
+
+
+def next_steps(profile: Path) -> str:
+    """What to do after init wrote the profile, and where the answers went."""
+    return ("\nNext steps\n"
+            f"  Your answers are in {profile / sync.PROFILE_NAME}, under identity:, source:, "
+            "answers: and the leak-gate keys. Edit that file in any editor to change one.\n"
+            "  The build: lines above list what is still to author. They are not errors.\n"
+            f"  1. Review the render. In {profile}, run:\n"
+            "       git status\n"
+            "  2. Commit it:\n"
+            "       git add -A\n"
+            "       git commit -m \"Create the profile\"\n"
+            "  3. Push it:\n"
+            "       git push -u origin main\n"
+            "  4. Confirm the core from inside the profile:\n"
+            "       python core/toolboxctl.py version")
 
 
 def build_parser() -> argparse.ArgumentParser:

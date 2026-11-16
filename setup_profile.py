@@ -56,6 +56,7 @@ import importlib.util
 import os
 import re
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -68,8 +69,33 @@ import sync
 ROOT = Path(__file__).resolve().parent
 EXAMPLE = ROOT / "examples" / "profile" / sync.PROFILE_NAME
 # Everything an answers file may carry. features: belongs to the consent command alone.
-ANSWER_FILE_KEYS = {"identity", "answers"}
+ANSWER_FILE_KEYS = {"identity", "answers", "source", "personal", "profile_name", "leak_extra",
+                    "not_onboarded"}
 IDENTITY_KEYS = {"name", "email"}
+SOURCE_FIELDS = ("repo", "key", "owner")
+# An answer that says a question does not apply to this profile.
+NOT_APPLICABLE = "n/a"
+# An email at this suffix is the example's, never a real address.
+EXAMPLE_EMAIL_SUFFIX = "example.invalid"
+# The profile.yaml keys beside source: that the leak gates read, how each is typed at the
+# console, and what is asked. A list is one entry per line; not_onboarded is `name: reason`.
+LEAK_KINDS = {"personal": "list", "profile_name": "text", "leak_extra": "list",
+              "not_onboarded": "map"}
+SOURCE_ASKS = {
+    "repo": "The name of this profile repository. It is the name in every generated stamp.",
+    "key": "The prefix of an issue reference, such as ex-12.",
+    "owner": "The GitHub owner of every repository in this profile.",
+}
+LEAK_ASKS = {
+    "personal": "Repository names that belong to you and that the core must never mention. "
+                "One per line. Answer n/a for none.",
+    "profile_name": "A name for this profile that the core must never mention. Answer n/a "
+                    "for none.",
+    "leak_extra": "Further literal strings the leak gate must refuse. One per line. Answer "
+                  "n/a for none.",
+    "not_onboarded": "Repositories deliberately left out, each with the reason, one per line "
+                     "as `name: reason`. Answer n/a for none.",
+}
 # A dry run renders nothing to commit, so no real source commit is stamped.
 DRY_RUN_SHA = "0000000"
 
@@ -109,15 +135,47 @@ class SetupError(Exception):
     pass
 
 
+def one_line(key: str) -> bool:
+    """A name, an email or a repository is one line; every other answer may take several."""
+    return key.startswith(("identity.", "source.")) or key == "profile_name"
+
+
 def console_ask(key: str, prompt: str, current: str | None) -> str:
+    """One answer at the console. A one-line field ends at its first line; any other ends at
+    an empty line, so a pasted paragraph is one answer."""
     print(f"\n{key}: {prompt}")
     if current:
         print(f"  Current: {current}. Enter keeps it.")
+    if not one_line(key):
+        print("  Answer on as many lines as you need, then finish with an empty line. "
+              "To answer from a file instead, run with --answers <file>.")
+    lines: list[str] = []
+    while True:
+        try:
+            line = input("> ")
+        except EOFError as error:
+            if lines:
+                break
+            raise SetupError("input closed before every question was answered. "
+                             "Use --answers <file> to run without a console") from error
+        if one_line(key):
+            return line
+        if not line.strip():
+            break
+        lines.append(line.rstrip())
+    return "\n".join(lines)
+
+
+def git_config(key: str, folder: Path | None = None) -> str:
+    """`git config <key>` as git would read it in `folder`, or empty when it is unset or git
+    cannot be run."""
     try:
-        return input("> ")
-    except EOFError as error:
-        raise SetupError("input closed before every question was answered. "
-                         "Use --answers <file> to run without a console") from error
+        result = subprocess.run(
+            ["git", "config", "--get", key], capture_output=True, text=True, timeout=10,
+            cwd=folder if folder is not None and folder.is_dir() else None)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def console_confirm(diff: str) -> bool:
@@ -141,44 +199,184 @@ def prompts() -> list[tuple[str, dict]]:
     return found
 
 
-def collect(current: dict, ask: Ask) -> tuple[dict, dict]:
-    """Identity and answers typed at the prompts. A blank answer keeps what is there."""
+def example_profile() -> dict:
+    """The example profile's values: every one a placeholder that must not survive setup."""
+    return yaml.safe_load(EXAMPLE.read_text(encoding="utf-8")) or {}
+
+
+def parse_list(text: str) -> list[str]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return [] if [line.lower() for line in lines] == [NOT_APPLICABLE] else lines
+
+
+def parse_map(text: str) -> dict[str, str]:
+    found = {}
+    for line in parse_list(text):
+        name, colon, reason = line.partition(":")
+        if not colon or not name.strip() or not reason.strip():
+            raise SetupError(f"not_onboarded: {line!r} is not `name: reason`")
+        found[name.strip()] = reason.strip()
+    return found
+
+
+def parse_text(text: str) -> str:
+    return "" if text.strip().lower() == NOT_APPLICABLE else text.strip()
+
+
+PARSERS = {"list": parse_list, "map": parse_map, "text": parse_text}
+
+
+def shown(value) -> str | None:
+    """A current value as the console prints it."""
+    if isinstance(value, dict):
+        value = [f"{name}: {reason}" for name, reason in value.items()]
+    if isinstance(value, list):
+        value = ", ".join(value)
+    return str(value) if value else None
+
+
+def collect(current: dict, ask: Ask, folder: Path | None = None) -> tuple[dict, dict, dict]:
+    """Identity, answers and the other profile blocks typed at the prompts. A blank answer
+    keeps what is there, except that an identity still holding the example's is offered the
+    git config's instead. The third value holds only the blocks the profile.yaml keys named
+    source, personal, profile_name, leak_extra and not_onboarded that were typed."""
+    example = example_profile()
     identity = dict(current.get("identity") or {})
     for field in sorted(IDENTITY_KEYS, reverse=True):
+        default = identity.get(field)
+        if not default or default == (example.get("identity") or {}).get(field):
+            default = git_config(f"user.{field}", folder) or default
         typed = ask(f"identity.{field}", f"The commit {field} for every target.",
-                    identity.get(field)).strip()
+                    default).strip()
+        if typed or default:
+            identity[field] = typed or default
+    blocks: dict = {}
+    source = dict(current.get("source") or {})
+    for field in SOURCE_FIELDS:
+        typed = ask(f"source.{field}", SOURCE_ASKS[field], source.get(field)).strip()
         if typed:
-            identity[field] = typed
+            source[field] = typed
+    blocks["source"] = source
+    for key, kind in LEAK_KINDS.items():
+        typed = ask(key, LEAK_ASKS[key], shown(current.get(key))).strip()
+        if typed:
+            blocks[key] = PARSERS[kind](typed)
     answers = dict(current.get("answers") or {})
     for key, question in prompts():
         prompt = (f"{question.get('ask')}\n  Why: {question.get('why')}\n"
-                  f"  For example: {question.get('example')}")
+                  f"  For example: {question.get('example')}\n"
+                  f"  Does not apply to you? Answer {NOT_APPLICABLE}.")
         typed = ask(key, prompt, answers.get(key)).strip()
         if typed:
             answers[key] = typed
-    return identity, answers
+    return identity, answers, blocks
 
 
-def from_file(path: Path, current: dict) -> tuple[dict, dict]:
-    """Identity and answers from an --answers file, over what the profile already holds."""
+def check_blocks(blocks: dict, kinds: dict) -> None:
+    """Refuse an answers-file block that has the wrong shape."""
+    source = blocks.get("source")
+    if source is not None and (not isinstance(source, dict) or not set(source) <= set(SOURCE_FIELDS)
+                               or not all(isinstance(v, str) for v in source.values())):
+        raise SetupError("source: must hold repo:, key: and owner: strings only")
+    for key, kind in kinds.items():
+        value = blocks.get(key)
+        if value is None:
+            continue
+        good = {"list": isinstance(value, list) and all(isinstance(v, str) for v in value),
+                "text": isinstance(value, str),
+                "map": isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str)
+                                                       for k, v in value.items())}[kind]
+        if not good:
+            raise SetupError(f"{key}: must be a {'string' if kind == 'text' else kind}")
+
+
+def refuse_examples(identity: dict, current: dict, blocks: dict) -> None:
+    """Refuse a profile that still holds an example value the operator was never asked to
+    keep: an identity at the example's domain, or any source or leak-gate value equal to
+    the example's."""
+    email = str(identity.get("email") or "")
+    if email.lower().endswith(EXAMPLE_EMAIL_SUFFIX):
+        raise SetupError(f"identity.email {email!r} is an example address, which ends "
+                         f"{EXAMPLE_EMAIL_SUFFIX}. Use your own email")
+    example = example_profile()
+    source = {**(current.get("source") or {}), **(blocks.get("source") or {})}
+    for field in SOURCE_FIELDS:
+        value = str(source.get(field) or "").strip()
+        if not value or value.lower() == NOT_APPLICABLE:
+            raise SetupError(f"source.{field} needs a value of your own, not {value!r}")
+        if value == (example.get("source") or {}).get(field):
+            raise SetupError(f"source.{field} still holds the example value {value!r}. "
+                             "Replace it with your own")
+    for key in LEAK_KINDS:
+        value = blocks.get(key, current.get(key))
+        if value not in (None, "", [], {}) and value == example.get(key):
+            raise SetupError(f"{key} still holds the example value {value!r}. Replace it "
+                             f"with your own, or answer {NOT_APPLICABLE} for none")
+
+
+def from_file(path: Path, current: dict) -> tuple[dict, dict, dict]:
+    """Identity, answers and the other profile blocks from an --answers file, over what the
+    profile already holds."""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise SetupError(f"{path} must be a mapping of identity: and answers:")
     extra = sorted(str(key) for key in set(data) - ANSWER_FILE_KEYS)
     if extra:
         raise SetupError(f"{path}: {', '.join(extra)} cannot be set by setup. An answers file "
-                         "holds identity: and answers: only; features are set by consent.py")
+                         f"holds {', '.join(sorted(ANSWER_FILE_KEYS))} only; features are set "
+                         "by consent.py")
     identity, answers = data.get("identity") or {}, data.get("answers") or {}
     if not isinstance(identity, dict) or not set(identity) <= IDENTITY_KEYS:
         raise SetupError(f"{path}: identity: must hold name: and email: only")
     if not isinstance(answers, dict):
         raise SetupError(f"{path}: answers: must be a mapping")
+    blocks = {key: data[key] for key in ANSWER_FILE_KEYS - {"identity", "answers"}
+              if key in data}
+    check_blocks(blocks, LEAK_KINDS)
     return ({**(current.get("identity") or {}), **identity},
-            {**(current.get("answers") or {}), **answers})
+            {**(current.get("answers") or {}), **answers}, blocks)
 
 
-def render_block(key: str, value: dict) -> str:
-    return yaml.safe_dump({key: value}, sort_keys=False, allow_unicode=True, width=1000)
+class BlockDumper(yaml.SafeDumper):
+    """Indents list entries under their key, so a block replaced in the text still reads as
+    one block, and writes a multi-line string as a literal block."""
+
+    def increase_indent(self, flow=False, indentless=False):
+        return super().increase_indent(flow, False)
+
+
+BlockDumper.add_representer(str, lambda dumper, value: dumper.represent_scalar(
+    "tag:yaml.org,2002:str", value, style="|" if "\n" in value else None))
+
+
+def render_block(key: str, value) -> str:
+    return yaml.dump({key: value}, Dumper=BlockDumper, sort_keys=False, allow_unicode=True,
+                     width=1000)
+
+
+def replace_source(text: str, source: dict) -> str:
+    """profile.yaml text with source: set field by field, so the comment above each field
+    stays."""
+    lines = text.splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines) if re.match(r"source:(\s|$)", line)), None)
+    if start is None:
+        return replace_block(text, "source", render_block("source", source))
+    end = start + 1
+    while end < len(lines) and (lines[end].startswith(" ") or not lines[end].strip()):
+        end += 1
+    for field in SOURCE_FIELDS:
+        if field not in source:
+            continue
+        entry = "  " + yaml.safe_dump({field: source[field]}, allow_unicode=True,
+                                      width=1000).rstrip("\n") + "\n"
+        hit = next((i for i in range(start + 1, end) if re.match(rf"  {field}:(\s|$)", lines[i])),
+                   None)
+        if hit is None:
+            lines.insert(start + 1, entry)
+            end += 1
+        else:
+            lines[hit] = entry
+    return "".join(lines)
 
 
 def replace_block(text: str, key: str, block: str) -> str:
@@ -238,13 +436,18 @@ def run_setup(folder: Path, *, answers_file: Path | None = None, ask: Ask = cons
         text = (path if existing else EXAMPLE).read_text(encoding="utf-8")
         current = yaml.safe_load(text) or {}
         if answers_file is None:
-            identity, answers = collect(current, ask)
+            identity, answers, blocks = collect(current, ask, folder)
         else:
-            identity, answers = from_file(answers_file, current)
+            identity, answers, blocks = from_file(answers_file, current)
+        refuse_examples(identity, current, blocks)
         sync.identity({"identity": identity})
         sync.validate_answers({"answers": answers}, sync.setup_questions())
         proposed = replace_block(text, "identity", render_block("identity", identity))
         proposed = replace_block(proposed, "answers", render_block("answers", answers))
+        proposed = replace_source(proposed, blocks.get("source") or {})
+        for key in LEAK_KINDS:
+            if key in blocks:
+                proposed = replace_block(proposed, key, render_block(key, blocks[key]))
         write = not existing
         if existing and proposed != text:
             diff = "".join(difflib.unified_diff(text.splitlines(keepends=True),
@@ -400,7 +603,8 @@ def main(argv: list[str] | None = None) -> int:
                              "Required unless --hooks is given")
     parser.add_argument("--answers", type=Path,
                         help="answer from this YAML file instead of the console. Holds "
-                             "identity: and answers: only; features stay off")
+                             "identity:, answers:, source: and the leak-gate keys only; "
+                             "features stay off")
     parser.add_argument("--hooks", choices=("off", "on"),
                         help="only set or clear the hooks off switch on this machine "
                              f"({HOOKS_VARIABLE}): no profile questions, no profile.yaml "
