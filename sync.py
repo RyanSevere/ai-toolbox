@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-14
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-16
 # Description: Renders the core and a profile's seeds into a consuming repository's
 #              per-tool formats and stamps each output with the source SHA.
 #              Dry-run by default; --write applies. Never writes Tier 3.
@@ -61,7 +61,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -1039,31 +1039,63 @@ def render_permission_rules(entries: list[dict]) -> dict[str, list[str]]:
     return rules
 
 
-def permission_table_problems(entries: list[dict], table: str) -> list[str]:
-    """Each entry's job must be the first cell of exactly one table row, and that row must hold
-    the entry's command, so the prose table and the data cannot drift."""
-    rows = [(cells[0], line) for line in table.splitlines() if line.startswith("|")
-            for cells in [[c.strip() for c in line.strip().strip("|").split("|")]]]
+def job_table_rows(text: str) -> list[tuple[str, str]]:
+    """The (first cell, line) of every row below a table header whose first cell is `Job`.
+
+    A table is a run of lines starting with `|`; its first line is the header and the
+    separator line is skipped. A table with any other first header cell is ignored."""
+    rows: list[tuple[str, str]] = []
+    in_job_table = False
+    previous_was_table = False
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            previous_was_table = False
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if not previous_was_table:
+            in_job_table = cells[0] == "Job"
+        elif in_job_table and not set(line.replace("|", "").strip()) <= set("-: "):
+            rows.append((cells[0], line))
+        previous_was_table = True
+    return rows
+
+
+def permission_table_problems(entries: list[dict], tables: str | dict[str, str]) -> list[str]:
+    """Each entry's job must be the first cell of exactly one `Job` table row across the given
+    tables, and that row must hold the entry's command, so the prose and the data cannot drift.
+
+    `tables` maps a file name to its text, so a problem can name the file of the row; a bare
+    string is one unnamed table."""
+    if isinstance(tables, str):
+        tables = {"the table": tables}
+    rows = [(first, line, name) for name, text in tables.items()
+            for first, line in job_table_rows(text)]
     problems = []
     for entry in entries:
         job, command = entry["job"], entry["command"]
-        matching = [line for first, line in rows if first == job]
+        matching = [(line, name) for first, line, name in rows if first == job]
         if len(matching) != 1:
+            where = f" ({', '.join(sorted(n for _, n in matching))})" if matching else ""
             problems.append(f"permission entry {command!r}: job {job!r} is the first cell of "
-                            f"{len(matching)} table rows, not exactly one")
-        elif command not in matching[0]:
-            problems.append(f"permission entry {command!r}: its row {job!r} does not mention "
-                            "that command")
+                            f"{len(matching)} table rows{where}, not exactly one")
+        elif command not in matching[0][0]:
+            problems.append(f"permission entry {command!r}: its row {job!r} in "
+                            f"{matching[0][1]} does not mention that command")
     return problems
 
 
 def permission_problems(profile_dir: Path) -> list[str]:
-    """The table drift check on a profile's real data; the core has none, so it passes empty."""
+    """The table drift check on a profile's real data; the core has none, so it passes empty.
+
+    It reads every `Job` table in the core's rules and in the profile's own seeds/rules/."""
     entries = load_permissions(profile_dir)["entries"]
     if not entries:
         return []
-    table = (RULES_DIR / "spec-tool-methods.md").read_text(encoding="utf-8")
-    return permission_table_problems(entries, table)
+    folders = [("core", RULES_DIR), ("profile", profile_dir / "seeds" / "rules")]
+    tables = {f"{label} rules/{path.name}": path.read_text(encoding="utf-8")
+              for label, folder in folders if folder.is_dir()
+              for path in sorted(folder.glob("*.md"))}
+    return permission_table_problems(entries, tables)
 
 
 def render_agent(meta: dict, body: str, sha: str, skills: tuple[str, ...] = ()) -> str:
@@ -2065,6 +2097,98 @@ def find_orphans(repo: Path, plan: dict[str, str]) -> list[str]:
     return sorted(orphans)
 
 
+READER_LIST_LIMIT = 20
+
+
+def _orphan_needles(repo: Path, orphans: list[str]) -> list[str]:
+    """What a reader would write to name an orphan: its path, and each folder two or more
+    levels deep that removing the orphans leaves empty (or removes with it)."""
+    doomed = set(orphans)
+    folders: dict[str, bool] = {}
+    for rel in orphans:
+        for parent in PurePosixPath(rel).parents:
+            name = parent.as_posix()
+            if len(parent.parts) < 2 or name in folders:
+                continue
+            base = repo / name
+            folders[name] = base.is_dir() and all(
+                path.relative_to(repo).as_posix() in doomed
+                for path in base.rglob("*") if path.is_file())
+    needles = set(orphans) | {name for name, empty in folders.items() if empty}
+    return sorted(needles, key=lambda needle: (-len(needle), needle))
+
+
+def orphan_readers(repo: Path, orphans: list[str], plan: dict[str, str]) -> list[str]:
+    """Tracked files that still name a path about to be removed, as 'file:line: needle'.
+
+    A rollout commit touches only rendered paths, so a target's pre-push gate selects no
+    suite for its own code, and code reading a removed file breaks unseen. Files the render
+    writes or stamps, the orphans themselves and binary files are not readers.
+    """
+    if not orphans:
+        return []
+    needles = _orphan_needles(repo, orphans)
+    variants = []
+    for needle in needles:
+        for form in (needle, needle.replace("/", "\\")):
+            variants.append((form, needle))
+    skip = set(plan) | set(orphans)
+    listed = git_at(repo, "ls-files", "-z").split("\0")
+    readers = []
+    for rel in sorted(rel for rel in listed if rel and rel not in skip):
+        path = repo / rel
+        if not path.is_file():
+            continue
+        raw = path.read_bytes()
+        if b"\0" in raw[:8192]:
+            continue
+        text = raw.decode("utf-8", errors="replace")
+        if is_stamped(text):
+            continue
+        for number, line in enumerate(text.splitlines(), 1):
+            hit = next((needle for form, needle in variants if form in line), None)
+            if hit:
+                readers.append(f"{rel}:{number}: {hit}")
+                break
+    return readers
+
+
+def orphan_readers_message(readers: list[str]) -> str:
+    lines = readers[:READER_LIST_LIMIT]
+    if len(readers) > READER_LIST_LIMIT:
+        lines.append(f"... and {len(readers) - READER_LIST_LIMIT} more")
+    return ("\n  ".join(lines))
+
+
+def report_orphan_readers(readers: list[str]) -> int:
+    """Print the readers a --check or dry run found, and return how many."""
+    if readers:
+        print(f"\n[WARN] {len(readers)} tracked file(s) still read a path about to be removed:")
+        print("  " + orphan_readers_message(readers))
+    return len(readers)
+
+
+def refuse_orphan_readers(repo: Path, orphans: list[str], plan: dict[str, str]) -> None:
+    """Refuse while a tracked file reads an orphan. A write calls it before emit, so a
+    refused target is left exactly as it was rather than half rendered."""
+    readers = orphan_readers(repo, orphans, plan)
+    if readers:
+        raise SyncError(
+            f"{len(readers)} tracked file(s) still read a rendered path that this render "
+            f"removes, so nothing was written or removed:\n  {orphan_readers_message(readers)}\n"
+            "Fix the reader, or point it at the path the new render uses, then render again.")
+
+
+def remove_orphans(repo: Path, orphans: list[str], plan: dict[str, str],
+                   on_remove=None) -> None:
+    """Remove the orphans, or refuse and remove nothing while a tracked file reads one."""
+    refuse_orphan_readers(repo, orphans, plan)
+    for rel in orphans:
+        (repo / rel).unlink()
+        if on_remove:
+            on_remove(rel)
+
+
 def find_foreign(repo: Path, plan: dict[str, str]) -> list[str]:
     """Hand-written files sitting in a directory this tool renders into.
 
@@ -2563,6 +2687,7 @@ def rollout_target(name: str, cfg: dict, root: Path, defaults: dict, sha: str,
 
     plan = build_plan(name, cfg, defaults, sha, manifest, profile_dir)
     report_drops(plan)
+    refuse_orphan_readers(repo, find_orphans(repo, plan), plan)
     ident = identity(manifest)
     emit(repo, plan, True, ident=ident)
     verify_identity(repo, ident)
@@ -2573,8 +2698,7 @@ def rollout_target(name: str, cfg: dict, root: Path, defaults: dict, sha: str,
     ensure_cursor_tracked(repo, True)
     ensure_hooks_local(repo, True)
     orphans = find_orphans(repo, plan)
-    for rel in orphans:
-        (repo / rel).unlink()
+    remove_orphans(repo, orphans, plan)
 
     hidden = hidden_plan_paths(repo, plan)
     if hidden:
@@ -2983,6 +3107,8 @@ def main(argv: list[str] | None = None) -> int:
         full_plan = plan
         if args.check:
             plan = {k: v for k, v in plan.items() if k not in LOCAL_RENDERED}
+        if write:
+            refuse_orphan_readers(repo, find_orphans(repo, full_plan), full_plan)
         ident = identity(manifest)
         changed = emit(repo, plan, write, ident=ident)
         changed += ensure_scratch_ignored(repo, write)
@@ -3007,12 +3133,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {source_repo(manifest)} self: {self_changed} file(s)")
 
         orphans = find_orphans(repo, full_plan)
-        for rel in orphans:
-            if write:
-                (repo / rel).unlink()
-                print(f"  removed orphan {rel}")
-            else:
+        readers: list[str] = []
+        if write:
+            remove_orphans(repo, orphans, full_plan,
+                           on_remove=lambda rel: print(f"  removed orphan {rel}"))
+        else:
+            for rel in orphans:
                 print(f"  orphan (would remove): {rel}")
+            readers = orphan_readers(repo, orphans, full_plan)
+            report_orphan_readers(readers)
 
         print(f"\nresident footprint: {resident_lines(repo)} lines")
 
@@ -3026,9 +3155,10 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.check:
             # Foreign files are deliberately not a failure: sync does not own them.
-            if changed or orphans:
+            if changed or orphans or readers:
                 print(
-                    f"\n[FAIL] {changed} file(s) differ and {len(orphans)} orphan(s) remain. "
+                    f"\n[FAIL] {changed} file(s) differ and {len(orphans)} orphan(s) remain"
+                    f"{f', {len(readers)} still read' if readers else ''}. "
                     "The committed output is not what this source renders."
                 )
                 return 1
