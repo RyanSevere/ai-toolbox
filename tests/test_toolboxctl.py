@@ -681,13 +681,34 @@ class Init(InitFixture):
         self.assertFalse((self.profile / "profile.yaml").exists())
         self.assertEqual(self.listing(self.profile), before)
 
-    def test_a_setup_that_returns_non_zero_leaves_no_core_and_no_profile(self):
-        """Intent: a non-zero setup exit removes the core/ this run wrote."""
-        with mock.patch("setup_profile.main", return_value=2):
+    def test_a_setup_refusal_removes_everything_this_run_wrote(self):
+        """Intent: a refused setup (exit 1) removes core/, profile.yaml and the seeds/ setup
+        copied in, so a retry starts clean; a file that was there before init stays."""
+        (self.profile / "notes.txt").write_text("mine\n", encoding="utf-8")
+        before = self.listing(self.profile)
+
+        def half_setup(_argv):
+            (self.profile / "profile.yaml").write_text("x: 1\n", encoding="utf-8")
+            (self.profile / "seeds").mkdir()
+            (self.profile / "seeds" / "a.md").write_text("a\n", encoding="utf-8")
+            return 1
+
+        with mock.patch("setup_profile.main", side_effect=half_setup):
             code, _, _ = self.run_init()
-        self.assertEqual(code, 2)
-        self.assertFalse((self.profile / "core").exists())
-        self.assertFalse((self.profile / "profile.yaml").exists())
+        self.assertEqual(code, 1)
+        self.assertEqual(self.listing(self.profile), before)
+
+    def test_a_written_profile_whose_render_was_not_checked_is_kept(self):
+        """Intent: setup's exit 3 means the profile was written; init keeps it."""
+        def written(_argv):
+            (self.profile / "profile.yaml").write_text("x: 1\n", encoding="utf-8")
+            return 3
+
+        with mock.patch("setup_profile.main", side_effect=written):
+            code, _, _ = self.run_init()
+        self.assertEqual(code, 3)
+        self.assertTrue((self.profile / "core").exists())
+        self.assertTrue((self.profile / "profile.yaml").exists())
 
     def test_an_interrupted_setup_leaves_no_core_and_no_profile(self):
         """Intent: Ctrl+C at a prompt removes the core/ this run wrote."""

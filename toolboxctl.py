@@ -358,6 +358,7 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
     except OSError as error:
         print(f"[ERROR] could not read this archive's VERSION: {error}", file=sys.stderr)
         return 1
+    before = {entry.name for entry in profile.iterdir()}
     try:
         record, notes = vendor.vendor_core(profile, f"{source}@{tag}", fetch or vendor.http_get)
     except vendor.VendorError as error:
@@ -371,26 +372,33 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
         code = setup_profile.main(["--profile", str(profile),
                                    *(["--answers", str(answers)] if answers else [])])
     except BaseException:
-        remove_unfinished(profile)
+        remove_unfinished(profile, before)
         raise
-    if code != 0:
-        remove_unfinished(profile)
+    # 1 is a refusal. 3 means the profile was written and only its render was not checked,
+    # so it is a finished profile and stays.
+    if code == 1:
+        remove_unfinished(profile, before)
     return code
 
 
-def remove_unfinished(profile: Path) -> None:
-    """Take back what a failed or cancelled init wrote: the core/ it vendored, and a
-    profile.yaml setup left part-written. Both were absent when init started."""
+def remove_unfinished(profile: Path, before: set[str]) -> None:
+    """Take back what a failed or cancelled init wrote: every top-level entry that was not
+    in the folder when init started (core/, profile.yaml, the seeds/ setup copies in), so a
+    retry starts from the same folder. Nothing that was there before is touched."""
     def writable(func, path, _error):
         os.chmod(path, 0o700)
         func(path)
-    core_dir = profile / vendor.CORE_DIR
-    if core_dir.is_symlink() or core_dir.is_file():
-        core_dir.unlink()
-    elif core_dir.exists():
-        shutil.rmtree(core_dir, onerror=writable)
-    (profile / sync.PROFILE_NAME).unlink(missing_ok=True)
-    print(f"[NOTE] init did not finish; removed {core_dir}. Run init again.", file=sys.stderr)
+    removed = []
+    for entry in sorted(profile.iterdir()):
+        if entry.name in before:
+            continue
+        if entry.is_symlink() or entry.is_file():
+            entry.unlink()
+        else:
+            shutil.rmtree(entry, onerror=writable)
+        removed.append(entry.name)
+    print(f"[NOTE] init did not finish; removed {', '.join(removed) or 'nothing'} from "
+          f"{profile}. Run init again.", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
