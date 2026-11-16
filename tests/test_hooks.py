@@ -7,7 +7,8 @@
 # Last Updated: 2026-11-15
 # Description: Tests for the editor safety hooks, hooks/no-secret-defaults,
 #              hooks/no-shell-file-edits, hooks/no-destructive-shell and
-#              hooks/no-generated-edits, hooks/session-start, and the
+#              hooks/no-generated-edits, hooks/session-start,
+#              hooks/write-observer, and the
 #              shared runtime library hooks/lib/hookio.py. Per hook: a violation it must
 #              catch, a near-miss it must allow, and malformed input it must
 #              not crash on. A guard that silently stops matching looks the
@@ -53,6 +54,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -986,6 +988,209 @@ class SessionStart(unittest.TestCase):
         text = (HOOKS / "session-start" / "hook.yaml").read_text(encoding="utf-8")
         for line in ("event: session.start", "kind: observer", "tools: [claude]", "timeout: 10",
                      'run: ["{python}", "{hooks}/session-start/hook.py"]'):
+            self.assertIn(line, text.splitlines())
+
+
+class ObserverWarning(unittest.TestCase):
+    """Intent: hooks/README.md, "Tool-neutral schema". An observer may return a warning. It
+    reaches the agent where the tool supports it (Claude Code PostToolUse additionalContext), is
+    never a block, and is silent when the off switch is on, for a tool with no shape, or when the
+    observer returns nothing."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lib = load("hookio", HOOKS / "lib" / "hookio.py")
+
+    WRITE = {"hook_event_name": "PostToolUse", "tool_name": "Write", "cwd": "/repo",
+             "tool_input": {"file_path": "/repo/a.py", "content": "x"}}
+
+    def run_hook(self, argv: list[str], callback, env: dict | None = None, payload=None):
+        out = io.StringIO()
+        data = json.dumps(self.WRITE if payload is None else payload).encode()
+        with mock.patch("sys.stdin", new=stdin_of(data)), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.argv", ["hook.py", *argv]), mock.patch.dict(os.environ):
+            os.environ.pop("AI_TOOLBOX_HOOKS", None)
+            os.environ.update(env or {})
+            code = self.lib.run_observer("watch", "file.write.after", callback)
+        return code, out.getvalue()
+
+    def test_the_file_write_after_fields_are_mapped_for_claude_code(self):
+        seen = self.lib.neutral("file.write.after", self.WRITE, "claude")
+        self.assertEqual((seen["path"], seen["cwd"]), ("/repo/a.py", "/repo"))
+
+    def test_a_write_with_no_path_is_skipped_by_an_observer(self):
+        payload = {**self.WRITE, "tool_input": {}}
+        self.assertEqual(self.run_hook(["--tool", "claude"], lambda p: "warn", payload=payload),
+                         (0, ""))
+
+    def test_claude_code_gets_the_text_as_post_tool_use_context(self):
+        code, out = self.run_hook(["--tool", "claude"], lambda seen: "the warning")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PostToolUse", "additionalContext": "the warning"}}) + "\n")
+
+    def test_the_callback_sees_the_neutral_payload(self):
+        seen = []
+        self.run_hook(["--tool", "claude"], lambda p: seen.append(p))
+        self.assertEqual(seen[0]["event"], "file.write.after")
+        self.assertEqual(seen[0]["path"], "/repo/a.py")
+
+    def test_no_text_writes_nothing(self):
+        self.assertEqual(self.run_hook(["--tool", "claude"], lambda p: None), (0, ""))
+        self.assertEqual(self.run_hook(["--tool", "claude"], lambda p: ""), (0, ""))
+
+    def test_cursor_and_an_unknown_tool_get_nothing(self):
+        for argv in (["--tool", "cursor"], ["--tool", "nope"], []):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_hook(argv, lambda p: "the warning"), (0, ""))
+
+    def test_the_off_switch_writes_nothing_and_does_not_run_the_callback(self):
+        def never(seen):
+            raise AssertionError("callback ran")
+        self.assertEqual(self.run_hook(["--tool", "claude"], never, {"AI_TOOLBOX_HOOKS": "off"}),
+                         (0, ""))
+
+
+class WriteObserver(unittest.TestCase):
+    """Intent: hooks/write-observer warns the agent, at write time, when a file it just wrote holds
+    a credential shape: it names the file, the line and the shape, never the text. It shares the
+    push gate's shapes by loading the rendered .githooks/lib/secret_shapes.py from the repository
+    root, and fails open on a missing file, a missing module or anything else."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.hook = load("write_observer", HOOKS / "write-observer" / "hook.py")
+        cls.module = (HOOKS.parent / "githooks" / "lib" / "secret_shapes.py").read_text(
+            encoding="utf-8")
+
+    HEX = "0123456789abcdef" * 2  # built from parts: obviously fake
+
+    def repo(self, rendered: bool = True) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / ".git").mkdir()
+        if rendered:
+            lib = root / ".githooks" / "lib"
+            lib.mkdir(parents=True)
+            (lib / "secret_shapes.py").write_text(self.module, encoding="utf-8")
+        return root
+
+    def write(self, root: Path, name: str, text: str) -> Path:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def payload(self, root: Path, path) -> bytes:
+        return json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Write",
+                           "cwd": str(root), "tool_input": {"file_path": str(path),
+                                                            "content": "x"}}).encode()
+
+    def observe(self, data: bytes, env: dict | None = None, argv=("--tool", "claude")):
+        out = io.StringIO()
+        with mock.patch("sys.stdin", new=stdin_of(data)), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.argv", ["hook.py", *argv]), mock.patch.dict(os.environ):
+            os.environ.pop("AI_TOOLBOX_HOOKS", None)
+            os.environ.update(env or {})
+            code = self.hook.main()
+        return code, out.getvalue()
+
+    def test_a_shape_in_the_written_file_warns_naming_file_line_and_shape(self):
+        root = self.repo()
+        path = self.write(root, "src/app.py", f"x = 1\ntoken = '{self.HEX}'\n")
+        code, out = self.observe(self.payload(root, path))
+        self.assertEqual(code, 0)
+        context = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(context["hookEventName"], "PostToolUse")
+        text = context["additionalContext"]
+        self.assertIn(str(path), text)
+        self.assertIn(":2", text)
+        self.assertIn("hex", text)
+        self.assertNotIn(self.HEX, text)
+        self.assertEqual(len(out.splitlines()), 1)
+
+    def test_every_hit_is_named(self):
+        root = self.repo()
+        header = "-----BEGIN " + "PRIVATE KEY" + "-----"
+        path = self.write(root, "a.txt", f"{header}\nfine\n{self.HEX}\n")
+        text = json.loads(self.observe(self.payload(root, path))[1])[
+            "hookSpecificOutput"]["additionalContext"]
+        self.assertIn(":1", text)
+        self.assertIn("privkey", text)
+        self.assertIn(":3", text)
+        self.assertIn("hex", text)
+
+    def test_a_clean_file_writes_nothing(self):
+        root = self.repo()
+        path = self.write(root, "a.py", "print('hello')\n")
+        self.assertEqual(self.observe(self.payload(root, path)), (0, ""))
+
+    def test_the_opt_out_comment_writes_nothing(self):
+        root = self.repo()
+        path = self.write(root, "a.py", f"t = '{self.HEX}'  # secret-scan: allow\n")
+        self.assertEqual(self.observe(self.payload(root, path)), (0, ""))
+
+    def test_a_relative_path_resolves_against_the_payload_cwd(self):
+        root = self.repo()
+        self.write(root, "src/app.py", f"{self.HEX}\n")
+        data = json.dumps({"cwd": str(root), "tool_input": {"file_path": "src/app.py"}}).encode()
+        out = self.observe(data)[1]
+        self.assertIn("hex", out)
+
+    def test_the_root_is_found_from_a_subfolder_cwd(self):
+        root = self.repo()
+        path = self.write(root, "deep/er/a.py", f"{self.HEX}\n")
+        data = json.dumps({"cwd": str(path.parent),
+                           "tool_input": {"file_path": str(path)}}).encode()
+        self.assertIn("hex", self.observe(data)[1])
+
+    def test_a_missing_file_writes_nothing_and_exits_zero(self):
+        root = self.repo()
+        self.assertEqual(self.observe(self.payload(root, root / "gone.py")), (0, ""))
+
+    def test_a_directory_or_a_binary_file_writes_nothing_and_exits_zero(self):
+        root = self.repo()
+        (root / "dir").mkdir()
+        self.assertEqual(self.observe(self.payload(root, root / "dir")), (0, ""))
+        binary = root / "b.bin"
+        binary.write_bytes(b"\xff\xfe\x00\x81" * 10)
+        self.assertEqual(self.observe(self.payload(root, binary)), (0, ""))
+
+    def test_a_repository_without_the_rendered_module_writes_nothing_and_exits_zero(self):
+        root = self.repo(rendered=False)
+        path = self.write(root, "a.py", f"{self.HEX}\n")
+        self.assertEqual(self.observe(self.payload(root, path)), (0, ""))
+
+    def test_a_module_that_crashes_writes_nothing_and_exits_zero(self):
+        root = self.repo()
+        (root / ".githooks" / "lib" / "secret_shapes.py").write_text("raise RuntimeError('x')\n",
+                                                                     encoding="utf-8")
+        path = self.write(root, "a.py", f"{self.HEX}\n")
+        self.assertEqual(self.observe(self.payload(root, path)), (0, ""))
+
+    def test_a_folder_with_no_repository_writes_nothing_and_exits_zero(self):
+        loose = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, loose, True)
+        path = self.write(loose, "a.py", f"{self.HEX}\n")
+        self.assertEqual(self.observe(self.payload(loose, path)), (0, ""))
+
+    def test_unreadable_input_and_other_tools_write_nothing_and_exit_zero(self):
+        root = self.repo()
+        path = self.write(root, "a.py", f"{self.HEX}\n")
+        self.assertEqual(self.observe(b"\x00\x01 not json"), (0, ""))
+        self.assertEqual(self.observe(self.payload(root, path), argv=("--tool", "cursor")),
+                         (0, ""))
+
+    def test_the_off_switch_prints_nothing(self):
+        root = self.repo()
+        path = self.write(root, "a.py", f"{self.HEX}\n")
+        self.assertEqual(self.observe(self.payload(root, path), {"AI_TOOLBOX_HOOKS": "off"}),
+                         (0, ""))
+
+    def test_the_manifest_names_the_event_the_kind_and_the_tool(self):
+        text = (HOOKS / "write-observer" / "hook.yaml").read_text(encoding="utf-8")
+        for line in ("event: file.write.after", "kind: observer", "tools: [claude]",
+                     "timeout: 10", 'run: ["{python}", "{hooks}/write-observer/hook.py"]'):
             self.assertIn(line, text.splitlines())
 
 

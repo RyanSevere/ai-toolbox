@@ -170,6 +170,23 @@ class FromEmpty(Fixture):
         self.assertFalse(self.profile.exists())
         self.assertIn("not empty", out)
 
+    def test_a_folder_holding_only_git_and_core_is_accepted(self):
+        """Intent: a new repository with a vendored core is still a new profile folder."""
+        (self.folder / ".git").mkdir(parents=True)
+        (self.folder / "core").mkdir()
+        code, out = self.run_setup()
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.profile.is_file())
+
+    def test_a_folder_holding_git_and_another_file_still_refuses(self):
+        """Intent: only .git and core are ignored; any other entry is the operator's."""
+        (self.folder / ".git").mkdir(parents=True)
+        (self.folder / "README.md").write_text("mine", encoding="utf-8")
+        code, out = self.run_setup()
+        self.assertEqual(code, 1)
+        self.assertFalse(self.profile.exists())
+        self.assertIn("not empty", out)
+
     def test_a_blank_answer_leaves_the_question_unanswered(self):
         self.run_setup({**TYPED, "tracker.system": "   "})
         self.assertEqual(self.data()["answers"], {})

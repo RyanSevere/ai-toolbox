@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/.cursor/hooks/lib/hookio.py
 # Created by: Ryan Severe
 # Created: 2026-11-06
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-16
 # Description: Shared runtime library for agent hooks. Reads the
 #              tool's payload as bytes, hands the hook a neutral payload with
 #              the model fields, writes the tool's output shape, and honours
@@ -57,12 +57,13 @@ MODEL_FIELDS = ("model", "model_id", "model_params")
 DEFAULT_TOOL = "cursor"  # no --tool argument: hooks rendered before the argument existed
 TOOL_ARGUMENT = "--tool"
 # Per neutral event, the neutral fields a hook must have. An absent one denies a permission
-# hook and skips an observer; a present null or empty string is a value. shell.before and
-# file.write.before have hooks; the others are mapped when their first hook lands and its
+# hook and skips an observer; a present null or empty string is a value. shell.before,
+# file.write.before and file.write.after have hooks; the others are mapped when their first hook lands and its
 # payload is seen live. file.write.before is mapped from documentation: Claude Code documents
 # tool_input.file_path for Write and Edit; Cursor's preToolUse documents no key for a Write's
 # path, so its entry is the same path, provisional until a captured payload confirms it.
-REQUIRED_FIELDS = {"shell.before": ("command",), "file.write.before": ("path",)}
+REQUIRED_FIELDS = {"shell.before": ("command",), "file.write.before": ("path",),
+                   "file.write.after": ("path",)}
 # Per tool, per neutral event, where each neutral field sits in that tool's payload: a path of
 # keys from the top. Fields not required here are None when absent.
 FIELD_PATHS = {
@@ -73,6 +74,7 @@ FIELD_PATHS = {
     "claude": {
         "shell.before": {"command": ("tool_input", "command"), "cwd": ("cwd",)},
         "file.write.before": {"path": ("tool_input", "file_path"), "cwd": ("cwd",)},
+        "file.write.after": {"path": ("tool_input", "file_path"), "cwd": ("cwd",)},
         "session.start": {},
     },
 }
@@ -218,9 +220,29 @@ def run_permission(name: str, event: str, decide: Decide) -> int:
     return 0
 
 
-def run_observer(name: str, event: str, observe: Callable[[dict], None]) -> int:
-    """Run an observer hook. It writes nothing, and input it cannot read, a tool it does not
-    know or a field it cannot find is skipped: an observer fails open by design."""
+def claude_warning(event: str, text: str) -> str:
+    """Claude Code adds additionalContext to the session after the tool call it names. An event
+    with no Claude Code name has no warning shape, so it writes nothing."""
+    if event not in CLAUDE_EVENT_NAMES:
+        return ""
+    return json.dumps({"hookSpecificOutput": {
+        "hookEventName": CLAUDE_EVENT_NAMES[event], "additionalContext": text}})
+
+
+# Claude Code's name for each neutral event an observer's warning can follow.
+CLAUDE_EVENT_NAMES = {"file.write.after": "PostToolUse"}
+
+# Per tool, the writer from an event and an observer's warning text to the text printed on
+# stdout. A tool with no entry, or an event with no name, gets no warning. A warning informs the
+# agent and never blocks.
+OBSERVER_WRITERS = {"claude": claude_warning}
+
+
+def run_observer(name: str, event: str, observe: Callable[[dict], "str | None"]) -> int:
+    """Run an observer hook. It never blocks: observe returns None to say nothing, or a warning
+    that is written for the agent where the tool supports it (OBSERVER_WRITERS). Input it cannot
+    read, a tool it does not know or a field it cannot find is skipped: an observer fails open by
+    design. The off switch stops it before it reads anything."""
     if hooks_off():
         return 0
     payload, _ = read_payload(sys.stdin.buffer)
@@ -230,7 +252,10 @@ def run_observer(name: str, event: str, observe: Callable[[dict], None]) -> int:
         seen = neutral(event, payload, tool_from_argv(sys.argv[1:]))
     except PayloadError:
         return 0
-    observe(seen)
+    text = observe(seen)
+    tool = tool_from_argv(sys.argv[1:])
+    if text and tool in OBSERVER_WRITERS:
+        emit(OBSERVER_WRITERS[tool](event, text))
     return 0
 
 

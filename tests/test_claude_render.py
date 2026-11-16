@@ -301,7 +301,8 @@ class ToolTable(unittest.TestCase):
             "fake", ".fake/rules/{id}.txt",
             lambda meta, body, sha: f"rule:{meta['id'] if 'id' in meta else 'x'}",
             ".fake/skills", ".fake/agents/{name}.txt",
-            lambda meta, body, sha, warn: f"agent:{meta['name']}")
+            lambda meta, body, sha, warn: f"agent:{meta['name']}",
+            lambda repo: 0)
         with mock.patch.object(sync, "TOOLS", sync.TOOLS + (fake,)):
             plan = plan_for()
         self.assertIn(".fake/rules/estate.txt", plan)

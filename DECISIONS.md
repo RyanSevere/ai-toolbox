@@ -46,7 +46,8 @@ while being resident. It is not a target. **Do not make changes for the purpose
 of keeping the number down.** Moving content somewhere it is never read improves
 the metric and degrades the rules. If a rule must be resident to work - one that
 has to fire before work begins cannot be one that is looked up first - it is
-resident and the number goes up.
+resident and the number goes up. The count is per tool: one line for each tool a profile
+selects, never a sum, because a sum counts each always-on rule once per tool.
 
 ### Only `**` attaches. Every other scope is advertisement
 
