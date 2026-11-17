@@ -548,7 +548,7 @@ def next_steps(profile: Path) -> str:
             f"  2. {TARGETS_STEP}\n"
             f"  3. {commit_step(CREATE_MESSAGE)}\n"
             "  4. Render the profile into itself, then commit that too:\n"
-            f"       {RENDER_COMMAND}\n"
+            f"       {FIRST_RENDER_COMMAND}\n"
             "       git add -A\n"
             f"       git commit -m \"{RENDER_MESSAGE}\"\n"
             "  5. Push it:\n"

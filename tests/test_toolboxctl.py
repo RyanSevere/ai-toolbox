@@ -792,6 +792,13 @@ class Init(InitFixture):
         self.assertLess(steps.index("python core/sync.py --profile . --self --write"),
                         steps.index("git push"))
 
+    def test_its_render_step_does_not_fetch(self):
+        """Intent: a new profile's origin may be empty, with no origin/main, so the printed
+        render step skips sync's fetch-and-compare, as init's own render does."""
+        code, out, err = self.run_init()
+        steps = out.rpartition("Next steps")[2]
+        self.assertIn("python core/sync.py --profile . --self --write --no-fetch", steps)
+
     def test_a_folder_with_core_and_no_profile_names_the_unfinished_init(self):
         """Intent: core/ without profile.yaml is an unfinished init: the message says so,
         says to delete core/ and run init again, and does not send the operator to update."""

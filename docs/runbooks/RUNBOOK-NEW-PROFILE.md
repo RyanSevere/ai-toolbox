@@ -124,36 +124,55 @@ the same values in every step.
    holds `core/` or `profile.yaml`. Otherwise it writes `core/` (with `core/VENDORED`
    recording the tag and commit) and `profile.yaml`, and prints a dry-run render.
 
-   Setup asks its questions at the console. If it asks you to lock the push gates, type
-   `yes`. If you stop it part-way, delete `core/` in the clone and run this step again.
+   Setup asks its questions at the console, and after each answer prints one line saying
+   where it goes. If it asks you to lock the push gates, type `yes`. If you stop setup
+   part-way, delete `core/` in the clone and run this step again.
 
-4. **Review the render.** Shell: as above. Folder: `work/acme-profile`.
+   After setup, `init` asks for your target repositories, as folder names beside the
+   profile, one per line, and writes them in place of the example targets. It then
+   commits the profile ("Create the profile"), renders the profile into itself, and
+   commits the render ("Render the profile"). It does not push.
+
+   If anything fails, or you stop it, after setup has finished, `init` keeps everything it
+   wrote and prints the one step to run next. Run that step, then carry on from step 4.
+
+   To stop after setup and do steps 4 and 5 by hand, add `--setup-only` to the command.
+
+4. **Review.** Shell: as above. Folder: `work/acme-profile`.
+
+   ```
+   git log --oneline
+   ```
 
    ```
    git status
    ```
 
-   Read `profile.yaml` and the files `init` listed, in any editor. Nothing is committed
-   yet. Replace the example targets (`example-app`, `example-scratch`) under `targets:`
-   with your own repositories.
+   After a full `init`, the log shows the two commits and the tree is clean. Read
+   `profile.yaml` in any editor, and go on to step 6.
 
-5. **Commit.** Shell and folder as step 4.
+   With `--setup-only`, nothing is committed yet. Replace the example targets
+   (`example-app`, `example-scratch`) under `targets:` with your own repositories, then
+   do step 5.
+
+5. **Commit and render, with `--setup-only` only.** Shell and folder as step 4.
 
    ```
    git add -A
    ```
 
    ```
-   git commit -m "Create the profile from core v0.1.19"
+   git commit -m "Create the profile"
    ```
 
-   Replace `v0.1.19` with your tag. The commit needs the identity from step 1; if it
-   reports `unable to auto-detect email address`, go back and set it.
+   The commit needs the identity from step 1; if it reports `unable to auto-detect email
+   address`, go back and set it.
 
-   Then render the profile into itself, and commit that render too:
+   Then render the profile into itself, and commit that render too. `--no-fetch` is needed
+   because a new profile's remote may still be empty:
 
    ```
-   python core/sync.py --profile . --self --write
+   python core/sync.py --profile . --self --write --no-fetch
    ```
 
    ```
