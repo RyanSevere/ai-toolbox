@@ -185,10 +185,43 @@ content. The rules, specs, agents and skills that describe method, with
 provenance moved to the profile. The response checker, the gate runner and its
 libraries, and the agent hooks. `patterns/`, as generic patterns.
 
-**Profile:** the estate map, the profile's content, ticket tooling, every
-specific gate, the CI layer, skills and agents tied to particular hosts or
-services, any work/personal boundary rules, and the header art as a
-requirement.
+**Profile:** the estate map, the profile's content, ticket tooling, a gate that
+only makes sense with one profile's content, the CI layer, skills and agents tied
+to particular hosts or services, any work/personal boundary rules, and the header
+art as a requirement. A gate whose only values come from the profile's rendered
+`gate-config` is core mechanism with profile data, the same split as the one-way
+gates; the core has shipped its push gates on that basis since v0.1.20.
+
+**The test.** Apply it in order. The first match wins, so one change gets one
+verdict.
+
+1. Does the change name, or only make sense with, something listed above as
+   profile content? That means a host, a service, an account, a tracker's shape,
+   a work/personal rule, the estate map, header art, or a value a profile chose.
+   Then it is **profile**.
+2. Is it a mechanism that carries such values? Then it **splits**. The mechanism
+   is core. The values are profile data, read from a file beside it. This is the
+   split the one-way gates already make: core mechanism, profile data.
+3. Otherwise it is **core**.
+
+A change that is mostly mechanism with one profile value splits under step 2. It
+never goes wholly to one side. The `route-change` skill applies the test.
+
+**Worked cases.**
+
+- The title-prefix hook: the hook is core. The prefixes are data in a
+  `prefixes.yaml` beside it. The six prefixes are method vocabulary, so the core
+  ships them as the default list, and a profile may override that file. Step 2.
+- The `workstream-primary` skill: core, because it describes method. Its
+  citations of one profile move to provenance. Step 3.
+- A gate that checks one tracker's fields: profile. It only makes sense with that
+  tracker's shape. Step 1.
+- The identity gate: core. Its one value, the identity address, comes from the
+  profile's rendered `gate-config`. Step 2.
+- A gate that enforces a profile's header art: profile. Header art is listed as
+  profile content. Step 1.
+- The response checker: core, as it already is. It carries no profile value.
+  Step 3.
 
 **Rejected: ticket tooling as core**, with or without its triage scheme moved to
 configuration. Anything more than a loose wireframe of general concepts bleeds

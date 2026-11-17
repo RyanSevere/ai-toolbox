@@ -4,12 +4,15 @@
 # Path: {PROJECT_ROOT}/githooks/lib/secret_shapes.py
 # Created by: Ryan Severe
 # Created: 2026-11-16
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-17
 # Description: The one source of the credential shapes, read by the push gate
 #              and by the write-time observer hook. find(lines) reports a
-#              private key header, a bare 32-hex token, and an env-style
+#              private key header, a bare 32-hex token, an env-style
 #              NAME=value where NAME ends in KEY, TOKEN, SECRET, PASSWORD or
-#              PASSWD and the value is long and not a placeholder. Heuristic
+#              PASSWD, a known provider token prefix anywhere in a line, a
+#              secret-named assignment in any case and common syntax, and a
+#              URL carrying a password. Values that are paths or name
+#              themselves as placeholders are excused. Heuristic
 #              by design: a line can opt out with 'secret-scan: allow'. As a
 #              command line it reads 'path:line: text' lines on stdin, prints
 #              'path:line: <shape>' per hit - where, never what - and exits 1
@@ -63,15 +66,66 @@ HEX = re.compile(r"(?:^|[^0-9A-Za-z/\\._-])[0-9a-f]{32}(?:[^0-9A-Za-z/\\._-]|$)"
 PRIVKEY = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 ASSIGN = re.compile(
     r"^\s*(?:export\s+|-\s+)?[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD)\s*[=:]\s*[\"']?"
-    r"[A-Za-z0-9+_-][A-Za-z0-9+/_-]{23,}")
-# A value that names itself as not real. Case-folded, and applied to an assignment only: a bare
-# hex token or a key header is never excused by a nearby word.
-PLACEHOLDER = re.compile(
-    r"[=:]\s*[\"']?\S*(?:your|change|example|placeholder|dummy|sample|xxxx|<|ci-|test|fake)",
-    re.IGNORECASE)
+    r"(?P<value>[A-Za-z0-9+_-][A-Za-z0-9+/_-]{23,})")
+# A known token prefix anywhere in a line. Never excused as a placeholder.
+PROVIDER = re.compile(
+    r"gh[pousr]_[A-Za-z0-9]{36,}"
+    r"|github_pat_[A-Za-z0-9_]{60,}"
+    r"|sk-ant-[A-Za-z0-9_-]{32,}"
+    r"|sk-[A-Za-z0-9_-]{40,}"
+    r"|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"
+    r"|xox[abpr]-[A-Za-z0-9-]{10,}"
+    r"|AIza[0-9A-Za-z_-]{35}"
+    r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
+# An assignment in any case and the common syntaxes, anchored at the start of the line:
+# name = value, name: value, "name": "value", const name = value.
+KEYED = re.compile(
+    r"^\s*(?:export\s+|-\s+|(?:const|let|var)\s+)?[\"']?(?P<name>[A-Za-z0-9_.-]+)[\"']?"
+    r"\s*[:=]\s*[\"']?(?P<value>[A-Za-z0-9+/_=-]{24,})")
+# The last part of a keyed name must be one of these.
+SECRET_PARTS = ("key", "apikey", "token", "secret", "password", "passwd", "credential",
+                "credentials")
+# A published checksum is not a secret: a key named as one is skipped.
+CHECKSUM_NAME = re.compile(r"sha|hash|sum|digest|fingerprint", re.IGNORECASE)
+# A URL carrying a non-empty password that is not an interpolation.
+URLCRED = re.compile(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:(?![$%{])[^/\s@]+@", re.IGNORECASE)
+
+PLACEHOLDER_WORDS = ("your", "example", "change", "dummy", "placeholder", "sample", "fake",
+                     "test", "xxxx")
+PLACEHOLDER_PREFIXES = ("your", "example", "change", "dummy")
+
+
+def is_placeholder(value: str) -> bool:
+    """True when a value, judged as a whole, is a path or names itself as not real.
+
+    Applied to an assignment and a keyed value only: a bare hex token, a key header and a
+    provider token are never excused by a nearby word.
+    """
+    folded = value.strip("\"'").lower()
+    if folded.startswith(("/", "ci-") + PLACEHOLDER_PREFIXES) or "<" in folded:
+        return True
+    return any(part in PLACEHOLDER_WORDS for part in re.split(r"[-_.]", folded))
+
+
+def secret_name(name: str) -> bool:
+    """True when the last part of a name, split on _ - . and camelCase, names a secret."""
+    parts = re.split(r"[_.-]|(?<=[a-z0-9])(?=[A-Z])", name)
+    return parts[-1].lower() in SECRET_PARTS
+
+
+def is_keyed(text: str, assigned: bool) -> bool:
+    """True when the line is a secret-named assignment that assign did not already report."""
+    match = KEYED.search(text)
+    if assigned or match is None:
+        return False
+    name, value = match.group("name"), match.group("value")
+    return (secret_name(name) and not CHECKSUM_NAME.search(name)
+            and re.search(r"\d", value) is not None and re.search(r"[A-Za-z]", value) is not None
+            and not is_placeholder(value))
+
 
 # The shape names, in the order a line is checked.
-SHAPES = ("hex", "privkey", "assign")
+SHAPES = ("hex", "privkey", "assign", "provider", "keyed", "urlcred")
 
 
 def shapes_in(text: str) -> list[str]:
@@ -83,8 +137,16 @@ def shapes_in(text: str) -> list[str]:
         found.append("hex")
     if PRIVKEY.search(text):
         found.append("privkey")
-    if ASSIGN.search(text) and not PLACEHOLDER.search(text):
+    assign = ASSIGN.search(text)
+    assigned = bool(assign) and not is_placeholder(assign.group("value"))
+    if assigned:
         found.append("assign")
+    if PROVIDER.search(text):
+        found.append("provider")
+    if is_keyed(text, bool(assign)):
+        found.append("keyed")
+    if URLCRED.search(text):
+        found.append("urlcred")
     return found
 
 

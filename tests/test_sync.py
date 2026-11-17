@@ -205,6 +205,14 @@ class BuildPlan(unittest.TestCase):
         self.assertTrue(cursor)
         self.assertEqual(cursor, github)
 
+    def test_route_change_renders_into_every_skill_root(self):
+        """Intent: the core routes a change as core or profile with a skill, and a profile
+        render carries it where Claude Code, Cursor and Copilot each look."""
+        plan = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)
+        for root in (".claude/skills", ".cursor/skills", ".github/skills"):
+            with self.subTest(root=root):
+                self.assertIn(f"{root}/route-change/SKILL.md", plan)
+
     def test_no_skill_renders_where_opencode_looks(self):
         """Intent: OpenCode is the factory's tool, and it loads
         .agents/skills/ even with OPENCODE_DISABLE_PROJECT_CONFIG set, so a skill there
