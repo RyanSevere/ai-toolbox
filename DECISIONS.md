@@ -185,10 +185,12 @@ content. The rules, specs, agents and skills that describe method, with
 provenance moved to the profile. The response checker, the gate runner and its
 libraries, and the agent hooks. `patterns/`, as generic patterns.
 
-**Profile:** the estate map, the profile's content, ticket tooling, every
-specific gate, the CI layer, skills and agents tied to particular hosts or
-services, any work/personal boundary rules, and the header art as a
-requirement.
+**Profile:** the estate map, the profile's content, ticket tooling, a gate that
+only makes sense with one profile's content, the CI layer, skills and agents tied
+to particular hosts or services, any work/personal boundary rules, and the header
+art as a requirement. A gate whose only values come from the profile's rendered
+`gate-config` is core mechanism with profile data, the same split as the one-way
+gates; the core has shipped its push gates on that basis since v0.1.20.
 
 **The test.** Apply it in order. The first match wins, so one change gets one
 verdict.
@@ -214,6 +216,10 @@ never goes wholly to one side. The `route-change` skill applies the test.
   citations of one profile move to provenance. Step 3.
 - A gate that checks one tracker's fields: profile. It only makes sense with that
   tracker's shape. Step 1.
+- The identity gate: core. Its one value, the identity address, comes from the
+  profile's rendered `gate-config`. Step 2.
+- A gate that enforces a profile's header art: profile. Header art is listed as
+  profile content. Step 1.
 - The response checker: core, as it already is. It carries no profile value.
   Step 3.
 
