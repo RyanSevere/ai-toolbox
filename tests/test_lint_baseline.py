@@ -45,11 +45,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -170,6 +174,76 @@ class Eslint(LintBaseline):
         result = self.lint("eslint")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("Nothing to check", result.stdout)
+
+
+class Batched(LintBaseline):
+    """The candidate paths are read through one git cat-file, not one git show each."""
+
+    def module(self):
+        sys.path.insert(0, str(LIB.parent))
+        self.addCleanup(sys.path.remove, str(LIB.parent))
+        import lint_baseline
+        return lint_baseline
+
+    def in_repo(self):
+        cwd = os.getcwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, cwd)
+
+    def test_blobs_reads_every_path_and_maps_a_missing_one_to_none(self):
+        lib = self.module()
+        self.write("a.txt", "alpha\n")
+        self.write("my dir/b c.txt", "beta\n")
+        self.write("café/ü.txt", "gamma\n")
+        self.write("empty.txt", "")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "c")
+        self.in_repo()
+        got = lib.blobs("HEAD", ["a.txt", "my dir/b c.txt", "café/ü.txt", "empty.txt",
+                                 "gone.txt", "a.txt"])
+        self.assertEqual(got, {"a.txt": b"alpha\n", "my dir/b c.txt": b"beta\n",
+                               "café/ü.txt": b"gamma\n", "empty.txt": b"",
+                               "gone.txt": None})
+
+    def test_blobs_of_nothing_is_empty(self):
+        lib = self.module()
+        self.assertEqual(lib.blobs("HEAD", []), {})
+
+    def test_blobs_raises_when_git_cannot_read_rather_than_returning_empty(self):
+        lib = self.module()
+        outside = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        cwd = os.getcwd()
+        os.chdir(outside)
+        self.addCleanup(os.chdir, cwd)
+        with unittest.mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": outside}):
+            with self.assertRaises(lib.LintError):
+                lib.blobs("HEAD", ["a.txt"])
+
+    def test_main_starts_one_cat_file_for_all_its_candidate_paths(self):
+        lib = self.module()
+        for n in range(5):
+            self.write(f"app/m{n}.py", STAMP_PY + UNUSED)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "c")
+        self.in_repo()
+        calls: list[list[str]] = []
+        real_popen = subprocess.Popen
+
+        def popen(args, *a, **kw):
+            calls.append(list(args))
+            return real_popen(args, *a, **kw)
+
+        # subprocess.run starts every process through Popen, so this counts each one once.
+        with unittest.mock.patch.object(subprocess, "Popen", popen), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = lib.main(["--tool", "ruff", "--sha", "HEAD"])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("Nothing to check", out.getvalue())
+        batches = [c for c in calls if "cat-file" in c and "--batch" in c]
+        shows = [c for c in calls if "show" in c and any("app/" in a for a in c)]
+        self.assertEqual(len(batches), 1, calls)
+        self.assertEqual(shows, [], calls)
 
 
 if __name__ == "__main__":

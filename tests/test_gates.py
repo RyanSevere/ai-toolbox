@@ -45,6 +45,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -1812,6 +1813,169 @@ class PrePushFlags(PrePushCase):
         result = self.push(self.commit(), "feature")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("disagree", result.stderr)
+
+
+RENDERED_ONLY_PY = ROOT / "githooks" / "lib" / "rendered_only.py"
+
+
+class RenderedOnly(GateCase):
+    """rendered_only() judged three ways on one range: the shell function with a python on
+    PATH (the batched script), the same function with none (the per-file loop), and the
+    script itself. They must agree."""
+
+    gate = "tests"
+    ZERO = "0" * 40
+
+    def stamp_at(self, line: int) -> str:
+        return "filler\n" * (line - 1) + STAMPED.splitlines()[0] + "\nmore\n"
+
+    def base(self, **files: str) -> str:
+        self.write("README.md", "plain\n")
+        for rel, text in files.items():
+            self.write(rel, text)
+        return self.commit("base")
+
+    def shell_verdict(self, local: str, remote: str, path: str | None = None) -> int:
+        script = '. "$(dirname "$0")/../lib/rendered_only.sh"; rendered_only "$1" "$2"'
+        env = {**os.environ, "LC_ALL": "C"}
+        env["PATH"] = str(Path(SH).parent) + os.pathsep + (path if path is not None else env["PATH"])
+        return subprocess.run([SH, "-c", script, (GATES / "tests.sh").as_posix(), local, remote],
+                              cwd=self.repo, capture_output=True, text=True, env=env).returncode
+
+    def script_verdict(self, local: str, remote: str) -> int:
+        return subprocess.run([sys.executable, "-B", str(RENDERED_ONLY_PY), local, remote],
+                              cwd=self.repo, capture_output=True, text=True).returncode
+
+    def assert_verdict(self, local: str, remote: str, rendered_only: bool) -> None:
+        path = path_without(python=False)
+        if path is None:
+            self.skipTest("python lives beside git or sh here; cannot hide it")
+        want = 0 if rendered_only else 1
+        self.assertEqual(self.shell_verdict(local, remote, path), want, "the per-file loop")
+        self.assertEqual(self.shell_verdict(local, remote), want, "the shell function")
+        self.assertEqual(self.script_verdict(local, remote), want, "the script")
+
+    def test_every_changed_file_stamped(self):
+        base = self.base()
+        self.write("AGENTS.md", STAMPED)
+        self.write("docs/CLAUDE.md", STAMPED)
+        self.assert_verdict(self.commit(), base, True)
+
+    def test_one_unstamped_file(self):
+        base = self.base()
+        self.write("AGENTS.md", STAMPED)
+        self.write("app.txt", "plain\n")
+        self.assert_verdict(self.commit(), base, False)
+
+    def test_a_deleted_rendered_file_is_judged_on_the_remote_side(self):
+        base = self.base(**{"AGENTS.md": STAMPED})
+        (self.repo / "AGENTS.md").unlink()
+        self.assert_verdict(self.commit(), base, True)
+
+    def test_a_deleted_plain_file_is_not_rendered_only(self):
+        base = self.base(**{"app.txt": "plain\n"})
+        (self.repo / "app.txt").unlink()
+        self.assert_verdict(self.commit(), base, False)
+
+    def test_gitignore_alone_is_skipped(self):
+        base = self.base()
+        self.write(".gitignore", "build/\n")
+        self.assert_verdict(self.commit(), base, True)
+
+    def test_a_path_with_a_space(self):
+        base = self.base()
+        self.write("my docs/AGENTS file.md", STAMPED)
+        self.assert_verdict(self.commit(), base, True)
+
+    def test_a_stamp_on_line_forty_counts(self):
+        base = self.base()
+        self.write("AGENTS.md", self.stamp_at(40))
+        self.assert_verdict(self.commit(), base, True)
+
+    def test_a_stamp_on_line_forty_one_does_not(self):
+        base = self.base()
+        self.write("AGENTS.md", self.stamp_at(41))
+        self.assert_verdict(self.commit(), base, False)
+
+    def test_a_zero_byte_blob_is_unstamped(self):
+        base = self.base()
+        self.write("AGENTS.md", STAMPED)
+        self.write("empty.txt", "")
+        self.assert_verdict(self.commit(), base, False)
+
+    def test_a_binary_blob_is_stamped_only_by_its_first_forty_lines(self):
+        base = self.base()
+        (self.repo / "a.bin").write_bytes(b"\x00\x01\x02\n" + STAMPED.encode())
+        self.assert_verdict(self.commit("stamped"), base, True)
+        (self.repo / "b.bin").write_bytes(b"\x00\x01\x02\n" * 3)
+        self.assert_verdict(self.commit("plain"), base, False)
+
+    def test_an_empty_diff_is_not_rendered_only(self):
+        base = self.base()
+        self.assert_verdict(base, base, False)
+
+    def test_an_all_zero_remote_is_not_rendered_only(self):
+        self.base()
+        self.write("AGENTS.md", STAMPED)
+        self.assert_verdict(self.commit(), self.ZERO, False)
+
+    def test_a_remote_that_is_not_a_commit_is_not_rendered_only(self):
+        self.base()
+        self.write("AGENTS.md", STAMPED)
+        self.assert_verdict(self.commit(), "1" * 40, False)
+
+    def test_a_tab_in_a_path(self):
+        if os.name == "nt":
+            self.skipTest("Windows file names cannot hold a tab")
+        base = self.base()
+        self.write("a\tb.md", STAMPED)
+        self.assert_verdict(self.commit(), base, True)
+
+    def test_a_non_ascii_path(self):
+        base = self.base()
+        self.write("café/AGENTS.md", STAMPED)
+        local = self.commit()
+        # The per-file loop is left out on purpose: it reads `git diff --name-only` without
+        # -z, so git quotes the name (core.quotepath) and the loop judges it unstamped. See
+        # the ticket report; the old behaviour is not changed here.
+        self.assertEqual(self.shell_verdict(local, base), 0, "the shell function")
+        self.assertEqual(self.script_verdict(local, base), 0, "the script")
+
+    def test_cat_file_dying_mid_stream_is_unknown(self):
+        """Intent: exit 2 means it could not judge. cat-file is replaced by a process that
+        exits at once, so the first answer never comes."""
+        base = self.base()
+        self.write("AGENTS.md", STAMPED)
+        local = self.commit()
+        sys.path.insert(0, str(RENDERED_ONLY_PY.parent))
+        self.addCleanup(sys.path.remove, str(RENDERED_ONLY_PY.parent))
+        import rendered_only
+        real_popen = subprocess.Popen
+
+        def popen(args, *a, **kw):
+            if args[:3] == ["git", "cat-file", "--batch"]:
+                args = [sys.executable, "-c", "pass"]
+            return real_popen(args, *a, **kw)
+
+        cwd = os.getcwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, cwd)
+        with unittest.mock.patch.object(subprocess, "Popen", popen), \
+                unittest.mock.patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(rendered_only.main([local, base]), 2)
+
+    def test_exit_two_makes_the_gate_run_not_skip(self):
+        """Intent: a git failure is exit 2 from the script, which the shell turns into
+        "not rendered-only", so the suite runs. A local sha git cannot diff stands in."""
+        self.gate_config(config_dir=".github")
+        self.write(".github/test-roots", "run: echo suite-ran\n")
+        base = self.commit()
+        bogus = "1" * 40
+        self.assertEqual(self.script_verdict(bogus, base), 2)
+        self.assertEqual(self.shell_verdict(bogus, base), 1)
+        result = self.run_gate(bogus, base)
+        self.assertNotIn("skipped: every file", result.stdout)
+        self.assertIn("suite-ran", result.stdout)
 
 
 # The base classes hold no test of their own and must not run as cases.
