@@ -412,6 +412,12 @@ def commit_step(message: str) -> str:
     return f"Commit it:\n       git add -A\n       git commit -m \"{message}\""
 
 
+def lock_gates(profile: Path) -> int:
+    """Ask the operator to lock the push gates, as console setup does. Setup from an answers
+    file skips it, and the render refuses an unlocked profile."""
+    return consent.main(["--profile", str(profile), "--init"])
+
+
 def after_setup(profile: Path) -> int:
     """Everything init does once setup has finished: targets, the profile commit, the
     render, the render commit. Nothing is ever removed here. A failure or Ctrl+C prints the
@@ -420,16 +426,20 @@ def after_setup(profile: Path) -> int:
     try:
         write_targets(profile, ask_targets(profile))
         step = commit_step(CREATE_MESSAGE)
+        # The lock is part of the profile, so it is asked before the profile is committed;
+        # a lock written after that commit would leave the tree dirty for the render.
+        if consent.read_lock(profile) is None and (
+                lock_gates(profile) != 0 or consent.read_lock(profile) is None):
+            raise StepFailed("the push gates are not locked, and a render needs the lock",
+                             f"Lock the push gates, commit, then render. In {profile}, run:\n"
+                             f"       {LOCK_COMMAND}\n"
+                             f"       git add -A\n       git commit -m \"{CREATE_MESSAGE}\"\n"
+                             f"       {FIRST_RENDER_COMMAND}\n"
+                             f"       git add -A\n       git commit -m \"{RENDER_MESSAGE}\"")
         commit_all(profile, CREATE_MESSAGE)
         step = (f"Render the profile into itself, then commit that too:\n"
                 f"       {FIRST_RENDER_COMMAND}\n"
                 f"       git add -A\n       git commit -m \"{RENDER_MESSAGE}\"")
-        if consent.read_lock(profile) is None:
-            raise StepFailed("the push gates are not locked, and a render needs the lock. "
-                             "Setup did not lock them, because its answers came from a file",
-                             f"Lock the push gates, then render. In {profile}, run:\n"
-                             f"       {LOCK_COMMAND}\n       {FIRST_RENDER_COMMAND}\n"
-                             f"       git add -A\n       git commit -m \"{RENDER_MESSAGE}\"")
         if run_render(profile / vendor.CORE_DIR, no_fetch=True) != 0:
             raise StepFailed("the render did not finish", step)
         commit_all(profile, RENDER_MESSAGE)

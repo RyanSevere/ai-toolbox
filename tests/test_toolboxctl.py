@@ -951,10 +951,25 @@ class InitGuided(GuidedFixture):
 class InitGuidedNoLock(GuidedFixture):
     LOCK = False
 
-    def test_a_profile_with_no_lock_stops_and_names_the_lock_step(self):
-        """Intent: an answers file locks no gates, and render refuses without a lock, so the
-        flow stops before it with the lock command as the next step."""
-        code, out, err = self.guided("app-one", "")
+    def test_an_unlocked_profile_is_offered_the_lock_and_then_finishes(self):
+        """Intent: an answers file locks no gates. The operator is at the console for
+        identity anyway, so the flow asks for the lock as console setup does, then renders
+        and commits."""
+        def lock(folder):
+            locking_setup(lambda argv: 0)(["--profile", str(folder)])
+            return 0
+        with mock.patch("toolboxctl.lock_gates", side_effect=lock) as asked:
+            code, out, err = self.guided("app-one", "")
+        self.assertEqual(code, 0, out + err)
+        asked.assert_called_once()
+        self.assertEqual(git(self.profile, "log", "--format=%s").splitlines(),
+                         ["Render the profile", "Create the profile"])
+
+    def test_a_declined_lock_stops_and_names_the_lock_step(self):
+        """Intent: render refuses without a lock, so a declined lock stops the flow before it
+        with the lock command as the next step, and keeps the profile."""
+        with mock.patch("toolboxctl.lock_gates", return_value=1):
+            code, out, err = self.guided("app-one", "")
         self.assertNotEqual(code, 0)
         self.assertIn("python core/consent.py --profile . --init", out + err)
         self.assertTrue((self.profile / "profile.yaml").is_file())

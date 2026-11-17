@@ -36,7 +36,8 @@ paraphrase it from memory.
    confirms it. Setup refuses an example value left in place, so never leave one.
 4. Write the confirmed answers to a file with no `identity:` key, then run `init` with
    `--answers <file>`. `init` asks identity at the console, then asks for the target
-   repositories as folder names beside the profile.
+   repositories as folder names beside the profile, then asks the operator to lock the
+   push gates. The lock is the operator's consent: never type it for them.
 5. `init` then commits the profile, renders it into itself and commits the render. It never
    pushes. Stop when it prints `git push -u origin main`, and leave the push to the
    operator. Without `--answers`, the operator answers setup's questions at the console
