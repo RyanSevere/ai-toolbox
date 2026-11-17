@@ -884,9 +884,13 @@ look-back skips it.
 `check_response.py --stop` is the Claude Code `Stop` hook mode. It reads the hook's JSON
 from stdin and grades `last_assistant_message`, because the transcript may lag the turn.
 The reply is the text from the last marker line, or, with no marker, the whole message
-plus the `reply marker missing` finding. With findings it prints them to stderr and exits
-2, which sends the turn back once; when `stop_hook_active` is true it prints them and
-exits 0, so there is at most one forced revision. Unreadable input or no
+plus the `reply marker missing` finding. It prints every finding to stderr, in two
+classes. A *send-back* finding can change what the operator is asked or decides: it starts
+with an entry of `SEND_BACK_PREFIXES` in `shape.py` (`decisions:`). Any send-back finding
+exits 2, which sends the turn back once. Every other finding is *report-only*: it prints
+and exits 0, and the next turn's `--previous` look-back reports it again. A profile moves
+the split by editing that constant. When `stop_hook_active` is true it prints and exits 0,
+so there is at most one forced revision. Unreadable input or no
 `last_assistant_message` exits 0 with a one-line note, so the hook never traps a session.
 It records nothing in the run ledgers.
 

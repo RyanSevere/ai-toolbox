@@ -238,8 +238,9 @@ def stop_hook() -> int:
     """A Claude Code Stop hook: grade the reply about to end the turn.
 
     The hook's stdin is JSON; `last_assistant_message` is the reply, read from there because
-    the transcript may lag. Findings go to stderr and exit 2, which sends the turn back once;
-    with `stop_hook_active` set the turn is already a revision, so they are reported and the
+    the transcript may lag. Every finding goes to stderr. Exit 2 sends the turn back once, and
+    only when a finding starts with a `shape.SEND_BACK_PREFIXES` entry; other findings are
+    report-only (exit 0). With `stop_hook_active` set the turn is already a revision, so the
     exit is 0 - one forced revision, never a loop. The checker's own failure never blocks.
     Nothing is recorded in the run ledgers.
     """
@@ -267,9 +268,13 @@ def stop_hook() -> int:
     if result != 1:
         return 0
     # The ledger line is about --previous's run ledgers, which this mode never touches.
-    print("\n".join(line for line in report.getvalue().strip().splitlines()
-                    if line != shape.LEDGER_FILE_LINE), file=sys.stderr)
-    return 0 if data.get("stop_hook_active") is True else 2
+    printed = [line for line in report.getvalue().strip().splitlines()
+               if line != shape.LEDGER_FILE_LINE]
+    print("\n".join(printed), file=sys.stderr)
+    if data.get("stop_hook_active") is True:
+        return 0
+    findings = [line[4:] for line in printed if line.startswith("  - ")]
+    return 2 if any(shape.sends_back(finding) for finding in findings) else 0
 
 
 def main() -> int:

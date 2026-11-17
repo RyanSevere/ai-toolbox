@@ -117,6 +117,16 @@ LEDGER_FILE_LINE = "Ledger file: not checked - no ledger exists yet"
 
 CAPS = {"cameupwhiledoingit": 3, "recommendednext": 4}  # decisions deliberately uncapped
 
+# The Stop hook sends a reply back only for a finding that starts with one of these: it can
+# change what the operator is asked or decides. Every other finding is report-only. A
+# profile changes the split by editing this tuple.
+SEND_BACK_PREFIXES = ("decisions:",)
+
+
+def sends_back(finding: str) -> bool:
+    """True when the finding starts with an entry of SEND_BACK_PREFIXES."""
+    return finding.startswith(SEND_BACK_PREFIXES)
+
 FIELD = re.compile(
     r"^(verdict|evidence for|evidence against|would have falsified[^:]*|"
     r"looked for it|use case|autonomy|how|consistent with|in tension with)\s*:",
