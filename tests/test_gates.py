@@ -1978,6 +1978,149 @@ class RenderedOnly(GateCase):
         self.assertIn("suite-ran", result.stdout)
 
 
+class TestsRangeByRef(GateCase):
+    """The range the tests gate hands its suites depends on the ref being pushed:
+    targeted on branches, everything on the deploy branch."""
+
+    gate = "tests"
+    config_dir = ".github"
+
+    def setUp(self):
+        super().setUp()
+        self.gate_config(config_dir=".github", deploy_branch="main")
+        self.write(".github/test-roots",
+                   'run: echo "$PUSH_REMOTE_SHA..$PUSH_LOCAL_SHA" > range.out\n')
+
+    def run_ref(self, local, remote, ref, *extra, unset_ref=False):
+        script = (GATES / "tests.sh").as_posix()
+        env = {**os.environ, "LC_ALL": "C"}
+        env["PATH"] = str(Path(SH).parent) + os.pathsep + env.get("PATH", "")
+        env.pop("PUSH_REMOTE_REF", None)
+        if not unset_ref:
+            env["PUSH_REMOTE_REF"] = ref
+        return subprocess.run([SH, script, local, remote, *extra], cwd=self.repo,
+                              capture_output=True, text=True, env=env)
+
+    def seen_range(self) -> str:
+        return (self.repo / "range.out").read_text(encoding="utf-8").strip()
+
+    def range_line(self, result) -> str:
+        lines = [ln for ln in result.stdout.splitlines() if ln.startswith("range:")]
+        self.assertEqual(len(lines), 1, result.stdout)
+        return lines[0]
+
+    def two_commits(self):
+        first = self.commit()
+        self.write("b.txt")
+        return first, self.commit()
+
+    def test_a_push_to_the_deploy_branch_exports_an_empty_remote_sha(self):
+        """Intent: the deploy branch runs the full suite, so a selecting suite gets no range."""
+        first, second = self.two_commits()
+        result = self.run_ref(second, first, "refs/heads/main")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"..{second}")
+        self.assertIn("deploy branch", self.range_line(result))
+
+    def test_a_new_branch_exports_the_merge_base_with_the_deploy_branch(self):
+        """Intent: a branch's first push is targeted at what the branch added."""
+        first = self.commit()
+        self.git("update-ref", "refs/remotes/origin/main", first)
+        self.write("b.txt")
+        second = self.commit()
+        result = self.run_ref(second, "0" * 40, "refs/heads/feature")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"{first}..{second}")
+        line = self.range_line(result)
+        self.assertIn("merge-base with origin/main", line)
+        self.assertIn("new branch", line)
+
+    def test_the_merge_base_uses_the_remote_the_gate_is_given(self):
+        """Intent: the third argument names the remote, as the hook passes it."""
+        first = self.commit()
+        self.git("update-ref", "refs/remotes/upstream/main", first)
+        self.write("b.txt")
+        second = self.commit()
+        result = self.run_ref(second, "0" * 40, "refs/heads/feature", "upstream")
+        self.assertEqual(self.seen_range(), f"{first}..{second}")
+        self.assertIn("merge-base with upstream/main", self.range_line(result))
+
+    def test_a_new_branch_with_no_deploy_branch_ref_exports_an_empty_range(self):
+        """Intent: an unknown is never a narrower selection."""
+        _, second = self.two_commits()
+        result = self.run_ref(second, "0" * 40, "refs/heads/feature")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"..{second}")
+        self.assertIn("new branch", self.range_line(result))
+
+    def test_a_new_branch_with_no_merge_base_exports_an_empty_range(self):
+        """Intent: a failing merge-base runs everything, not a guess."""
+        self.git("checkout", "-q", "--orphan", "other")
+        self.write("o.txt")
+        orphan = self.commit()
+        self.git("update-ref", "refs/remotes/origin/main", orphan)
+        self.git("checkout", "-q", "--orphan", "feature")
+        self.write("f.txt")
+        tip = self.commit()
+        result = self.run_ref(tip, "0" * 40, "refs/heads/feature")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"..{tip}")
+        self.assertIn("range:", self.range_line(result))
+
+    def test_a_branch_at_the_deploy_tip_has_a_merge_base_equal_to_itself(self):
+        """Intent: the boundary is an empty range, not an error."""
+        first = self.commit()
+        self.git("update-ref", "refs/remotes/origin/main", first)
+        result = self.run_ref(first, "0" * 40, "refs/heads/feature")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"{first}..{first}")
+
+    def test_an_existing_branch_keeps_its_remote_sha(self):
+        """Intent: a later push to a branch is targeted at what it adds, as before."""
+        first, second = self.two_commits()
+        result = self.run_ref(second, first, "refs/heads/feature")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"{first}..{second}")
+        self.assertIn("as pushed", self.range_line(result))
+
+    def test_a_ref_outside_heads_is_not_the_deploy_branch(self):
+        """Intent: only refs/heads/<deploy-branch> triggers the full suite."""
+        first, second = self.two_commits()
+        result = self.run_ref(second, first, "refs/tags/main")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"{first}..{second}")
+
+    def test_no_ref_behaves_as_before_and_prints_no_range_line(self):
+        """Intent: the gate run by hand passes the arguments through untouched."""
+        first, second = self.two_commits()
+        result = self.run_ref(second, first, "", unset_ref=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"{first}..{second}")
+        self.assertNotIn("range:", result.stdout)
+
+    def test_a_missing_deploy_branch_in_gate_config_refuses(self):
+        """Intent: with a ref named, an unreadable deploy branch refuses rather than guessing."""
+        self.gate_config(config_dir=".github")
+        first, second = self.two_commits()
+        result = self.run_ref(second, first, "refs/heads/feature")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("deploy-branch", result.stdout)
+
+
+class PrePushRemoteRef(PrePushCase):
+    """The hook tells each gate which remote ref its line pushes."""
+
+    def test_each_line_exports_its_own_remote_ref(self):
+        """Intent: the gates of a line see that line's ref, set before they run."""
+        self.write(".githooks/gates/ref.sh", 'echo "ref=$PUSH_REMOTE_REF"\n')
+        self.enabled("ref")
+        sha = self.commit()
+        result = self.push(sha, "feature")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = self.reports()[0]
+        self.assertIn("ref=refs/heads/feature", report["gates"]["ref"]["detail"])
+
+
 # The base classes hold no test of their own and must not run as cases.
 del GateCase, PrePushCase
 

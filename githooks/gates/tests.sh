@@ -77,6 +77,37 @@ tail_lines=40
 # A suite may narrow itself to what the push changed. Empty means unknown.
 PUSH_LOCAL_SHA="${1:-}"
 PUSH_REMOTE_SHA="${2:-}"
+
+# Targeted on branches, where work collects; everything on the deploy branch. The hook
+# names the ref being pushed. Without it (the gate run by hand) the range is as given.
+# An unknown is never a narrower selection: every failure below exports an empty range.
+if [ -n "${PUSH_REMOTE_REF:-}" ]; then
+  if ! deploy_branch="$(gate_config deploy-branch)"; then
+    echo "REFUSED: .githooks/gate-config names no deploy-branch, so there is no telling which"
+    echo "push runs the whole suite. Re-render it from its profile: python core/sync.py --profile . <repo> --write"
+    exit 1
+  fi
+  range_remote="${3:-origin}"
+  if [ "$PUSH_REMOTE_REF" = "refs/heads/$deploy_branch" ]; then
+    PUSH_REMOTE_SHA=""
+    echo "range: none (deploy branch $deploy_branch, so every test runs)"
+  else
+    case "$PUSH_REMOTE_SHA" in
+      *[!0]*)
+        echo "range: as pushed (existing branch)"
+        ;;
+      *)
+        if PUSH_REMOTE_SHA="$(git merge-base "$PUSH_LOCAL_SHA" "refs/remotes/$range_remote/$deploy_branch" 2>/dev/null)" \
+            && [ -n "$PUSH_REMOTE_SHA" ]; then
+          echo "range: merge-base with $range_remote/$deploy_branch (new branch)"
+        else
+          PUSH_REMOTE_SHA=""
+          echo "range: none (new branch, no merge base with $range_remote/$deploy_branch, so every test runs)"
+        fi
+        ;;
+    esac
+  fi
+fi
 export PUSH_LOCAL_SHA PUSH_REMOTE_SHA
 
 if [ ! -f "$decl" ]; then
