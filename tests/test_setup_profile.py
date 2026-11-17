@@ -615,6 +615,66 @@ class AnswersFile(Fixture):
         self.assertIn("tracker.sytem", out)
 
 
+class AnswersFileIdentity(Fixture):
+    """An --answers file with no identity: leaves identity to the console."""
+
+    NO_IDENTITY = f"answers: {{tracker.system: '{SYSTEM}'}}\n" + LEAK_FILE
+
+    def test_a_file_with_no_identity_asks_identity_at_the_console(self):
+        """Intent: the operator always types identity; a file that omits it gets the two
+        identity questions and nothing else asked."""
+        code, out = self.run_setup(TYPED, self.answers_file(self.NO_IDENTITY))
+        self.assertEqual(sorted(self.asked), ["identity.email", "identity.name"], out)
+        self.assertEqual(self.data()["identity"], {"name": "Example Person",
+                                                   "email": "person@acme.example"})
+        self.assertEqual(self.data()["source"]["repo"], "acme-profile")
+        self.assertNotIn("REFUSED", out)
+
+    def test_a_file_with_identity_asks_nothing(self):
+        """Intent: tests and CI still answer identity from the file."""
+        good = ("identity: {name: File Person, email: file@acme.example}\n" + self.NO_IDENTITY)
+        code, out = self.run_setup({}, self.answers_file(good))
+        self.assertEqual(self.asked, {}, out)
+        self.assertEqual(self.data()["identity"]["name"], "File Person")
+
+    def test_an_example_email_typed_at_the_prompt_is_still_refused(self):
+        """Intent: the console identity goes through the same checks as a typed run."""
+        typed = {**TYPED, "identity.email": "owner@example.invalid"}
+        code, out = self.run_setup(typed, self.answers_file(self.NO_IDENTITY))
+        self.assertEqual(code, 1, out)
+        self.assertFalse(self.profile.exists())
+
+
+class AnswerDestinations(Fixture):
+    """After each typed answer, one line says where it goes."""
+
+    def lines(self, out: str, key: str) -> list[str]:
+        return [line for line in out.splitlines() if line.startswith(f"  -> {key} goes to")]
+
+    def test_each_answer_prints_one_line_naming_where_it_goes(self):
+        code, out = self.run_setup()
+        self.assertEqual(code, 0, out)
+        for key in TYPED:
+            with self.subTest(key=key):
+                self.assertEqual(len(self.lines(out, key)), 1, out)
+
+    def test_a_convention_answer_names_the_conventions_rule(self):
+        _, out = self.run_setup({**TYPED, "tracker.fields": "Summary is required."})
+        self.assertIn("tracker-conventions rule", self.lines(out, "tracker.fields")[0])
+
+    def test_a_binding_answer_names_a_binding(self):
+        _, out = self.run_setup({**TYPED, "tracker.connection": "Its client."})
+        line = self.lines(out, "tracker.connection")[0]
+        self.assertIn("binding", line)
+        self.assertNotIn("tracker-conventions", line)
+
+    def test_identity_source_and_leak_answers_name_their_use(self):
+        _, out = self.run_setup()
+        self.assertIn("commit identity", self.lines(out, "identity.email")[0])
+        self.assertIn("stamp", self.lines(out, "source.repo")[0])
+        self.assertIn("leak gate", self.lines(out, "personal")[0])
+
+
 class ReRun(Fixture):
     """re-running on an existing profile writes nothing without
     confirmation."""

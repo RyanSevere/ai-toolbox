@@ -65,6 +65,17 @@ HERE = Path(__file__).resolve().parent
 # Subcommands whose arguments belong to the script they delegate to.
 PASS_THROUGH = ("flags", "setup", "gate-lists")
 GIT_TIMEOUT = 60
+# The two commit messages init makes, and the commands it runs or prints as steps.
+CREATE_MESSAGE = "Create the profile"
+RENDER_MESSAGE = "Render the profile"
+RENDER_COMMAND = "python core/sync.py --profile . --self --write"
+# A new profile has nothing upstream to be behind, and its remote may be empty, so init's own
+# render does not fetch.
+FIRST_RENDER_COMMAND = RENDER_COMMAND + " --no-fetch"
+LOCK_COMMAND = "python core/consent.py --profile . --init"
+TARGETS_STEP = ("In profile.yaml, replace the example targets (example-app, example-scratch)"
+                " with your own repositories, in any editor.")
+PUSH_COMMAND = "git push -u origin main"
 PREVIEW_TIMEOUT = 600
 RENDER_TIMEOUT = 600
 # A preview renders nothing to commit, so no real source commit is stamped.
@@ -179,17 +190,17 @@ def run_preview(core: Path, root: Path | None) -> int:
     return 1
 
 
-def render_command(core: Path) -> list[str]:
+def render_command(core: Path, no_fetch: bool = False) -> list[str]:
     """The profile's own render, from the core on disk. The same line a person runs by hand."""
     return [sys.executable, str(core / "sync.py"), "--profile", str(core.parent),
-            "--self", "--write"]
+            "--self", "--write", *(["--no-fetch"] if no_fetch else [])]
 
 
-def run_render(core: Path) -> int:
+def run_render(core: Path, no_fetch: bool = False) -> int:
     """Render the profile from the new core, in a child process, so the code on disk is
     what runs. A failure, a timeout or a start failure is 1; the output is left for review."""
     try:
-        code = subprocess.run(render_command(core), cwd=core.parent,
+        code = subprocess.run(render_command(core, no_fetch), cwd=core.parent,
                               timeout=RENDER_TIMEOUT).returncode
     except subprocess.TimeoutExpired:
         print(f"[ERROR] the render did not finish within {RENDER_TIMEOUT} seconds",
@@ -329,8 +340,128 @@ def preview(core: Path, root: Path | None) -> int:
     return 3 if unknown else 0
 
 
+class StepFailed(Exception):
+    """A step after setup did not complete; carries the one step to run next."""
+
+    def __init__(self, message: str, next_step: str):
+        super().__init__(message)
+        self.next_step = next_step
+
+
+def parse_targets(text: str, profile: Path) -> list[str]:
+    """Folder names beside the profile, one per line. Refuses an empty list, a path, a name
+    holding anything but letters, digits, - _ and ., and a repeat."""
+    names = [line.strip() for line in text.splitlines() if line.strip()]
+    if not names:
+        raise setup_profile.SetupError("name at least one target repository folder")
+    for name in names:
+        if name in (".", "..") or not setup_profile.OWNER_REPO_PATTERN.fullmatch(name):
+            raise setup_profile.SetupError(
+                f"{name!r} is not a folder name beside the profile. Use letters, digits, "
+                "- _ and ., with no path and no spaces")
+        if name == profile.name:
+            raise setup_profile.SetupError(f"{name!r} is this profile's own folder")
+    if len(set(names)) != len(names):
+        raise setup_profile.SetupError("a target is named twice")
+    return names
+
+
+def ask_targets(profile: Path) -> list[str]:
+    """The target folders, asked at the console until one answer is accepted."""
+    prompt = (f"The folders of this profile's target repositories, beside {profile.name} in "
+              f"{profile.parent}. One folder name per line. They replace the example targets "
+              "in profile.yaml.")
+    for _ in range(setup_profile.MAX_ASKS):
+        typed = setup_profile.console_ask("targets", prompt, None)
+        try:
+            names = parse_targets(typed, profile)
+        except setup_profile.SetupError as error:
+            print(f"REFUSED: {error}")
+            continue
+        for name in names:
+            if not (profile.parent / name).is_dir():
+                print(f"[NOTE] {profile.parent / name} does not exist yet. It is needed "
+                      "for that target's first sync, not for this step.")
+        print("  -> targets goes to profile.yaml, in place of the example targets.")
+        return names
+    raise setup_profile.SetupError(
+        f"targets was refused {setup_profile.MAX_ASKS} times")
+
+
+def write_targets(profile: Path, names: list[str]) -> None:
+    """Replace profile.yaml's targets: block with `names`, by the writer setup uses."""
+    path = profile / sync.PROFILE_NAME
+    text = path.read_text(encoding="utf-8")
+    block = setup_profile.render_block("targets", {name: {} for name in names})
+    consent.write_atomically(path, setup_profile.replace_block(text, "targets", block))
+    print(f"[OK] targets written to {path}: {', '.join(names)}")
+
+
+def commit_all(profile: Path, message: str) -> None:
+    """Stage everything and commit it with `message`, as the printed steps do."""
+    for args in (("add", "-A"), ("commit", "-q", "-m", message)):
+        result = git(profile, *args)
+        if result.returncode != 0:
+            raise StepFailed(f"git {' '.join(args[:1])} failed: "
+                             f"{(result.stderr or result.stdout).strip()}",
+                             commit_step(message))
+    print(f"[OK] committed: {message}")
+
+
+def commit_step(message: str) -> str:
+    return f"Commit it:\n       git add -A\n       git commit -m \"{message}\""
+
+
+def lock_gates(profile: Path) -> int:
+    """Ask the operator to lock the push gates, as console setup does. Setup from an answers
+    file skips it, and the render refuses an unlocked profile."""
+    return consent.main(["--profile", str(profile), "--init"])
+
+
+def after_setup(profile: Path) -> int:
+    """Everything init does once setup has finished: targets, the profile commit, the
+    render, the render commit. Nothing is ever removed here. A failure or Ctrl+C prints the
+    one step to run next and exits non-zero."""
+    step = TARGETS_STEP
+    try:
+        write_targets(profile, ask_targets(profile))
+        step = commit_step(CREATE_MESSAGE)
+        # The lock is part of the profile, so it is asked before the profile is committed;
+        # a lock written after that commit would leave the tree dirty for the render.
+        if consent.read_lock(profile) is None and (
+                lock_gates(profile) != 0 or consent.read_lock(profile) is None):
+            raise StepFailed("the push gates are not locked, and a render needs the lock",
+                             f"Lock the push gates, commit, then render. In {profile}, run:\n"
+                             f"       {LOCK_COMMAND}\n"
+                             f"       git add -A\n       git commit -m \"{CREATE_MESSAGE}\"\n"
+                             f"       {FIRST_RENDER_COMMAND}\n"
+                             f"       git add -A\n       git commit -m \"{RENDER_MESSAGE}\"")
+        commit_all(profile, CREATE_MESSAGE)
+        step = (f"Render the profile into itself, then commit that too:\n"
+                f"       {FIRST_RENDER_COMMAND}\n"
+                f"       git add -A\n       git commit -m \"{RENDER_MESSAGE}\"")
+        if run_render(profile / vendor.CORE_DIR, no_fetch=True) != 0:
+            raise StepFailed("the render did not finish", step)
+        commit_all(profile, RENDER_MESSAGE)
+    except KeyboardInterrupt:
+        print(f"\n[NOTE] stopped. The profile is written and was not removed.\nNext step\n"
+              f"  {step}", file=sys.stderr)
+        return 130
+    except StepFailed as error:
+        print(f"[ERROR] {error}. The profile is written and was not removed.\nNext step\n"
+              f"  {error.next_step}", file=sys.stderr)
+        return 1
+    except (setup_profile.SetupError, sync.SyncError, consent.ConsentError, OSError,
+            subprocess.SubprocessError, yaml.YAMLError) as error:
+        print(f"[ERROR] {error}. The profile is written and was not removed.\nNext step\n"
+              f"  {step}", file=sys.stderr)
+        return 1
+    print(f"\n{consent.TOOLS_NOTE}\nNext step\n  Push it:\n       {PUSH_COMMAND}")
+    return 0
+
+
 def init(core: Path, profile: Path, source: str, answers: Path | None,
-         fetch: vendor.Fetch | None = None) -> int:
+         fetch: vendor.Fetch | None = None, setup_only: bool = False) -> int:
     """Bootstrap a new profile from a release archive: vendor the tag this archive carries
     into <profile>/core/, then run setup. Refuses, changing nothing, where a profile is
     already there. Run from the archive, not from a vendored core."""
@@ -384,7 +515,10 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
     if code == 1:
         remove_unfinished(profile, before)
     if code in (0, 3):
-        print(next_steps(profile))
+        if setup_only:
+            print(next_steps(profile))
+        else:
+            return after_setup(profile)
     return code
 
 
@@ -421,17 +555,14 @@ def next_steps(profile: Path) -> str:
                "       python core/consent.py --profile . --init\n")
             + f"  1. Review the render. In {profile}, run:\n"
             "       git status\n"
-            "  2. In profile.yaml, replace the example targets (example-app, example-scratch)"
-            " with your own repositories, in any editor.\n"
-            "  3. Commit it:\n"
-            "       git add -A\n"
-            "       git commit -m \"Create the profile\"\n"
+            f"  2. {TARGETS_STEP}\n"
+            f"  3. {commit_step(CREATE_MESSAGE)}\n"
             "  4. Render the profile into itself, then commit that too:\n"
-            "       python core/sync.py --profile . --self --write\n"
+            f"       {FIRST_RENDER_COMMAND}\n"
             "       git add -A\n"
-            "       git commit -m \"Render the profile\"\n"
+            f"       git commit -m \"{RENDER_MESSAGE}\"\n"
             "  5. Push it:\n"
-            "       git push -u origin main\n"
+            f"       {PUSH_COMMAND}\n"
             "  6. Confirm the core from inside the profile:\n"
             "       python core/toolboxctl.py version")
 
@@ -453,7 +584,11 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--source", required=True, metavar="OWNER/REPO",
                              help="the GitHub repository this archive was released from")
     init_parser.add_argument("--answers", type=Path, default=None,
-                             help="answer setup from this YAML file instead of the console")
+                             help="answer setup from this YAML file instead of the console. "
+                                  "A file with no identity: asks identity at the console")
+    init_parser.add_argument("--setup-only", action="store_true",
+                             help="stop after setup and print the remaining steps, instead of "
+                                  "asking for the targets, committing and rendering")
     sub.add_parser("version", help="print the source, tag and SHA core/VENDORED records; "
                                    "reads only")
     sub.add_parser("check", help="verify core/ against VENDORED, then list newer releases. "
@@ -490,7 +625,7 @@ def main(argv: list[str] | None = None, core: Path = HERE,
     if rest and args.command not in PASS_THROUGH:
         parser.error(f"unrecognized arguments: {' '.join(rest)}")
     if args.command == "init":
-        return init(core, args.profile, args.source, args.answers, fetch)
+        return init(core, args.profile, args.source, args.answers, fetch, args.setup_only)
     if not (core / vendor.VENDORED).is_file():
         print(f"[ERROR] {core / vendor.VENDORED} does not exist. toolboxctl is meant for a "
               "profile's vendored core, run as python core/toolboxctl.py; in the source "

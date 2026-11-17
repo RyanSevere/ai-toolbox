@@ -295,17 +295,34 @@ def ask_checked(ask: Ask, key: str, prompt: str, offered: str | None, default: s
                      "file with --answers <file>")
 
 
-def collect(current: dict, ask: Ask, folder: Path | None = None) -> tuple[dict, dict, dict]:
-    """Identity, answers and the other profile blocks typed at the prompts. A blank answer
+def destination(key: str, question: dict | None = None) -> str:
+    """Where an answer goes, for the one line printed after it is given."""
+    if key.startswith("identity."):
+        return "the commit identity of every target."
+    if key.startswith("source."):
+        return "the stamp in every generated file, and the issue references."
+    if key in LEAK_KINDS:
+        return "the leak gates' pattern files, built by `toolboxctl gate-lists`."
+    stem = key.partition(".")[0]
+    if question and question.get("renders"):
+        return f"the {stem}-conventions rule, quoted as you write it."
+    return f"the {stem} bindings: it decides which skill is bound to what it feeds."
+
+
+def say_destination(key: str, question: dict | None = None) -> None:
+    print(f"  -> {key} goes to {destination(key, question)}")
+
+
+def ask_identity(identity: dict, ask: Ask, folder: Path | None, fields=None) -> dict:
+    """`identity` with each of `fields` (default both) asked at the prompt. A blank answer
     keeps what is there, except that an identity still holding the example's is offered the
-    git config's instead. The third value holds only the blocks the profile.yaml keys named
-    source, personal, profile_name, leak_extra and not_onboarded that were typed."""
+    git config's instead."""
     example = example_profile()
-    identity = dict(current.get("identity") or {})
+    identity = dict(identity)
     if not git_config("user.email", folder):
         print("git config user.email is not set, so there is no git identity to offer. Set one "
               "with `git config user.email you@yourdomain`, or type it below.")
-    for field in sorted(IDENTITY_KEYS, reverse=True):
+    for field in sorted(fields or IDENTITY_KEYS, reverse=True):
         default = identity.get(field)
         if not default or default == (example.get("identity") or {}).get(field):
             default = git_config(f"user.{field}", folder) or default
@@ -319,6 +336,17 @@ def collect(current: dict, ask: Ask, folder: Path | None = None) -> tuple[dict, 
         typed = ask_checked(ask, f"identity.{field}", prompt, offered, default, check)
         if typed or default:
             identity[field] = typed or default
+        say_destination(f"identity.{field}")
+    return identity
+
+
+def collect(current: dict, ask: Ask, folder: Path | None = None) -> tuple[dict, dict, dict]:
+    """Identity, answers and the other profile blocks typed at the prompts. A blank answer
+    keeps what is there, except that an identity still holding the example's is offered the
+    git config's instead. The third value holds only the blocks the profile.yaml keys named
+    source, personal, profile_name, leak_extra and not_onboarded that were typed."""
+    example = example_profile()
+    identity = ask_identity(current.get("identity") or {}, ask, folder)
     blocks: dict = {}
     source = dict(current.get("source") or {})
     for field in SOURCE_FIELDS:
@@ -329,6 +357,7 @@ def collect(current: dict, ask: Ask, folder: Path | None = None) -> tuple[dict, 
                             lambda text, field=field: check_source_value(field, text))
         if typed:
             source[field] = typed
+        say_destination(f"source.{field}")
     blocks["source"] = source
     for key, kind in LEAK_KINDS.items():
         value = current.get(key)
@@ -337,6 +366,7 @@ def collect(current: dict, ask: Ask, folder: Path | None = None) -> tuple[dict, 
         typed = ask(key, prompt, offered).strip()
         if typed:
             blocks[key] = PARSERS[kind](typed)
+        say_destination(key)
     answers = dict(current.get("answers") or {})
     for key, question in prompts():
         prompt = (f"{question.get('ask')}\n  Why: {question.get('why')}\n"
@@ -345,6 +375,7 @@ def collect(current: dict, ask: Ask, folder: Path | None = None) -> tuple[dict, 
         typed = ask(key, prompt, answers.get(key)).strip()
         if typed:
             answers[key] = typed
+        say_destination(key, question)
     return identity, answers, blocks
 
 
@@ -389,9 +420,9 @@ def refuse_examples(identity: dict, current: dict, blocks: dict) -> None:
                              f"with your own, or answer {NOT_APPLICABLE} for none")
 
 
-def from_file(path: Path, current: dict) -> tuple[dict, dict, dict]:
+def from_file(path: Path, current: dict) -> tuple[dict, dict, dict, set]:
     """Identity, answers and the other profile blocks from an --answers file, over what the
-    profile already holds."""
+    profile already holds, and the identity fields the file itself gave."""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise SetupError(f"{path} must be a mapping of identity: and answers:")
@@ -409,7 +440,7 @@ def from_file(path: Path, current: dict) -> tuple[dict, dict, dict]:
               if key in data}
     check_blocks(blocks, LEAK_KINDS)
     return ({**(current.get("identity") or {}), **identity},
-            {**(current.get("answers") or {}), **answers}, blocks)
+            {**(current.get("answers") or {}), **answers}, blocks, set(identity))
 
 
 class BlockDumper(yaml.SafeDumper):
@@ -513,7 +544,14 @@ def run_setup(folder: Path, *, answers_file: Path | None = None, ask: Ask = cons
         if answers_file is None:
             identity, answers, blocks = collect(current, ask, folder)
         else:
-            identity, answers, blocks = from_file(answers_file, current)
+            identity, answers, blocks, given = from_file(answers_file, current)
+            # Identity is the operator's to type: a file that leaves a field out gets the
+            # console, unless the profile already holds a real value for it.
+            example_identity = example_profile().get("identity") or {}
+            absent = [field for field in sorted(IDENTITY_KEYS - given)
+                      if not identity.get(field) or identity[field] == example_identity.get(field)]
+            if absent:
+                identity = ask_identity(identity, ask, folder, absent)
         refuse_examples(identity, current, blocks)
         sync.identity({"identity": identity})
         sync.validate_answers({"answers": answers}, sync.setup_questions())
