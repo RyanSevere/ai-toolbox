@@ -1685,15 +1685,61 @@ class ClaudeSettings(unittest.TestCase):
         self.assertNotIn(".claude/settings.json", sync.LOCAL_RENDERED)
 
     def test_the_probe_runs_python_under_bash_on_windows_and_sh_elsewhere(self):
-        with mock.patch.object(sync.shutil, "which", return_value="C:/Git/bash.exe"):
+        with mock.patch.dict(os.environ), mock.patch.object(
+                sync.shutil, "which", return_value="C:/Git/bash.exe"):
+            os.environ.pop("CLAUDE_CODE_GIT_BASH_PATH", None)
             self.assertEqual(sync.claude_launch_shell(windows=True), ["C:/Git/bash.exe", "-c"])
         self.assertEqual(sync.claude_launch_shell(windows=False), ["sh", "-c"])
 
     def test_without_bash_on_windows_the_write_is_refused_with_the_reason(self):
-        with mock.patch.object(sync.shutil, "which", return_value=None), \
+        with mock.patch.dict(os.environ), mock.patch.object(
+                sync.shutil, "which", return_value=None), \
                 self.assertRaises(sync.SyncError) as caught:
+            os.environ.pop("CLAUDE_CODE_GIT_BASH_PATH", None)
             sync.check_claude_launch(".claude/settings.json", self.content(), windows=True)
         self.assertIn("bash", str(caught.exception))
+
+    def git_install(self, root: Path) -> tuple[str, str]:
+        """A fake Git for Windows tree under root: its git.exe and its bash.exe."""
+        (root / "cmd").mkdir(parents=True)
+        (root / "bin").mkdir()
+        git, bash = root / "cmd" / "git.exe", root / "bin" / "bash.exe"
+        git.write_text("")
+        bash.write_text("")
+        return str(git), str(bash)
+
+    def resolve(self, found: dict, env: dict | None = None):
+        """claude_launch_shell(windows=True) with shutil.which answering from `found`."""
+        with mock.patch.dict(os.environ), \
+                mock.patch.object(sync.shutil, "which", side_effect=found.get):
+            os.environ.pop("CLAUDE_CODE_GIT_BASH_PATH", None)
+            os.environ.update(env or {})
+            return sync.claude_launch_shell(windows=True)
+
+    def test_a_wsl_bash_stub_first_on_path_is_not_the_launch_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            git, bash = self.git_install(Path(tmp) / "Git")
+            stub = r"C:\Users\someone\AppData\Local\Microsoft\WindowsApps\bash.exe"
+            self.assertEqual(self.resolve({"git": git, "bash": stub}), [bash, "-c"])
+
+    def test_with_no_git_a_windowsapps_bash_is_refused_not_used(self):
+        stub = r"C:\Users\someone\AppData\Local\Microsoft\WindowsApps\bash.exe"
+        with mock.patch.dict(os.environ), \
+                mock.patch.object(sync.shutil, "which", side_effect={"bash": stub}.get), \
+                self.assertRaises(sync.SyncError) as caught:
+            os.environ.pop("CLAUDE_CODE_GIT_BASH_PATH", None)
+            sync.claude_launch_shell(windows=True)
+        self.assertIn("CLAUDE_CODE_GIT_BASH_PATH", str(caught.exception))
+
+    def test_the_git_bash_path_variable_wins_over_the_git_installation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            git, _ = self.git_install(Path(tmp) / "Git")
+            chosen = Path(tmp) / "elsewhere" / "bash.exe"
+            chosen.parent.mkdir()
+            chosen.write_text("")
+            self.assertEqual(
+                self.resolve({"git": git}, {"CLAUDE_CODE_GIT_BASH_PATH": str(chosen)}),
+                [str(chosen), "-c"])
 
     def test_a_python_that_does_not_start_is_refused_and_nothing_is_written(self):
         repo = self.tree({})
