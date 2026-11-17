@@ -59,7 +59,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import consent  # noqa: E402
+import setup_profile  # noqa: E402
 import sync  # noqa: E402
 import toolboxctl  # noqa: E402
 import vendor  # noqa: E402
@@ -625,10 +629,12 @@ class InitFixture(unittest.TestCase):
         return buffer.getvalue()
 
     def run_init(self, *extra: str, profile: Path | None = None,
-                 answers: bool = True) -> tuple[int, str, str]:
+                 answers: bool = True, setup_only: bool = True) -> tuple[int, str, str]:
         argv = ["init", "--profile", str(profile or self.profile), "--source", self.SOURCE]
         if answers:
             argv += ["--answers", str(self.answers)]
+        if setup_only:
+            argv.append("--setup-only")
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = toolboxctl.main([*argv, *extra], core=self.archive, fetch=self.fetch)
@@ -681,6 +687,17 @@ class Init(InitFixture):
         for tool in ("ruff", "shellcheck"):
             self.assertIn(tool, needs[0])
         self.assertLess(steps.index("before the first push"), steps.index("git push"))
+
+    def test_setup_only_asks_no_targets_and_makes_no_commit(self):
+        """Intent: --setup-only stops after setup, as init always did: no target prompt, no
+        commit, and today's steps printed."""
+        with mock.patch("builtins.input", side_effect=AssertionError("asked")):
+            code, out, err = self.run_init()
+        self.assertEqual(code, 3, out + err)
+        self.assertIn("replace the example targets", out)
+        self.assertIn("example-app", (self.profile / "profile.yaml").read_text(encoding="utf-8"))
+        self.assertNotEqual(subprocess.run(("git", "rev-parse", "HEAD"), cwd=self.profile,
+                                           capture_output=True).returncode, 0)
 
     def test_the_repository_it_made_has_no_remote(self):
         """Intent: nothing init does leaves a remote that names the core."""
@@ -807,6 +824,133 @@ class Init(InitFixture):
                     code = toolboxctl.main([command], core=self.archive)
                 self.assertEqual(code, 1)
                 self.assertIn("vendored core", err.getvalue())
+
+
+def locking_setup(real_main):
+    """Setup as it runs at a console: the real setup, then the gate lock written the way
+    `consent.py --init` writes it, so the profile can render."""
+    def run(argv):
+        code = real_main(argv)
+        folder = Path(argv[argv.index("--profile") + 1])
+        gates = {name: True for name in consent.known_gates(folder)}
+        consent.write_atomically(folder / consent.LOCK_NAME, consent.render_lock({"gates": gates}))
+        path = folder / consent.PROFILE_NAME
+        consent.write_atomically(path, consent.replace_features_block(
+            path.read_text(encoding="utf-8"), consent.render_features_block(gates)))
+        return code
+    return run
+
+
+class GuidedFixture(InitFixture):
+    """A repository with a local git identity, and a runner for init without --setup-only."""
+
+    LOCK = True
+
+    def fetch(self, url: str, accept: str) -> bytes:
+        """The real core as the archive, so the render the flow runs is a real one."""
+        self.urls.append(url)
+        if "/commits/" in url:
+            return SHA.encode()
+        listed = git(sync.ROOT, "ls-files").splitlines()
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            for name in listed:
+                if name.startswith("tests/") or not (sync.ROOT / name).is_file():
+                    continue
+                data = (sync.ROOT / name).read_bytes()
+                member = tarfile.TarInfo(f"example-core-{SHA}/{name}")
+                member.size = len(data)
+                tar.addfile(member, io.BytesIO(data))
+        return buffer.getvalue()
+
+    def setUp(self):
+        super().setUp()
+        git(self.profile, "config", "user.name", "Test Person")
+        git(self.profile, "config", "user.email", "test@acme.example")
+        git(self.profile, "config", "commit.gpgsign", "false")
+        if self.LOCK:
+            patcher = mock.patch("setup_profile.main",
+                                 side_effect=locking_setup(setup_profile.main))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def guided(self, *typed: str) -> tuple[int, str, str]:
+        with mock.patch("builtins.input", side_effect=list(typed)):
+            return self.run_init(setup_only=False)
+
+
+class InitGuided(GuidedFixture):
+    """init without --setup-only: targets, the two commits, and the one step left."""
+
+    def test_it_writes_the_named_targets_and_nothing_else_in_their_place(self):
+        """Intent: the operator names folders; profile.yaml's targets: holds exactly those."""
+        code, out, err = self.guided("app-one", "app-two", "")
+        self.assertEqual(code, 0, out + err)
+        data = yaml.safe_load((self.profile / "profile.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(list(data["targets"]), ["app-one", "app-two"])
+        self.assertNotIn("example-app", (self.profile / "profile.yaml").read_text(encoding="utf-8"))
+
+    def test_it_commits_the_profile_then_the_render_and_leaves_a_clean_tree(self):
+        """Intent: the two commits next_steps names, in order, with nothing left over."""
+        code, out, err = self.guided("app-one", "")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(git(self.profile, "log", "--format=%s").splitlines(),
+                         ["Render the profile", "Create the profile"])
+        self.assertEqual(git(self.profile, "status", "--porcelain"), "")
+        self.assertIn("AGENTS.md", git(self.profile, "ls-files"))
+
+    def test_it_ends_by_printing_the_push_and_never_pushes(self):
+        """Intent: the push stays the operator's; it is the one step printed last."""
+        code, out, err = self.guided("app-one", "")
+        self.assertEqual(code, 0, out + err)
+        tail = out.rpartition("Next step")[2]
+        self.assertIn("git push -u origin main", tail)
+        self.assertNotIn("sync.py", tail)
+        self.assertEqual(git(self.profile, "remote", "-v"), "")
+
+    def test_a_name_that_is_not_a_folder_name_is_asked_again(self):
+        """Intent: a path or a spaced name is refused and the question repeats."""
+        code, out, err = self.guided("../elsewhere", "", "ok-two", "")
+        data = yaml.safe_load((self.profile / "profile.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(list(data["targets"]), ["ok-two"])
+        self.assertIn("REFUSED", out)
+
+    def test_a_failed_render_keeps_the_profile_and_names_the_step_to_run(self):
+        """Intent: after setup nothing is removed. A render that fails exits non-zero and
+        prints the render command as the step to run next."""
+        with mock.patch("toolboxctl.run_render", side_effect=sync.SyncError("boom")):
+            code, out, err = self.guided("app-one", "")
+        self.assertNotEqual(code, 0)
+        self.assertTrue((self.profile / "core").is_dir())
+        self.assertTrue((self.profile / "profile.yaml").is_file())
+        self.assertNotIn("init did not finish", err)
+        self.assertIn("boom", out + err)
+        self.assertIn("python core/sync.py --profile . --self --write", out + err)
+        self.assertEqual(git(self.profile, "log", "--format=%s").splitlines(),
+                         ["Create the profile"])
+
+    def test_ctrl_c_at_the_targets_prompt_keeps_the_profile(self):
+        """Intent: Ctrl+C after setup is not an undo: the profile stays, exit 130, and the
+        step to run next is named."""
+        with mock.patch("builtins.input", side_effect=KeyboardInterrupt):
+            code, out, err = self.run_init(setup_only=False)
+        self.assertEqual(code, 130)
+        self.assertTrue((self.profile / "profile.yaml").is_file())
+        self.assertNotIn("init did not finish", err)
+        self.assertNotIn("Traceback", out + err)
+        self.assertIn("replace the example targets", out + err)
+
+class InitGuidedNoLock(GuidedFixture):
+    LOCK = False
+
+    def test_a_profile_with_no_lock_stops_and_names_the_lock_step(self):
+        """Intent: an answers file locks no gates, and render refuses without a lock, so the
+        flow stops before it with the lock command as the next step."""
+        code, out, err = self.guided("app-one", "")
+        self.assertNotEqual(code, 0)
+        self.assertIn("python core/consent.py --profile . --init", out + err)
+        self.assertTrue((self.profile / "profile.yaml").is_file())
 
 
 class InitGate2(InitFixture):
