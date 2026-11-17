@@ -52,6 +52,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -995,6 +996,599 @@ class Typecheck(GateCase):
         result = self.run_tsc(0)
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.checked(), ["./tsconfig.app.json", "./tsconfig.node.json"])
+
+
+def path_without(*tools: str, python: bool = True) -> str | None:
+    """A PATH holding only the shell, git and (optionally) python, or None where one of
+    `tools` lives in one of those folders and so cannot be taken away."""
+    dirs: list[str] = []
+    for exe in (SH, shutil.which("python") if python else None, shutil.which("git")):
+        if exe and str(Path(exe).parent) not in dirs:
+            dirs.append(str(Path(exe).parent))
+    path = os.pathsep.join(dirs)
+    if any(shutil.which(tool, path=path) for tool in tools):
+        return None
+    if not python and shutil.which("python", path=path):
+        return None
+    return path
+
+
+class LintCase(GateCase):
+    """Shared by the gates that lint a push against a committed baseline."""
+
+    config_dir = "cfg"
+
+    def baseline(self, tool: str, entries: dict[str, int]) -> None:
+        self.write(f"cfg/lint-baseline/{tool}.json", json.dumps(entries) + "\n")
+
+    def run_without(self, tool: str, *args: str):
+        path = path_without(tool)
+        if path is None:
+            self.skipTest(f"{tool} lives beside python, git or sh here; cannot hide it")
+        with unittest.mock.patch.dict(os.environ, {"PATH": path}):
+            return self.run_gate(*args)
+
+    def assert_nothing_to_check(self, result) -> None:
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Nothing to check", result.stdout)
+
+
+class Ruff(LintCase):
+    gate = "ruff"
+    DIRTY = "import os\n"
+
+    def test_no_python_in_the_push_is_a_pass(self):
+        self.write("notes.txt")
+        self.assert_nothing_to_check(self.run_gate(self.commit()))
+
+    def test_a_missing_ruff_is_refused_with_how_to_install_it(self):
+        self.write("a.py", self.DIRTY)
+        result = self.run_without("ruff", self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("ruff is not installed", result.stdout)
+        self.assertIn("pip install ruff", result.stdout)
+
+    def test_a_missing_ruff_does_not_matter_when_no_python_changed(self):
+        self.write("notes.txt")
+        result = self.run_without("ruff", self.commit())
+        self.assert_nothing_to_check(result)
+
+    def test_a_gate_config_without_a_config_dir_is_refused(self):
+        self.gate_config(deploy_branch="main")
+        self.write("a.py", "x = 1\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("names no config-dir", result.stdout)
+
+    def test_an_unknown_commit_is_refused(self):
+        self.write("a.py", "x = 1\n")
+        self.commit()
+        result = self.run_gate("not-a-commit")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("is not a commit here", result.stdout)
+
+    @unittest.skipUnless(shutil.which("ruff"), "ruff is not installed")
+    def test_clean_python_passes(self):
+        self.write("a.py", "x = 1\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("none new", result.stdout)
+
+    @unittest.skipUnless(shutil.which("ruff"), "ruff is not installed")
+    def test_a_new_finding_is_refused_and_named(self):
+        self.write("a.py", self.DIRTY)
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("1 new finding(s)", result.stdout)
+        self.assertIn("a.py  F401  import os", result.stdout)
+
+    @unittest.skipUnless(shutil.which("ruff"), "ruff is not installed")
+    def test_a_finding_the_baseline_holds_passes(self):
+        self.write("a.py", self.DIRTY)
+        self.baseline("ruff", {"a.py\tF401\timport os": 1})
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("1 known finding(s), none new", result.stdout)
+
+    @unittest.skipUnless(shutil.which("ruff"), "ruff is not installed")
+    def test_a_second_copy_of_a_baselined_finding_is_new(self):
+        self.write("a.py", self.DIRTY + self.DIRTY)
+        self.baseline("ruff", {"a.py\tF401\timport os": 1})
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("1 new finding(s)", result.stdout)
+
+    @unittest.skipUnless(shutil.which("ruff"), "ruff is not installed")
+    def test_a_range_checks_only_the_files_it_changed(self):
+        self.write("old.py", self.DIRTY)
+        base = self.commit()
+        self.write("new.py", "x = 1\n")
+        result = self.run_gate(self.commit("second"), base)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("1 file(s) checked", result.stdout)
+
+    @unittest.skipUnless(shutil.which("ruff"), "ruff is not installed")
+    def test_a_rendered_file_is_not_linted(self):
+        self.write("a.py", "# generated from some-profile@abc1234\n" + self.DIRTY)
+        self.assert_nothing_to_check(self.run_gate(self.commit()))
+
+    @unittest.skipUnless(shutil.which("ruff"), "ruff is not installed")
+    def test_the_vendored_core_is_not_linted(self):
+        self.write("core/VENDORED")
+        self.write("core/a.py", self.DIRTY)
+        self.assert_nothing_to_check(self.run_gate(self.commit()))
+
+    @unittest.skipUnless(shutil.which("ruff"), "ruff is not installed")
+    def test_the_repos_own_ruff_config_decides_what_is_a_finding(self):
+        self.write("a.py", self.DIRTY)
+        self.write("ruff.toml", 'lint.ignore = ["F401"]\n')
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("none new", result.stdout)
+
+    @unittest.skipUnless(shutil.which("ruff"), "ruff is not installed")
+    def test_a_syntax_error_is_a_finding(self):
+        self.write("a.py", "def broken(:\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("invalid-syntax", result.stdout)
+
+
+class Eslint(LintCase):
+    gate = "eslint"
+    CONFIG = "export default [];\n"
+    # A stand-in for the package's own eslint: flags every `debugger` line, so the gate's
+    # wiring is tested without installing the real one.
+    FAKE_ESLINT = (
+        "class ESLint {\n"
+        "  async isPathIgnored() { return false; }\n"
+        "  async calculateConfigForFile() { return {}; }\n"
+        "  async lintText(text) {\n"
+        "    const messages = [];\n"
+        "    text.split('\\n').forEach((l, i) => {\n"
+        "      if (l.includes('debugger')) messages.push({ ruleId: 'no-debugger', line: i + 1 });\n"
+        "    });\n"
+        "    return [{ messages }];\n"
+        "  }\n"
+        "}\n"
+        "module.exports = { ESLint };\n"
+    )
+
+    def install_fake(self, package: str = "") -> None:
+        folder = self.repo / package / "node_modules" / "eslint"
+        folder.mkdir(parents=True)
+        (folder / "package.json").write_text(
+            '{"name":"eslint","version":"0.0.0","main":"index.js"}\n', encoding="utf-8")
+        (folder / "index.js").write_text(self.FAKE_ESLINT, encoding="utf-8")
+
+    def test_no_eslint_config_anywhere_means_nothing_to_check(self):
+        self.write("a.js", "debugger;\n")
+        self.assert_nothing_to_check(self.run_gate(self.commit()))
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_javascript_outside_every_package_with_a_config_is_not_checked(self):
+        self.write("web/eslint.config.js", self.CONFIG)
+        self.write("other/b.js", "debugger;\n")
+        sha = self.commit()
+        self.install_fake("web")
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("1 file(s) checked", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_non_javascript_is_not_checked(self):
+        self.write("eslint.config.js", self.CONFIG)
+        self.write("notes.txt", "debugger;\n")
+        sha = self.commit()
+        self.install_fake()
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("1 file(s) checked", result.stdout)
+
+    def test_a_gate_config_without_a_config_dir_is_refused_once_it_has_work(self):
+        self.gate_config(deploy_branch="main")
+        self.write("eslint.config.js", self.CONFIG)
+        self.write("a.js", "x();\n")
+        sha = self.commit()
+        self.install_fake()
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("names no config-dir", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_a_missing_node_is_refused_with_a_message(self):
+        self.write("eslint.config.js", self.CONFIG)
+        self.write("a.js", "x();\n")
+        result = self.run_without("node", self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("node is not installed", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_a_package_without_node_modules_is_refused_never_passed(self):
+        self.write("eslint.config.js", self.CONFIG)
+        self.write("a.js", "x();\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("eslint is not installed in", result.stdout)
+        self.assertIn("npm ci", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_clean_javascript_passes(self):
+        self.write("eslint.config.js", self.CONFIG)
+        self.write("a.js", "x();\n")
+        sha = self.commit()
+        self.install_fake()
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("none new", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_a_new_finding_is_refused_and_named(self):
+        self.write("eslint.config.js", self.CONFIG)
+        self.write("a.js", "debugger;\n")
+        sha = self.commit()
+        self.install_fake()
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("a.js  no-debugger  debugger;", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_a_finding_the_baseline_holds_passes(self):
+        self.write("eslint.config.js", self.CONFIG)
+        self.write("a.js", "debugger;\n")
+        self.baseline("eslint", {"a.js\tno-debugger\tdebugger;": 1})
+        sha = self.commit()
+        self.install_fake()
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("1 known finding(s), none new", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_a_package_below_the_root_uses_its_own_node_modules(self):
+        self.write("web/eslint.config.js", self.CONFIG)
+        self.write("web/src/a.ts", "debugger;\n")
+        sha = self.commit()
+        self.install_fake("web")
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("web/src/a.ts  no-debugger", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_a_config_edited_since_the_commit_is_refused(self):
+        self.write("eslint.config.js", self.CONFIG)
+        self.write("a.js", "x();\n")
+        sha = self.commit()
+        self.install_fake()
+        self.write("eslint.config.js", "export default [{ rules: {} }];\n")
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("differs from the commit being pushed", result.stdout)
+
+
+class Shellcheck(LintCase):
+    gate = "shellcheck"
+    DIRTY = "#!/bin/sh\nunused=1\n"
+
+    def test_no_shell_in_the_push_is_a_pass(self):
+        self.write("a.py", "x = 1\n")
+        self.assert_nothing_to_check(self.run_gate(self.commit()))
+
+    def test_a_missing_shellcheck_is_refused_with_how_to_install_it(self):
+        self.write("a.sh", self.DIRTY)
+        result = self.run_without("shellcheck", self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("shellcheck is not installed", result.stdout)
+        self.assertIn("apt install shellcheck", result.stdout)
+
+    def test_a_missing_shellcheck_does_not_matter_when_no_shell_changed(self):
+        self.write("a.py", "x = 1\n")
+        self.assert_nothing_to_check(self.run_without("shellcheck", self.commit()))
+
+    @unittest.skipUnless(shutil.which("shellcheck"), "shellcheck is not installed")
+    def test_a_clean_script_passes(self):
+        self.write("a.sh", "#!/bin/sh\necho hi\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("none new", result.stdout)
+
+    @unittest.skipUnless(shutil.which("shellcheck"), "shellcheck is not installed")
+    def test_a_new_warning_is_refused_and_named(self):
+        self.write("a.sh", self.DIRTY)
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("a.sh  SC2034  unused=1", result.stdout)
+
+    @unittest.skipUnless(shutil.which("shellcheck"), "shellcheck is not installed")
+    def test_a_warning_the_baseline_holds_passes(self):
+        self.write("a.sh", self.DIRTY)
+        self.baseline("shellcheck", {"a.sh\tSC2034\tunused=1": 1})
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("1 known finding(s), none new", result.stdout)
+
+    @unittest.skipUnless(shutil.which("shellcheck"), "shellcheck is not installed")
+    def test_an_extensionless_script_with_a_shebang_is_checked(self):
+        self.write("bin/tool", "#!/usr/bin/env bash\nunused=1\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("bin/tool  SC2034", result.stdout)
+
+    @unittest.skipUnless(shutil.which("shellcheck"), "shellcheck is not installed")
+    def test_an_extensionless_file_without_a_shell_shebang_is_not_checked(self):
+        self.write("bin/tool", "#!/usr/bin/env python3\nunused = 1\n")
+        self.assert_nothing_to_check(self.run_gate(self.commit()))
+
+    @unittest.skipUnless(shutil.which("shellcheck"), "shellcheck is not installed")
+    def test_a_style_note_below_warning_is_not_a_finding(self):
+        self.write("a.sh", '#!/bin/sh\necho $HOME\n')
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    @unittest.skipUnless(shutil.which("shellcheck"), "shellcheck is not installed")
+    def test_a_rendered_script_is_not_checked(self):
+        self.write("a.sh", "#!/bin/sh\n# generated from some-profile@abc1234\nunused=1\n")
+        self.assert_nothing_to_check(self.run_gate(self.commit()))
+
+    @unittest.skipUnless(shutil.which("shellcheck"), "shellcheck is not installed")
+    def test_the_vendored_core_is_not_checked(self):
+        self.write("core/VENDORED")
+        self.write("core/a.sh", self.DIRTY)
+        self.assert_nothing_to_check(self.run_gate(self.commit()))
+
+
+class RunExpressions(GateCase):
+    gate = "run-expressions"
+    EXPR = "${{ github.event.head_commit.message }}"
+
+    def workflow(self, steps: str, path: str = ".github/workflows/ci.yml") -> None:
+        self.write(path, "name: ci\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+                         f"    steps:\n{steps}")
+
+    def test_no_workflows_is_a_pass(self):
+        self.write("a.py", "x = 1\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Nothing to check", result.stdout)
+
+    def test_a_missing_commit_argument_is_refused(self):
+        self.workflow("      - run: echo hi\n")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("REFUSED", result.stdout)
+
+    def test_an_unknown_commit_is_refused(self):
+        self.workflow("      - run: echo hi\n")
+        self.commit()
+        result = self.run_gate("not-a-commit")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("REFUSED", result.stdout)
+
+    def test_a_workflow_without_expressions_in_scripts_passes(self):
+        self.workflow("      - run: echo hi\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("1 workflow/action file(s)", result.stdout)
+
+    def test_an_expression_in_a_one_line_run_is_refused_with_its_line(self):
+        self.workflow(f'      - run: echo "{self.EXPR}"\n')
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(".github/workflows/ci.yml:7:", result.stdout)
+        self.assertIn("env:", result.stdout)
+
+    def test_an_expression_in_a_block_run_is_refused(self):
+        self.workflow(f"      - run: |\n          echo start\n          echo {self.EXPR}\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("ci.yml:9:", result.stdout)
+
+    def test_an_expression_in_a_folded_run_is_refused(self):
+        self.workflow(f"      - run: >-\n          echo {self.EXPR}\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_an_expression_in_env_or_with_is_fine(self):
+        self.workflow(f"      - uses: some/action@v1\n        with:\n          text: {self.EXPR}\n"
+                      f"      - env:\n          MSG: {self.EXPR}\n        run: echo \"$MSG\"\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_defaults_run_mapping_is_not_a_script(self):
+        self.write(".github/workflows/ci.yml",
+                   "name: ci\non: push\ndefaults:\n  run:\n    shell: bash\n"
+                   "    working-directory: ${{ github.workspace }}\n"
+                   "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_composite_action_is_scanned_too(self):
+        self.write(".github/actions/one/action.yml",
+                   "name: one\nruns:\n  using: composite\n  steps:\n"
+                   f"    - shell: bash\n      run: echo {self.EXPR}\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(".github/actions/one/action.yml", result.stdout)
+
+    def test_a_workflow_source_without_the_github_folder_is_scanned(self):
+        self.workflow(f'      - run: echo "{self.EXPR}"\n', path="workflows/ci.yml")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_the_commit_is_read_not_the_working_tree(self):
+        self.workflow("      - run: echo hi\n")
+        sha = self.commit()
+        self.workflow(f'      - run: echo "{self.EXPR}"\n')
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+
+_PYTHON = shutil.which("python")
+PYTHON_HAS_YAML = bool(_PYTHON) and subprocess.run(
+    [_PYTHON, "-c", "import yaml"], capture_output=True).returncode == 0
+
+
+class SelfRender(GateCase):
+    gate = "self-render"
+    # A stand-in for the core's sync.py: it reports how it was called and where it ran.
+    PASSING_SYNC = ("import os, sys\n"
+                    "print('args', ' '.join(sys.argv[1:]))\n"
+                    "print('profile.yaml here', os.path.exists('profile.yaml'))\n")
+    FAILING_SYNC = "import sys\nprint('rendered copies are stale')\nsys.exit(1)\n"
+
+    @staticmethod
+    def has_yaml() -> bool:
+        python = shutil.which("python")
+        return bool(python) and subprocess.run(
+            [python, "-c", "import yaml"], capture_output=True).returncode == 0
+
+    def profile(self, sync_text: str) -> str:
+        self.write("profile.yaml", "name: synthetic\n")
+        self.write("core/sync.py", sync_text)
+        return self.commit()
+
+    def test_a_repo_that_is_not_a_profile_source_passes_as_not_applicable(self):
+        self.write("a.py", "x = 1\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Not a profile source repository", result.stdout)
+
+    def test_a_core_without_a_profile_manifest_is_not_applicable(self):
+        self.write("core/sync.py", self.PASSING_SYNC)
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Not a profile source repository", result.stdout)
+
+    def test_a_manifest_without_a_core_is_not_applicable(self):
+        self.write("profile.yaml", "name: synthetic\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Not a profile source repository", result.stdout)
+
+    def test_no_commit_is_refused(self):
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("no commit to check was given", result.stdout)
+
+    def test_a_non_hex_commit_is_refused(self):
+        result = self.run_gate("HEAD; rm")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("no commit to check was given", result.stdout)
+
+    def test_no_python_with_yaml_is_refused_never_passed(self):
+        sha = self.profile(self.PASSING_SYNC)
+        path = path_without(python=False)
+        if path is None:
+            self.skipTest("python lives beside git or sh here; cannot hide it")
+        with unittest.mock.patch.dict(os.environ, {"PATH": path}):
+            result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("no python that can import yaml", result.stdout)
+
+    @unittest.skipUnless(PYTHON_HAS_YAML, "python cannot import yaml")
+    def test_rendered_copies_that_match_pass(self):
+        result = self.run_gate(self.profile(self.PASSING_SYNC))
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    @unittest.skipUnless(PYTHON_HAS_YAML, "python cannot import yaml")
+    def test_rendered_copies_that_drifted_are_refused_with_the_fix(self):
+        result = self.run_gate(self.profile(self.FAILING_SYNC))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("rendered copies are stale", result.stdout)
+        self.assertIn("Run: python core/sync.py --profile . --self --write", result.stdout)
+
+    @unittest.skipUnless(PYTHON_HAS_YAML, "python cannot import yaml")
+    def test_the_core_is_called_to_check_offline_from_the_checked_out_commit(self):
+        result = self.run_gate(self.profile(self.PASSING_SYNC))
+        self.assertIn("args --profile . --self --check --no-fetch", result.stdout)
+        self.assertIn("profile.yaml here True", result.stdout)
+
+    @unittest.skipUnless(PYTHON_HAS_YAML, "python cannot import yaml")
+    def test_the_commit_is_checked_not_the_working_tree(self):
+        sha = self.profile(self.PASSING_SYNC)
+        self.write("core/sync.py", self.FAILING_SYNC)
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    @unittest.skipUnless(PYTHON_HAS_YAML, "python cannot import yaml")
+    def test_a_hex_commit_the_repo_does_not_hold_is_not_applicable(self):
+        self.profile(self.PASSING_SYNC)
+        result = self.run_gate("0123456789abcdef0123456789abcdef01234567")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Not a profile source repository", result.stdout)
+
+
+class TestProvenance(GateCase):
+    gate = "test-provenance"
+
+    def test_a_missing_commit_argument_is_refused(self):
+        self.write("a.py")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("is not a commit here", result.stdout)
+
+    def test_a_root_commit_has_nothing_to_compare_and_passes(self):
+        self.write("tests/test_a.py", "def test_a():\n    assert 1\n")
+        result = self.run_gate(self.commit())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("1 commit(s), 0 flagged", result.stdout)
+
+    def test_an_edited_assertion_beside_a_source_change_is_flagged_but_never_blocks(self):
+        self.write("tests/test_a.py", "def test_a():\n    assert f() == 1\n")
+        self.write("src/a.py", "def f():\n    return 1\n")
+        base = self.commit()
+        self.write("tests/test_a.py", "def test_a():\n    assert f() == 2\n")
+        self.write("src/a.py", "def f():\n    return 2\n")
+        result = self.run_gate(self.commit("change both"), base)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("1 flagged", result.stdout)
+        self.assertIn("change both: 1 assertion line(s) edited beside src/a.py", result.stdout)
+        self.assertIn("never blocks", result.stdout)
+
+    def test_an_edited_assertion_with_no_source_change_is_not_flagged(self):
+        self.write("tests/test_a.py", "def test_a():\n    assert f() == 1\n")
+        base = self.commit()
+        self.write("tests/test_a.py", "def test_a():\n    assert f() == 2\n")
+        result = self.run_gate(self.commit("tests only"), base)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("1 commit(s), 0 flagged", result.stdout)
+
+    def test_a_source_change_with_an_untouched_assertion_is_not_flagged(self):
+        self.write("tests/test_a.py", "def test_a():\n    assert f() == 1\n")
+        self.write("src/a.py", "def f():\n    return 1\n")
+        base = self.commit()
+        self.write("src/a.py", "def f():\n    return 1  # tidy\n")
+        result = self.run_gate(self.commit("source only"), base)
+        self.assertIn("0 flagged", result.stdout)
+
+    def test_added_tests_and_markers_are_counted(self):
+        self.write("tests/test_a.py", "def test_a():\n    assert 1\n")
+        base = self.commit()
+        self.write("tests/test_a.py", "def test_a():\n    assert 1\n\n\n"
+                                      "def test_b():\n    \"\"\"Intent: b holds.\"\"\"\n"
+                                      "    assert 1\n\n\n"
+                                      "def test_c():\n    # Characterisation: c as it is.\n"
+                                      "    assert 1\n")
+        result = self.run_gate(self.commit("add tests"), base)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Tests added: 2; markers: 1 Intent, 1 Characterisation", result.stdout)
+
+    def test_every_commit_of_a_range_is_examined(self):
+        self.write("a.txt")
+        base = self.commit()
+        self.write("a.txt", "1\n")
+        self.commit("one")
+        self.write("a.txt", "2\n")
+        result = self.run_gate(self.commit("two"), base)
+        self.assertIn("2 commit(s)", result.stdout)
+
+    def test_a_non_test_file_with_an_assert_is_not_a_test_edit(self):
+        self.write("src/a.py", "assert True\n")
+        base = self.commit()
+        self.write("src/a.py", "assert False\n")
+        result = self.run_gate(self.commit("source"), base)
+        self.assertIn("0 flagged", result.stdout)
 
 
 class PrePushCase(GateCase):
