@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_secret_shapes.py
 # Created by: Ryan Severe
 # Created: 2026-11-16
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-17
 # Description: Tests for githooks/lib/secret_shapes.py, the one source of the
 #              credential shapes. find() reports each shape and skips
 #              placeholders, the opt-out and clean lines; the command line
@@ -128,7 +128,6 @@ class Find(unittest.TestCase):
     def test_assignment_near_misses_are_not_reported(self):
         for line in (
             f"API_KEY={LONG[:23]}",  # one short of the length
-            f"api_key={LONG}",  # the name is upper case
             f"KEYBOARD={LONG}",  # the name must end in the word
             f"API_KEY_PATH={LONG}",
             f"x = API_KEY={LONG}",  # anchored to the start of the line
@@ -138,12 +137,20 @@ class Find(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(self.shapes.find([line]), [])
 
+    def test_a_lowercase_name_is_a_keyed_hit_not_a_near_miss(self):
+        self.assertEqual(self.shapes.find([f"api_key={LONG}"]), [(1, "keyed")])
+
     def test_a_placeholder_value_is_not_reported(self):
-        for word in ("your", "change", "example", "placeholder", "dummy", "sample", "xxxx",
-                     "<", "ci-", "test", "fake", "YOUR", "Example"):
-            line = f"API_KEY=aaaa{word}aaaaaaaaaaaaaaaaaaaaaaaa"
-            with self.subTest(word=word):
+        for value in ("your-api-key-here-1234", "example_token_value_1",
+                      "ci-validation-placeholder-value", "a1-dummy-b2-" + "c" * 12,
+                      "a1.sample.b2." + "c" * 12, "fake-a1-b2-" + "c" * 14,
+                      "a1_test_b2_" + "c" * 14, "a1-xxxx-b2-" + "c" * 14):
+            line = f"API_KEY={value}"
+            with self.subTest(value=value):
                 self.assertEqual(self.shapes.find([line]), [])
+
+    def test_a_placeholder_word_buried_in_a_random_part_is_now_reported(self):
+        self.assertEqual(self.shapes.find(["API_KEY=aaaa" + "test" + "a1" * 12]), [(1, "assign")])
 
     def test_a_placeholder_does_not_excuse_a_hex_token_or_a_key_header(self):
         self.assertEqual(self.shapes.find([f"fake {HEX} test"]), [(1, "hex")])
@@ -161,6 +168,152 @@ class Find(unittest.TestCase):
     def test_a_line_with_two_shapes_reports_both(self):
         found = self.shapes.find([f"API_KEY={LONG} {HEX}"])
         self.assertEqual(sorted(found), [(1, "assign"), (1, "hex")])
+
+
+# Provider-shaped values, built from parts so no line of this file matches a shape.
+GH_TOKEN = "gh" + "p_" + "A1b2" * 9  # 36 characters after the prefix
+AWS_ID = "AK" + "IA" + "ABCDEFGHIJKLMNOP"
+ANT_TOKEN = "sk" + "-ant-" + "api03-" + "Zx9" * 20
+URL_PASSWORD = "S3cret" + "Passw0rd"
+KEYED_VALUE = "Rt5Yu8Io" * 3  # 24 characters
+
+
+class NewShapes(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.shapes = load()
+
+    def shapes_of(self, line: str) -> list[str]:
+        return self.shapes.shapes_in(line)
+
+    def test_the_new_names_follow_the_existing_three_in_order(self):
+        self.assertEqual(self.shapes.SHAPES,
+                         ("hex", "privkey", "assign", "provider", "keyed", "urlcred"))
+
+    def test_a_lowercase_python_assignment_is_keyed_and_provider(self):
+        self.assertEqual(self.shapes_of(f'api_key = "{GH_TOKEN}"'), ["provider", "keyed"])
+
+    def test_a_json_member_is_caught(self):
+        self.assertEqual(self.shapes_of(f'  "token": "{GH_TOKEN}",'), ["provider", "keyed"])
+
+    def test_an_authorization_header_is_caught(self):
+        line = f'curl -H "Authorization: token {GH_TOKEN}"'
+        self.assertIn("provider", self.shapes_of(line))
+
+    def test_an_anthropic_token_under_a_name_without_key_is_caught(self):
+        self.assertEqual(self.shapes_of(f"ANTHROPIC={ANT_TOKEN}"), ["provider"])
+
+    def test_an_aws_access_key_id_is_caught(self):
+        self.assertEqual(self.shapes_of(f"aws_access_key_id = {AWS_ID}"), ["provider"])
+
+    def test_a_url_with_a_password_is_caught(self):
+        line = 'url = "https://bob:' + URL_PASSWORD + '@db.example.org"'
+        self.assertEqual(self.shapes_of(line), ["urlcred"])
+
+    def test_the_uppercase_assignment_is_still_caught(self):
+        self.assertIn("assign", self.shapes_of(f"GITHUB_TOKEN={GH_TOKEN}"))
+
+    def test_a_placeholder_word_inside_a_random_value_does_not_excuse_it(self):
+        value = "ghp_" + "A1b2" * 4 + "test" + "C3d4" * 4
+        self.assertEqual(self.shapes_of(f"GITHUB_TOKEN={value}"), ["assign", "provider"])
+
+    def test_each_other_provider_prefix_is_caught(self):
+        for value in (
+            "github_pat_" + "A1b2C3d4" * 8,
+            "sk-" + "A1b2C3d4e5" * 4,
+            "xox" + "b-" + "1234567890" + "-abc",
+            "AI" + "za" + "A1b2C3d4" * 4 + "xyz",
+            "ey" + "J" + "hbGciOiJIUzI1" + "." + "eyJzdWIiOiIxMjM0" + "." + "SflKxwRJSMeKKF2Q",
+            "xox" + "p-" + "1234567890",
+            "ASIA" + "ABCDEFGHIJKLMNOP",
+            "gh" + "s_" + "A1b2" * 9,
+        ):
+            with self.subTest(value=value[:6]):
+                self.assertIn("provider", self.shapes_of(f"see {value} here"))
+
+    def test_an_empty_line_or_an_empty_value_is_not_a_hit(self):
+        for line in ("", 'api_key = ""', "api_key ="):
+            with self.subTest(line=line):
+                self.assertEqual(self.shapes_of(line), [])
+
+    def test_the_length_boundaries(self):
+        self.assertEqual(self.shapes_of("x gh" + "p_" + "a" * 35), [])
+        self.assertEqual(self.shapes_of("x gh" + "p_" + "a" * 36), ["provider"])
+        self.assertEqual(self.shapes_of("api_key = " + "A1" * 11 + "b"), [])  # 23
+        self.assertEqual(self.shapes_of("api_key = " + "A1" * 12), ["keyed"])  # 24
+        self.assertEqual(self.shapes_of("AK" + "IA" + "A" * 15), [])
+
+    def test_a_git_sha_and_a_uuid_are_not_hits(self):
+        for line in ("commit " + "0123456789abcdef0123456789abcdef01234567",
+                     "id 123e4567-e89b-12d3-a456-426614174000"):
+            with self.subTest(line=line):
+                self.assertEqual(self.shapes_of(line), [])
+
+    def test_a_url_without_a_password_or_with_an_interpolation_is_not_a_hit(self):
+        for line in ("https://user@host/x",
+                     "git clone https://user:${GH_TOKEN}@host/x",
+                     "git clone https://user:$GH_TOKEN@host/x",
+                     "git clone https://user:%GH_TOKEN%@host/x",
+                     "git clone https://user:{{ token }}@host/x",
+                     "https://user:@host/x"):
+            with self.subTest(line=line):
+                self.assertEqual(self.shapes_of(line), [])
+
+    def test_a_short_sk_class_name_is_not_a_hit(self):
+        self.assertEqual(self.shapes_of('<div class="sk-loader">'), [])
+
+    def test_a_path_value_is_not_a_hit(self):
+        line = 'EXAMPLE_KEY="/usr/share/keyrings/example-archive-keyring.gpg"'
+        self.assertEqual(self.shapes_of(line), [])
+
+    def test_a_value_with_a_whole_placeholder_part_or_no_digit_is_not_a_hit(self):
+        for line in ("RUNNER_API_KEY=ci-validation-placeholder-value",
+                     'TOKEN = "fake-token-1234567890abcdefghij"',
+                     "API_KEY=your-api-key-goes-here-1234567",
+                     "api_key = " + "a" * 24,
+                     "api_key = " + "7" * 24):
+            with self.subTest(line=line):
+                self.assertEqual(self.shapes_of(line), [])
+
+    def test_a_checksum_named_key_is_not_a_hit(self):
+        line = 'PVE_KEY_SHA512="' + "0123456789abcdef" * 8 + '"'
+        self.assertEqual(self.shapes_of(line), [])
+
+    def test_a_line_with_several_shapes_reports_each_once_in_order(self):
+        line = f"API_KEY={GH_TOKEN} {HEX} https://bob:{URL_PASSWORD}@host"
+        self.assertEqual(self.shapes_of(line),
+                         ["hex", "assign", "provider", "urlcred"])
+
+    def test_keyed_is_never_reported_beside_assign(self):
+        self.assertEqual(self.shapes_of(f"API_KEY={KEYED_VALUE}"), ["assign"])
+        self.assertEqual(self.shapes_of("KEY=" + "a" * 24), ["assign"])
+
+    def test_keyed_names_by_their_last_part(self):
+        for line in (f"api_key={KEYED_VALUE}", f"apiKey: {KEYED_VALUE}",
+                     f"db.password = {KEYED_VALUE}", f"const authToken = '{KEYED_VALUE}'"):
+            with self.subTest(line=line[:12]):
+                self.assertEqual(self.shapes_of(line), ["keyed"])
+        for line in (f"KEYBOARD={KEYED_VALUE}", f"API_KEY_PATH={KEYED_VALUE}",
+                     f"x = API_KEY={KEYED_VALUE}", f"commit_sha_key = {KEYED_VALUE}",
+                     'alert_key = "arr_sonarr_pending_import"'):
+            with self.subTest(line=line[:12]):
+                self.assertEqual(self.shapes_of(line), [])
+
+    def test_a_buried_placeholder_word_is_reported_and_whole_parts_are_not(self):
+        buried = "A1b2" * 3 + "test" + "C3d4" * 3
+        self.assertEqual(self.shapes_of(f"api_key = {buried}"), ["keyed"])
+        for value in ("your-api-key-here-1234", "example_token_value_1",
+                      "ci-validation-placeholder-value", "dummy" + "-value-1234567890123456"):
+            with self.subTest(value=value):
+                self.assertEqual(self.shapes_of(f"api_key = {value}"), [])
+
+    def test_the_opt_out_applies_to_every_new_shape(self):
+        for line in (f'api_key = "{GH_TOKEN}"  # secret-scan: allow',
+                     f"ANTHROPIC={ANT_TOKEN}  # secret-scan: allow",
+                     f"https://bob:{URL_PASSWORD}@host  # secret-scan: allow",
+                     f"api_key = {KEYED_VALUE}  # secret-scan: allow"):
+            with self.subTest(line=line[:12]):
+                self.assertEqual(self.shapes_of(line), [])
 
 
 class CommandLine(unittest.TestCase):
