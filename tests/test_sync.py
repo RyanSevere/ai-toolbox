@@ -1490,6 +1490,32 @@ class HooksJsonLocal(unittest.TestCase):
         self.assertNotIn(".cursor/hooks.json", compared[0])
 
 
+class CursorRoutingRule(unittest.TestCase):
+    """Intent: ai-toolbox#112. The routing-line rule is core method rendered to Cursor only,
+    by its `tools: [cursor]` front matter."""
+
+    RULE = "cursor-routing"
+
+    def plan(self, tools: list[str]) -> dict[str, str]:
+        defaults = {**DEFAULTS, "tier1": list(DEFAULTS.get("tier1", [])) + [self.RULE]}
+        return build_plan("t", {}, defaults, SHA, {**MANIFEST, "tools": tools},
+                          profile_dir=EXAMPLE)
+
+    def test_it_renders_into_cursor_rules(self):
+        plan = self.plan(["claude", "cursor", "copilot"])
+        self.assertIn(f".cursor/rules/{self.RULE}.mdc", plan)
+        self.assertIn("STAY HERE", plan[f".cursor/rules/{self.RULE}.mdc"])
+
+    def test_it_renders_into_no_other_tools_rule_folder(self):
+        plan = self.plan(["claude", "cursor", "copilot"])
+        others = [p for p in plan if self.RULE in p and not p.startswith(".cursor/rules/")]
+        self.assertEqual([], others)
+
+    def test_a_profile_without_cursor_renders_no_copy(self):
+        plan = self.plan(["claude"])
+        self.assertEqual([], [p for p in plan if self.RULE in p])
+
+
 class ClaudeSettings(unittest.TestCase):
     """Intent: hooks/README.md, "Claude Code adapter". One committed, machine-independent
     .claude/settings.json: hook entries in Claude Code's shape, the permission rules from the
