@@ -49,6 +49,8 @@
 
 from __future__ import annotations
 
+import importlib.abc
+import importlib.util
 import json
 import os
 import re
@@ -128,10 +130,31 @@ def use(folder: Path) -> None:
     select_tests.DEPMAP = TESTS / "depmap.json"
 
 
+class _Pinned(importlib.abc.MetaPathFinder):
+    """Resolve a top-level module found in the folder under test to that folder's file,
+    whatever order sys.path is in. A profile test module that puts the core's tests folder
+    first on sys.path would otherwise be replaced by a core module of the same name."""
+
+    def __init__(self, folder: Path):
+        self.folder = folder
+
+    def find_spec(self, name, path=None, target=None):
+        file = self.folder / f"{name}.py"
+        if path is None and "." not in name and file.is_file():
+            return importlib.util.spec_from_file_location(name, file)
+        return None
+
+
+def pin(folder: Path) -> None:
+    sys.meta_path[:] = [f for f in sys.meta_path if not isinstance(f, _Pinned)]
+    sys.meta_path.insert(0, _Pinned(folder))
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--tests"] and len(argv) >= 2:
         use(Path(argv[1]))
         argv = argv[2:]
+        pin(TESTS)
     if argv == ["--measure"]:
         sys.path.insert(0, str(TESTS))
         return measure(classes(unittest.defaultTestLoader.discover(str(TESTS))))
