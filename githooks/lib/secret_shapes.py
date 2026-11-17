@@ -7,9 +7,12 @@
 # Last Updated: 2026-11-17
 # Description: The one source of the credential shapes, read by the push gate
 #              and by the write-time observer hook. find(lines) reports a
-#              private key header, a bare 32-hex token, and an env-style
+#              private key header, a bare 32-hex token, an env-style
 #              NAME=value where NAME ends in KEY, TOKEN, SECRET, PASSWORD or
-#              PASSWD and the value is long and not a placeholder. Heuristic
+#              PASSWD, a known provider token prefix anywhere in a line, a
+#              secret-named assignment in any case and common syntax, and a
+#              URL carrying a password. Values that are paths or name
+#              themselves as placeholders are excused. Heuristic
 #              by design: a line can opt out with 'secret-scan: allow'. As a
 #              command line it reads 'path:line: text' lines on stdin, prints
 #              'path:line: <shape>' per hit - where, never what - and exits 1

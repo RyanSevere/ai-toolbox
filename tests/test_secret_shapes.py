@@ -276,7 +276,7 @@ class NewShapes(unittest.TestCase):
                 self.assertEqual(self.shapes_of(line), [])
 
     def test_a_checksum_named_key_is_not_a_hit(self):
-        line = 'PVE_KEY_SHA512="' + "0123456789abcdef" * 8 + '"'
+        line = 'REPO_KEY_SHA512="' + "0123456789abcdef" * 8 + '"'
         self.assertEqual(self.shapes_of(line), [])
 
     def test_a_line_with_several_shapes_reports_each_once_in_order(self):
@@ -295,7 +295,7 @@ class NewShapes(unittest.TestCase):
                 self.assertEqual(self.shapes_of(line), ["keyed"])
         for line in (f"KEYBOARD={KEYED_VALUE}", f"API_KEY_PATH={KEYED_VALUE}",
                      f"x = API_KEY={KEYED_VALUE}", f"commit_sha_key = {KEYED_VALUE}",
-                     'alert_key = "arr_sonarr_pending_import"'):
+                     'alert_key = "app_queue_pending_import_check"'):
             with self.subTest(line=line[:12]):
                 self.assertEqual(self.shapes_of(line), [])
 
