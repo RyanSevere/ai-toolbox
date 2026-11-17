@@ -2190,11 +2190,50 @@ class StopHook(unittest.TestCase):
     def hook(self, message, **extra) -> str:
         return json.dumps({"last_assistant_message": message, **extra})
 
-    def test_a_malformed_reply_exits_2_with_findings_on_stderr(self):
-        code, out, err = self.run_stop(self.hook(K_MARKER + "\nLooks fine to me."))
+    DECISION_FINDING = CONDENSED_CLEAN.replace(
+        "  - Use case: decides what the next session builds\n", "")
+    FORMATTING_ONLY = CONDENSED_CLEAN.replace(
+        "The live state matches the seed:", "- The live state matches the seed:")
+
+    def test_a_reply_with_only_formatting_findings_exits_0_and_reports_them(self):
+        code, out, err = self.run_stop(self.hook(K_MARKER + "\n" + self.FORMATTING_ONLY))
+        self.assertEqual(code, 0)
+        self.assertIn("Compliance: FAIL", err)
+        self.assertIn("  - ", err)
+        self.assertNotIn("decisions:", err)
+        self.assertEqual(out, "")
+
+    def test_a_missing_marker_alone_is_report_only(self):
+        code, _, err = self.run_stop(self.hook(CONDENSED_CLEAN))
+        self.assertEqual(code, 0)
+        self.assertIn("  - reply marker missing", err)
+
+    def test_a_decision_finding_exits_2_with_findings_on_stderr(self):
+        code, out, err = self.run_stop(self.hook(K_MARKER + "\n" + self.DECISION_FINDING))
         self.assertEqual(code, 2)
         self.assertIn("Compliance: FAIL", err)
+        self.assertIn("  - decisions:", err)
         self.assertEqual(out, "")
+
+    def test_one_decision_finding_among_formatting_findings_exits_2(self):
+        reply = self.DECISION_FINDING.replace(
+            "The live state matches the seed:", "- The live state matches the seed:")
+        code, _, err = self.run_stop(self.hook(reply))
+        self.assertEqual(code, 2)
+        self.assertIn("  - reply marker missing", err)
+        self.assertIn("  - decisions:", err)
+
+    def test_a_decision_finding_with_stop_hook_active_exits_0_and_still_reports(self):
+        code, _, err = self.run_stop(self.hook(
+            K_MARKER + "\n" + self.DECISION_FINDING, stop_hook_active=True))
+        self.assertEqual(code, 0)
+        self.assertIn("  - decisions:", err)
+
+    def test_several_decision_findings_exit_2_once(self):
+        reply = self.DECISION_FINDING.replace("  - Recommendation:", "  - Recommendatio:")
+        code, _, err = self.run_stop(self.hook(K_MARKER + "\n" + reply))
+        self.assertEqual(code, 2)
+        self.assertGreater(err.count("  - decisions:"), 1)
 
     def test_a_clean_reply_exits_0_silently(self):
         code, out, err = self.run_stop(self.hook(K_MARKER + "\n" + CONDENSED_CLEAN))
@@ -2202,14 +2241,22 @@ class StopHook(unittest.TestCase):
 
     def test_findings_with_stop_hook_active_exit_0_but_still_report(self):
         code, out, err = self.run_stop(
-            self.hook(K_MARKER + "\nLooks fine to me.", stop_hook_active=True))
+            self.hook(K_MARKER + "\n" + self.DECISION_FINDING, stop_hook_active=True))
         self.assertEqual(code, 0)
         self.assertIn("Compliance: FAIL", err)
 
     def test_stop_hook_active_false_still_blocks(self):
         code, _, _ = self.run_stop(
-            self.hook(K_MARKER + "\nLooks fine to me.", stop_hook_active=False))
+            self.hook(K_MARKER + "\n" + self.DECISION_FINDING, stop_hook_active=False))
         self.assertEqual(code, 2)
+
+    def test_sends_back_is_true_only_at_the_start_of_a_finding(self):
+        self.assertTrue(shape.sends_back("decisions: 'DC1' missing 'Use case'"))
+        self.assertFalse(shape.sends_back("summary mentions decisions: here"))
+        self.assertFalse(shape.sends_back("decisionsandclarifications: item has no ID"))
+        self.assertFalse(shape.sends_back("reply marker missing"))
+        for prefix in shape.SEND_BACK_PREFIXES:
+            self.assertTrue(shape.sends_back(prefix + " anything"))
 
     def test_the_reply_starts_at_the_last_marker(self):
         message = f"{K_MARKER}\nLooks fine to me.\nmore\n{K_MARKER}\n{CONDENSED_CLEAN}"
@@ -2221,7 +2268,7 @@ class StopHook(unittest.TestCase):
         self.assertEqual((code, out, err), (0, "", ""))
 
     def test_no_marker_grades_the_whole_message_and_adds_the_finding(self):
-        code, _, err = self.run_stop(self.hook(CONDENSED_CLEAN))
+        code, _, err = self.run_stop(self.hook(self.DECISION_FINDING))
         self.assertEqual(code, 2)
         self.assertIn("  - reply marker missing", err)
 
