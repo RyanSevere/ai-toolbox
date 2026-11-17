@@ -71,5 +71,6 @@ Not everything is. A skill for something done once is overhead.
 | `spec-gate` | Check an agent-ready ticket or a factory `SPEC.md` against the spec format, refusing every rule it breaks |
 | `exchange` | Coordinate chats live in one repository at once through an exchange log, appending through a locked tool so no entry is lost |
 | `delegate` | Hand settled work to a subagent through a written brief, and review its result before anything ships |
+| `route-change` | Decide whether a change to rule source belongs in the core or a profile, and audit a profile's seeds for items that read as core |
 
 A profile documents its own skills in a `README.md` beside their seeds.
