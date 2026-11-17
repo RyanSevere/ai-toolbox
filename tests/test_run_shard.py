@@ -161,5 +161,34 @@ class SelectedLine(unittest.TestCase):
         self.assertTrue(line.endswith("and 20 more"), line)
 
 
+class ProfileModuleShadowing(unittest.TestCase):
+    """ai-toolbox#92: a profile test module named like a core one must still be the one run."""
+
+    def test_a_profile_module_named_like_a_core_module_is_not_replaced(self):
+        """Intent: a profile whose earlier module puts the core's tests folder first on
+        sys.path (to reach a core helper) still has its own test_gates run, not the core's."""
+        import subprocess
+        import tempfile
+
+        core_tests = Path(run_shard.__file__).resolve().parent
+        self.assertTrue((core_tests / "test_gates.py").is_file())
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "tests"
+            folder.mkdir()
+            (folder / "test_a_helper.py").write_text(
+                "import sys\n"
+                f"sys.path.insert(0, {str(core_tests)!r})\n", encoding="utf-8")
+            (folder / "test_gates.py").write_text(
+                "import unittest\n\n\n"
+                "class ProfileOwn(unittest.TestCase):\n"
+                "    def test_it(self):\n"
+                "        pass\n", encoding="utf-8")
+            done = subprocess.run([sys.executable, "-B", str(core_tests / "run_shard.py"),
+                                   "--tests", str(folder), "1/1"],
+                                  capture_output=True, text=True, cwd=tmp)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("test_gates.ProfileOwn", done.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

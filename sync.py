@@ -726,15 +726,38 @@ def check_hooks_launch(rel: str, content: str, windows: bool) -> None:
 CLAUDE_PROBE = "python -c pass"
 
 
+def windows_git_bash() -> str | None:
+    """The bash Claude Code runs a hook under on Windows: Git for Windows' bash, not the first
+    `bash` on PATH, which can be WSL's stub under WindowsApps. In order: the path in
+    CLAUDE_CODE_GIT_BASH_PATH, the bash beside the git installation found from `git` on PATH,
+    then a `bash` on PATH that is not under WindowsApps."""
+    override = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if override and Path(override).is_file():
+        return override
+    git = shutil.which("git")
+    if git:
+        # git.exe sits in <root>\cmd, <root>\bin or <root>\mingw64\bin.
+        for parent in list(Path(git).parents)[:3]:
+            candidate = parent / "bin" / "bash.exe"
+            if candidate.is_file():
+                return str(candidate)
+    bash = shutil.which("bash")
+    if bash and "windowsapps" not in bash.replace("\\", "/").lower().split("/"):
+        return bash
+    return None
+
+
 def claude_launch_shell(windows: bool) -> list[str]:
     """The shell Claude Code runs a hook command under: bash on Windows, sh elsewhere."""
     if not windows:
         return ["sh", "-c"]
-    bash = shutil.which("bash")
+    bash = windows_git_bash()
     if not bash:
-        raise SyncError("bash is not on PATH, and Claude Code runs a hook command under bash "
-                        "on Windows, so `python` cannot be checked to launch. Install Git for "
-                        "Windows (or put bash on PATH), then re-run --write")
+        raise SyncError("Git for Windows' bash was not found, and Claude Code runs a hook "
+                        "command under it on Windows, so `python` cannot be checked to launch. "
+                        "Install Git for Windows, or set CLAUDE_CODE_GIT_BASH_PATH to its "
+                        "bash.exe (a bash under WindowsApps is WSL's stub and is not used), "
+                        "then re-run --write")
     return [bash, "-c"]
 
 
