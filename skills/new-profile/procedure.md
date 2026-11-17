@@ -26,11 +26,21 @@ paraphrase it from memory.
 ## Steps
 
 1. Read the runbook and run its steps in order, each in the shell and folder it names.
-2. `init` asks setup's questions at the console: identity, the source repository, key and
-   owner, the leak-gate lists, then the capability questions. **The operator answers
-   them**; do not invent any answer, and setup refuses an example value left in place. If
-   the operator supplies an answers file, pass it with `--answers`.
-3. Stop after the render for the operator to review before the commit and push.
+2. Draft the answers. You may research and draft every answer except identity: the source
+   repository, key and owner, the leak-gate lists, and the capability questions (a
+   tracker's fields, statuses and access, for example). **Identity is the operator's.** The
+   operator always types the commit name and email; never draft, guess or copy them from
+   git config into a file.
+3. Show each draft answer to the operator with its source (the page, file or command you
+   took it from, or "no source: your decision"). Change a draft until the operator
+   confirms it. Setup refuses an example value left in place, so never leave one.
+4. Write the confirmed answers to a file with no `identity:` key, then run `init` with
+   `--answers <file>`. `init` asks identity at the console, then asks for the target
+   repositories as folder names beside the profile.
+5. `init` then commits the profile, renders it into itself and commits the render. It never
+   pushes. Stop when it prints `git push -u origin main`, and leave the push to the
+   operator. Without `--answers`, the operator answers setup's questions at the console
+   instead. `--setup-only` stops after setup and prints the remaining steps.
 
 ---
 
