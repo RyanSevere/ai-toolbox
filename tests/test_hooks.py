@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_hooks.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-17
 # Description: Tests for the editor safety hooks, hooks/no-secret-defaults,
 #              hooks/no-shell-file-edits, hooks/no-destructive-shell and
 #              hooks/no-generated-edits, hooks/session-start,
@@ -709,6 +709,102 @@ class DestructiveShell(unittest.TestCase):
         (Path(outside.name) / "scratch").mkdir()
         for cwd in (self.NO_CWD, "", "scratch", outside.name, 5):
             self.assert_denied("rm -rf scratch/x", cwd=cwd)
+
+
+class GateBypass(unittest.TestCase):
+    """Intent: hooks/no-destructive-shell also denies a way round the pre-push gates - git push
+    --no-verify, GATE_REPORT_PUSH set in a segment, a push with core.hooksPath overridden, and a
+    hand-written gate-report ref - read from each segment's words, so a message or an argument
+    that names one is allowed. Dry runs and reads of report refs are allowed. Every case runs
+    with Cursor's payload and with Claude Code's."""
+
+    # Reuse DestructiveShell's helpers without inheriting its tests.
+    NO_CWD = DestructiveShell.NO_CWD
+    @classmethod
+    def setUpClass(cls):
+        cls.hook = load("no_destructive_shell", HOOKS / "no-destructive-shell" / "hook.py")
+
+    setUp = DestructiveShell.setUp
+    verdict = DestructiveShell.verdict
+    assert_denied = DestructiveShell.assert_denied
+    assert_allowed = DestructiveShell.assert_allowed
+
+    NO_VERIFY = (
+        "git push --no-verify", "git push origin main --no-verify",
+        "git -C repo push --no-verify", "git push --no-verify origin main",
+    )
+    ENV_VARIABLE = (
+        "GATE_REPORT_PUSH=1 git push", "export GATE_REPORT_PUSH=1", "env GATE_REPORT_PUSH=1 git push",
+        "gate_report_push=1 git push", "GATE_REPORT_PUSH= git push",
+        "$env:GATE_REPORT_PUSH = '1'", "$env:GATE_REPORT_PUSH='1'", "$ENV:gate_report_push = 1",
+        "Set-Item env:GATE_REPORT_PUSH 1", "set-item -Path env:GATE_REPORT_PUSH -Value 1",
+    )
+    HOOKS_PATH = (
+        "git -c core.hooksPath=/dev/null push", "git -c core.hookspath=elsewhere push origin main",
+        "git -C repo -c CORE.HOOKSPATH=x push",
+    )
+    REPORT_REF = (
+        "git update-ref refs/tags/gate-report/abc123 HEAD", "git tag gate-report/abc123",
+        "git tag -f gate-report/abc123 HEAD", "git push origin refs/tags/gate-report/abc123",
+        "git push origin HEAD:refs/tags/gate-report/abc123", "git -C repo update-ref refs/tags/gate-report/x HEAD",
+    )
+    WRAPS = ("cd x && {}", "cd x; {}", "a | {}", "echo hi\n{}", "if true; then {}; fi")
+
+    def test_a_push_with_no_verify_is_denied(self):
+        for command in self.NO_VERIFY:
+            self.assert_denied(command)
+
+    def test_setting_the_report_push_variable_is_denied(self):
+        for command in self.ENV_VARIABLE:
+            self.assert_denied(command)
+
+    def test_a_push_with_the_hooks_path_overridden_is_denied(self):
+        for command in self.HOOKS_PATH:
+            self.assert_denied(command)
+
+    def test_a_hand_written_report_ref_is_denied(self):
+        for command in self.REPORT_REF:
+            self.assert_denied(command)
+
+    def test_a_bypass_segment_anywhere_in_the_line_denies(self):
+        for command in self.NO_VERIFY + self.ENV_VARIABLE + self.HOOKS_PATH + self.REPORT_REF:
+            for wrap in self.WRAPS:
+                self.assert_denied(wrap.format(command))
+
+    def test_the_deny_message_names_the_attempt_and_the_way_out(self):
+        for tool in ("cursor", "claude"):
+            for command in ("git push --no-verify", "GATE_REPORT_PUSH=1 git push",
+                            "git -c core.hooksPath=x push", "git tag gate-report/x"):
+                with self.subTest(tool=tool, command=command):
+                    message = self.verdict(tool, command)[1]
+                    self.assertIn(command, message)
+                    self.assertIn("gate", message)
+                    self.assertIn("operator", message)
+
+    def test_dry_runs_and_ordinary_git_are_allowed(self):
+        for command in (
+            "", "git push", "git push origin main", "git push -n", "git push --dry-run",
+            "git push -n origin main", "git status", "git -c core.x=y push",
+            "git -c core.hooksPath=x status", "git commit --no-verify",
+        ):
+            self.assert_allowed(command)
+
+    def test_a_name_inside_a_message_or_an_argument_is_allowed(self):
+        for command in (
+            'git commit -m "never use --no-verify"', "git commit -m 'GATE_REPORT_PUSH=1 is for the hook'",
+            "echo GATE_REPORT_PUSH=1", "echo --no-verify", "echo $env:GATE_REPORT_PUSH",
+            'git log --grep "gate-report/"', "git push origin --no-verify-not-a-flag",
+            "git commit -F - <<'EOF'\ngit push --no-verify\nGATE_REPORT_PUSH=1 git push\nEOF",
+        ):
+            self.assert_allowed(command)
+
+    def test_reading_report_refs_is_allowed(self):
+        for command in (
+            "git ls-remote origin 'refs/tags/gate-report/*'",
+            "git fetch origin 'refs/tags/gate-report/*:refs/tags/gate-report/*'",
+            "git show refs/tags/gate-report/abc123", "git for-each-ref refs/tags/gate-report/",
+        ):
+            self.assert_allowed(command)
 
 
 class GeneratedEdits(unittest.TestCase):

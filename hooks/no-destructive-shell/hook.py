@@ -4,14 +4,17 @@
 # Path: {PROJECT_ROOT}/.cursor/hooks/no-destructive-shell/hook.py
 # Created by: Ryan Severe
 # Created: 2026-11-15
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-17
 # Description: Agent hook on shell.before. Denies the shell commands that
 #              discard work - git clean, git checkout of paths, git reset
-#              --hard, rm -r and Remove-Item -Recurse - so the agent asks the
-#              operator first. Reads each command's leading words, not a regex
-#              over the line, so a commit message that names one is allowed. A
-#              recursive delete of literal paths inside the repository's
-#              scratch/ is allowed. Design in hooks/README.md.
+#              --hard, rm -r and Remove-Item -Recurse - and the ways round the
+#              pre-push gates - git push --no-verify, setting GATE_REPORT_PUSH,
+#              a push with core.hooksPath overridden, and a hand-written
+#              gate-report ref - so the agent asks the operator first. Reads
+#              each command's leading words, not a regex over the line, so a
+#              commit message that names one is allowed. A recursive delete of
+#              literal paths inside the repository's scratch/ is allowed.
+#              Design in hooks/README.md.
 ################################################################################
 # ===========================================================================
 #
@@ -264,14 +267,35 @@ GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
 CLEAN_DRY_RUN = re.compile(r"-[A-Za-z]*n[A-Za-z]*")
 
 
+# The families that get round the pre-push gates start with this, so the deny message can tell
+# them from the ones that discard work.
+BYPASS = "a way round the pre-push gates"
+REPORT_PREFIX = "gate-report/"
+REPORT_VARIABLE = "gate_report_push"
+# Commands that set a variable from their arguments, as bash's export does.
+EXPORTERS = {"export", "declare", "typeset", "local", "readonly"}
+
+
 def git_family(args: list[Word]) -> str | None:
     """The family a git command is in, or None. Skips git's global options first."""
     i = 0
+    overrides_hooks = False
     while i < len(args) and args[i].text.startswith("-"):
-        i += 2 if args[i].text in GIT_VALUE_OPTIONS else 1
+        option = args[i].text
+        if option == "-c" and i + 1 < len(args):
+            overrides_hooks = overrides_hooks or args[i + 1].text.casefold().startswith("core.hookspath")
+        elif option.casefold().startswith("--config-env=core.hookspath"):
+            overrides_hooks = True
+        i += 2 if option in GIT_VALUE_OPTIONS else 1
     if i >= len(args):
         return None
     sub, rest = args[i].text, [word.text for word in args[i + 1:]]
+    if sub == "push" and "--no-verify" in rest:
+        return f"git push --no-verify, {BYPASS}"
+    if sub == "push" and overrides_hooks:
+        return f"a git push with core.hooksPath overridden, {BYPASS}"
+    if sub in ("update-ref", "tag", "push") and any(REPORT_PREFIX in arg for arg in rest):
+        return f"a hand-written {REPORT_PREFIX} report ref, {BYPASS}"
     if sub == "clean":
         dry = "--dry-run" in rest or any(CLEAN_DRY_RUN.fullmatch(arg) for arg in rest)
         return None if dry else "git clean, which deletes untracked files"
@@ -379,13 +403,35 @@ def scratch_only(found: list[str] | None, cwd) -> bool:
     return all(inside(target, cwd, scratch) for target in found)
 
 
+def sets_report_variable(words: list[Word], name: str, args: list[Word]) -> bool:
+    """True when the segment sets GATE_REPORT_PUSH: an assignment word before the command or
+    after export, `$env:GATE_REPORT_PUSH = ...`, or `Set-Item env:GATE_REPORT_PUSH ...`."""
+    leading = words[:len(words) - len(args) - 1]  # the assignments and wrappers program() dropped
+    assigned = leading + (args if name in EXPORTERS else [])
+    for word in assigned:
+        key = word.text.partition("=")[0].casefold()
+        if ASSIGNMENT.match(word.text) and key == REPORT_VARIABLE:
+            return True
+    first = words[len(leading)].text.casefold()  # the command word itself
+    if first.startswith("$env:" + REPORT_VARIABLE) and first[5 + len(REPORT_VARIABLE):][:1] in ("", "="):
+        return True
+    if name in ("set-item", "si", "set-content", "new-item", "ni", "set-variable"):
+        return any(word.text.casefold() == "env:" + REPORT_VARIABLE for word in args)
+    return False
+
+
 def discards(segment: Segment, cwd) -> str | None:
-    """What the segment discards, or None."""
+    """What the segment discards or gets round, or None."""
     head = program(segment.words)
     if head is None:
+        if any(ASSIGNMENT.match(word.text) and word.text.partition("=")[0].casefold()
+               == REPORT_VARIABLE for word in segment.words):
+            return f"setting GATE_REPORT_PUSH, {BYPASS}"
         return None
     name, words = head
     args = without_redirects(words)
+    if sets_report_variable(segment.words, name, words):
+        return f"setting GATE_REPORT_PUSH, {BYPASS}"
     if name == "git":
         return git_family(args)
     if name in REMOVERS and recursive(name, args):
@@ -416,6 +462,12 @@ def decide(payload: dict) -> tuple[str, str] | None:
         family = discards(segment, payload.get("cwd"))
         if family:
             raw = shown(segment.raw)
+            if BYPASS in family:
+                return (f"{NAME}: blocked `{raw}`, {family}.",
+                        f"This command was blocked by the {NAME} hook because it runs `{raw}`, "
+                        f"{family}.\n\nDo not retry it or a variant of it. A failing gate is "
+                        "fixed by making the gate pass. If the gate itself is wrong, ask the "
+                        "operator to run the push or to say how to proceed.")
             return (f"{NAME}: blocked `{raw}`, {family}.",
                     f"This command was blocked by the {NAME} hook because it runs `{raw}`, "
                     f"{family}.\n\nDo not retry it or a variant of it. Ask the operator to run "

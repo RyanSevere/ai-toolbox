@@ -54,8 +54,8 @@ A profile documents its own hooks in a `README.md` beside their seeds.
 
 ### `no-destructive-shell` - agent hook on `shell.before`
 
-A `permission` hook, so it fails closed. Denies the shell commands that discard work,
-so the agent asks the operator first. It is the second layer behind the tool's own
+A `permission` hook, so it fails closed. Denies the shell commands that discard work, and
+the ways round the pre-push gates, so the agent asks the operator first. It is the second layer behind the tool's own
 approval prompt and the rule *"Never discard unfamiliar files"*.
 
 Denies five families, with these flag variants:
@@ -66,6 +66,20 @@ Denies five families, with these flag variants:
 - `rm` with a recursive flag: `-r`, `-R`, `-rf`, `-fr`, `-r -f`, `--recursive`.
 - `Remove-Item` and its aliases `ri`, `del`, `erase`, `rd`, `rmdir`, and PowerShell's `rm`, with a
   `-Recurse` parameter or any prefix of it (`-r`, `-rec`), in any case.
+
+A sixth family refuses a way round the pre-push gates, so the agent fixes the failing gate or
+asks the operator:
+
+- `git push` with `--no-verify` among its arguments. `-n` and `--dry-run` stay allowed.
+- `GATE_REPORT_PUSH` set in a segment: `GATE_REPORT_PUSH=...` before a command or after
+  `export`, `env GATE_REPORT_PUSH=...`, `$env:GATE_REPORT_PUSH = ...` and `Set-Item
+  env:GATE_REPORT_PUSH ...`, in any case.
+- `git push` with a global `-c core.hooksPath=...` (or `--config-env=core.hooksPath=...`).
+- `git update-ref`, `git tag` or `git push` with an argument containing `gate-report/`, a
+  hand-written report ref. Reading one (`ls-remote`, `fetch`, `show`, `for-each-ref`) stays allowed.
+
+A name inside a message or an argument (`git commit -m "never use --no-verify"`, `echo
+GATE_REPORT_PUSH=1`) is not an option or an assignment, so it is allowed.
 
 Git's global options (`-C <path>`, `-c <key=value>`, `--git-dir`, `--work-tree`) are
 skipped before the subcommand, and `sudo`, `env`, `NAME=value` and a shell keyword
