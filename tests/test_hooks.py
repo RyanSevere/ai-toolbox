@@ -803,8 +803,12 @@ class GateBypass(unittest.TestCase):
             "git ls-remote origin 'refs/tags/gate-report/*'",
             "git fetch origin 'refs/tags/gate-report/*:refs/tags/gate-report/*'",
             "git show refs/tags/gate-report/abc123", "git for-each-ref refs/tags/gate-report/",
+            "git tag -l 'gate-report/*'", "git tag --list 'gate-report/*'",
         ):
             self.assert_allowed(command)
+
+    def test_creating_a_report_tag_by_hand_is_denied(self):
+        self.assert_denied("git tag gate-report/20260101-000000/abc123 HEAD")
 
 
 class GeneratedEdits(unittest.TestCase):

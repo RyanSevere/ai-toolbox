@@ -272,6 +272,8 @@ CLEAN_DRY_RUN = re.compile(r"-[A-Za-z]*n[A-Za-z]*")
 BYPASS = "a way round the pre-push gates"
 REPORT_PREFIX = "gate-report/"
 REPORT_VARIABLE = "gate_report_push"
+# git tag options that only read: listing or verifying report tags is allowed.
+TAG_READS = {"-l", "--list", "-v", "--verify"}
 # Commands that set a variable from their arguments, as bash's export does.
 EXPORTERS = {"export", "declare", "typeset", "local", "readonly"}
 
@@ -294,7 +296,9 @@ def git_family(args: list[Word]) -> str | None:
         return f"git push --no-verify, {BYPASS}"
     if sub == "push" and overrides_hooks:
         return f"a git push with core.hooksPath overridden, {BYPASS}"
-    if sub in ("update-ref", "tag", "push") and any(REPORT_PREFIX in arg for arg in rest):
+    lists_tags = sub == "tag" and any(arg in TAG_READS for arg in rest)
+    if (sub in ("update-ref", "tag", "push") and not lists_tags
+            and any(REPORT_PREFIX in arg for arg in rest)):
         return f"a hand-written {REPORT_PREFIX} report ref, {BYPASS}"
     if sub == "clean":
         dry = "--dry-run" in rest or any(CLEAN_DRY_RUN.fullmatch(arg) for arg in rest)
