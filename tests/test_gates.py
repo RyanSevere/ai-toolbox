@@ -1053,6 +1053,9 @@ class Ruff(LintCase):
         result = self.run_without("ruff", self.commit())
         self.assert_nothing_to_check(result)
 
+    # The gate checks for ruff before it reads gate-config, so without ruff this refuses
+    # for the missing tool instead.
+    @unittest.skipUnless(shutil.which("ruff"), "ruff is not installed")
     def test_a_gate_config_without_a_config_dir_is_refused(self):
         self.gate_config(deploy_branch="main")
         self.write("a.py", "x = 1\n")
