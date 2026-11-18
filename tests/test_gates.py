@@ -2008,11 +2008,7 @@ class RenderedOnly(GateCase):
         base = self.base()
         self.write("café/AGENTS.md", STAMPED)
         local = self.commit()
-        # The per-file loop is left out on purpose: it reads `git diff --name-only` without
-        # -z, so git quotes the name (core.quotepath) and the loop judges it unstamped. See
-        # the ticket report; the old behaviour is not changed here.
-        self.assertEqual(self.shell_verdict(local, base), 0, "the shell function")
-        self.assertEqual(self.script_verdict(local, base), 0, "the script")
+        self.assert_verdict(local, base, True)
 
     def test_cat_file_dying_mid_stream_is_unknown(self):
         """Intent: exit 2 means it could not judge. cat-file is replaced by a process that
