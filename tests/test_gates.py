@@ -1668,6 +1668,327 @@ class TestProvenance(GateCase):
         self.assertIn("0 flagged", result.stdout)
 
 
+class Identity(GateCase):
+    """Every commit pushed from a profile repository carries the profile identity."""
+
+    gate = "identity"
+    ME = "me@example.invalid"
+    OTHER = "someone@elsewhere.invalid"
+    ZERO = "0" * 40
+
+    def setUp(self):
+        super().setUp()
+        self.gate_config(deploy_branch="main", identity_email=self.ME)
+
+    def commit_as(self, author: str, committer: str, message: str = "c") -> str:
+        self.write(f"{message}.txt", message + "\n")
+        self.git("add", "-A")
+        self.git("-c", f"user.email={committer}", "commit", "-q", "-m", message,
+                 f"--author=someone <{author}>")
+        return self.git("rev-parse", "HEAD")
+
+    def test_matching_author_and_committer_pass(self):
+        """Intent: commits as the profile identity are what the gate exists to allow."""
+        base = self.commit_as(self.ME, self.ME, "base")
+        head = self.commit_as(self.ME, self.ME, "head")
+        result = self.run_gate(head, base)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_case_differs_only_is_the_same_address(self):
+        """Intent: an address's domain is case-insensitive, and one repository's history
+        carries the same address with different capitalisation."""
+        base = self.commit_as(self.ME, self.ME, "base")
+        head = self.commit_as(self.ME.upper(), self.ME, "head")
+        self.assertEqual(self.run_gate(head, base).returncode, 0)
+
+    def test_a_foreign_author_is_refused_and_named(self):
+        """Intent: a commit authored as another address is refused."""
+        base = self.commit_as(self.ME, self.ME, "base")
+        head = self.commit_as(self.OTHER, self.ME, "head")
+        result = self.run_gate(head, base)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(self.OTHER, result.stdout)
+        self.assertIn(head[:7], result.stdout)
+
+    def test_a_foreign_committer_alone_is_refused(self):
+        """Intent: author or committer. --author fixes only one of them."""
+        base = self.commit_as(self.ME, self.ME, "base")
+        head = self.commit_as(self.ME, self.OTHER, "head")
+        result = self.run_gate(head, base)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(self.OTHER, result.stdout)
+
+    CURSOR = "Co-authored-by: Cursor <cursoragent@cursor.com>"
+
+    def commit_message(self, name: str, *paragraphs: str) -> str:
+        """A commit as the profile identity whose message is the given paragraphs."""
+        self.write(f"{name}.txt", name + "\n")
+        self.git("add", "-A")
+        args = [arg for paragraph in (name, *paragraphs) for arg in ("-m", paragraph)]
+        self.git("-c", f"user.email={self.ME}", "commit", "-q", *args,
+                 f"--author=someone <{self.ME}>")
+        return self.git("rev-parse", "HEAD")
+
+    def test_a_foreign_co_author_trailer_is_refused_and_named(self):
+        """Intent: a push whose range holds a commit with a Co-authored-by trailer for an
+        address other than the profile identity is refused."""
+        base = self.commit_message("base")
+        head = self.commit_message("head", "Refs #1\n" + self.CURSOR)
+        result = self.run_gate(head, base)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("cursoragent@cursor.com", result.stdout)
+        self.assertIn(head[:7], result.stdout)
+
+    def test_the_refusal_names_the_cursor_setting(self):
+        """Intent: the refusal is where someone hits it, so it names the setting that adds
+        the trailer."""
+        base = self.commit_message("base")
+        result = self.run_gate(self.commit_message("head", self.CURSOR), base)
+        self.assertIn("Commit Attribution", result.stdout)
+
+    def test_a_co_author_as_the_profile_identity_passes(self):
+        """Intent: only a foreign address is refused, matched as the author check is."""
+        base = self.commit_message("base")
+        head = self.commit_message("head", f"Co-authored-by: Me <{self.ME.upper()}>")
+        result = self.run_gate(head, base)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_one_foreign_co_author_among_several_is_refused(self):
+        base = self.commit_message("base")
+        head = self.commit_message("head", f"Co-authored-by: Me <{self.ME}>\n"
+                                           f"Co-authored-by: Other <{self.OTHER}>")
+        result = self.run_gate(head, base)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(self.OTHER, result.stdout)
+
+    def test_a_made_with_cursor_trailer_is_refused(self):
+        """Intent: Cursor's own already-modified check looks for "Made-with: Cursor", so a
+        version that writes it is refused too."""
+        base = self.commit_message("base")
+        result = self.run_gate(self.commit_message("head", "Made-with: Cursor"), base)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("Made-with", result.stdout)
+
+    def test_a_co_author_quoted_in_the_body_is_not_a_trailer(self):
+        """Intent: the gate names trailers. A commit that discusses one in prose carries
+        none and must pass."""
+        base = self.commit_message("base")
+        head = self.commit_message("head", f"Cursor adds {self.CURSOR} to agent commits.",
+                                   "Refs #166")
+        result = self.run_gate(head, base)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_co_author_already_on_the_deploy_branch_is_not_rechecked(self):
+        """Intent: history that already carries the trailer is not rewritten, so it must
+        not block a later push."""
+        old = self.commit_message("old", self.CURSOR)
+        self.on_deploy(old)
+        head = self.commit_message("head")
+        self.assertEqual(self.run_gate(head, old).returncode, 0)
+
+    def test_only_the_pushed_range_is_checked(self):
+        """Intent: existing history is not rewritten, so a foreign commit already on the
+        remote must not block every later push. "On the remote" means on the deploy
+        branch."""
+        old = self.commit_as(self.OTHER, self.OTHER, "old")
+        self.on_deploy(old)
+        head = self.commit_as(self.ME, self.ME, "head")
+        self.assertEqual(self.run_gate(head, old).returncode, 0)
+
+    def on_deploy(self, sha: str, remote: str = "origin") -> None:
+        """What a fetch of the deploy branch leaves behind."""
+        self.git("update-ref", f"refs/remotes/{remote}/main", sha)
+
+    def test_a_branch_that_merged_main_passes_for_githubs_merge_commits(self):
+        """Intent: a push of a branch that merged main, with GitHub merge commits already
+        on a remote, passes the identity gate."""
+        base = self.commit_as(self.ME, self.ME, "base")
+        trunk = self.git("branch", "--show-current")
+        self.on_deploy(base)
+        self.git("checkout", "-q", "-b", "feature")
+        pushed = self.commit_as(self.ME, self.ME, "feature")
+        self.git("checkout", "-q", trunk)
+        merged = self.commit_as(self.ME, "noreply@github.com", "merge-button")
+        self.on_deploy(merged)
+        self.git("checkout", "-q", "feature")
+        self.git("-c", f"user.email={self.ME}", "merge", "-q", "--no-edit", trunk)
+        head = self.git("rev-parse", "HEAD")
+        result = self.run_gate(head, pushed)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_refused_commit_stays_refused_under_a_later_commit(self):
+        """Intent: a feature branch's failing gate still pushes, so a refused commit is on
+        the remote; the next push on top of it must refuse it again rather than pass with
+        no record."""
+        self.on_deploy(self.commit_as(self.ME, self.ME, "base"))
+        refused = self.commit_as(self.OTHER, self.OTHER, "refused")
+        head = self.commit_as(self.ME, self.ME, "on-top")
+        result = self.run_gate(head, refused)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(refused[:7], result.stdout)
+
+    GITHUB = "noreply@github.com"
+
+    def web_merge(self, author: str, on_remote: bool, merge: bool = True) -> tuple[str, str]:
+        """An integration branch with a commit GitHub's merge button would make on it; returns
+        (the push's remote sha, the head pushed on top)."""
+        base = self.commit_as(self.ME, self.ME, "base")
+        self.on_deploy(base)
+        self.git("checkout", "-q", "-b", "integration")
+        if merge:
+            self.git("checkout", "-q", "-b", "topic")
+            self.commit_as(self.ME, self.ME, "topic")
+            self.git("checkout", "-q", "integration")
+            self.git("-c", f"user.email={self.GITHUB}", "merge", "-q", "--no-ff",
+                     "-m", "Merge pull request", "topic")
+            self.git("-c", f"user.email={self.GITHUB}", "commit", "-q", "--amend",
+                     "--no-edit", f"--author=web <{author}>")
+        else:
+            self.commit_as(author, self.GITHUB, "web-commit")
+        made = self.git("rev-parse", "HEAD")
+        if on_remote:
+            self.git("update-ref", "refs/remotes/origin/integration", made)
+        head = self.commit_as(self.ME, self.ME, "on-top")
+        return (made if on_remote else base), head
+
+    def test_a_web_merge_already_on_the_remote_passes(self):
+        """Intent: GitHub's merge of a pull request into an integration branch, authored by
+        the profile identity and already on the remote, passes."""
+        remote, head = self.web_merge(self.ME, on_remote=True)
+        result = self.run_gate(head, remote)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_web_merge_not_yet_on_the_remote_is_refused(self):
+        """Intent: a forged GitHub committer this clone made is not on the remote, so GitHub
+        did not make it."""
+        remote, head = self.web_merge(self.ME, on_remote=False)
+        result = self.run_gate(head, remote)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(self.GITHUB, result.stdout)
+
+    def test_a_web_merge_by_another_author_is_refused(self):
+        """Intent: the author must still be the profile identity."""
+        remote, head = self.web_merge(self.OTHER, on_remote=True)
+        result = self.run_gate(head, remote)
+        self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_a_non_merge_github_commit_is_refused(self):
+        """Intent: only a merge commit is GitHub's merge button; a single-parent commit with
+        GitHub's committer is refused even on the remote."""
+        remote, head = self.web_merge(self.ME, on_remote=True, merge=False)
+        result = self.run_gate(head, remote)
+        self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_the_deploy_branch_is_read_from_the_remote_pushed_to(self):
+        """Intent: the hook passes the remote's name as a third argument, and a direct call
+        without it means origin."""
+        self.on_deploy(self.commit_as(self.ME, self.ME, "base"))
+        old = self.commit_as(self.OTHER, self.OTHER, "old")
+        self.on_deploy(old, remote="upstream")
+        head = self.commit_as(self.ME, self.ME, "head")
+        self.assertEqual(self.run_gate(head, old, "upstream").returncode, 0)
+        self.assertEqual(self.run_gate(head, old).returncode, 1)
+
+    def test_without_a_deploy_ref_it_checks_what_no_remote_has_and_says_so(self):
+        """Intent: a repository whose deploy branch was never fetched falls back to the
+        new-branch rule, visibly."""
+        old = self.commit_as(self.OTHER, self.OTHER, "old")
+        self.git("update-ref", "refs/remotes/origin/feature", old)
+        head = self.commit_as(self.ME, self.ME, "head")
+        result = self.run_gate(head, old)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("refs/remotes/origin/main", result.stdout + result.stderr)
+
+    def test_a_new_branch_checks_what_no_remote_has(self):
+        """Intent: a new branch has no remote base, and skipping it as no-change-docs does
+        would let a whole branch of foreign commits through."""
+        self.commit_as(self.ME, self.ME, "base")
+        head = self.commit_as(self.OTHER, self.OTHER, "head")
+        result = self.run_gate(head, self.ZERO)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(self.OTHER, result.stdout)
+
+    def test_no_configured_identity_refuses(self):
+        """Intent: missing means abort. With nothing to compare against, a pass would be a
+        healthy reading of a check that never ran."""
+        (self.repo / ".githooks" / "gate-config").unlink()
+        head = self.commit_as(self.ME, self.ME, "head")
+        result = self.run_gate(head, self.ZERO)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("gate-config", result.stdout)
+
+    def test_a_config_without_the_identity_key_refuses(self):
+        """Intent: an empty value is as dangerous as a missing one."""
+        self.gate_config(deploy_branch="main", identity_email="")
+        head = self.commit_as(self.ME, self.ME, "head")
+        self.assertEqual(self.run_gate(head, self.ZERO).returncode, 1)
+
+    def test_git_config_cannot_change_the_expected_identity(self):
+        """Intent: `git config gate.identityEmail x` leaves the identity gate refusing a
+        foreign address."""
+        self.git("config", "gate.identityEmail", self.OTHER)
+        base = self.commit_as(self.ME, self.ME, "base")
+        head = self.commit_as(self.OTHER, self.OTHER, "head")
+        result = self.run_gate(head, base)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(self.OTHER, result.stdout)
+
+    def test_a_crlf_checkout_of_the_config_still_matches(self):
+        """Intent: every target carries the file, Windows checkouts included, where autocrlf
+        leaves a carriage return that would refuse every commit."""
+        (self.repo / ".githooks" / "gate-config").write_bytes(
+            f"deploy-branch=main\r\nidentity-email={self.ME}\r\n".encode())
+        base = self.commit_as(self.ME, self.ME, "base")
+        head = self.commit_as(self.ME, self.ME, "head")
+        self.assertEqual(self.run_gate(head, base).returncode, 0)
+
+    def test_a_remote_sha_this_clone_has_not_fetched_names_the_pull(self):
+        """Intent: on a stale clone the remote's head is not a local object. The gate still
+        refuses, and says to pull rather than reporting an unlistable range."""
+        head = self.commit_as(self.ME, self.ME, "head")
+        unfetched = "1234567890abcdef1234567890abcdef12345678"
+        result = self.run_gate(head, unfetched)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("not fetched", result.stdout)
+        self.assertIn("pull", result.stdout)
+
+    def test_no_commit_given_refuses(self):
+        """Intent: missing means abort; the gate cannot check a range it was not given."""
+        self.commit_as(self.ME, self.ME, "head")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_a_long_branch_starts_a_fixed_number_of_git_processes(self):
+        """Intent: the gate cost a few processes per commit, so a long branch took minutes
+        to push on Windows. Counted, not timed: a wall-clock bound flakes on a loaded
+        runner, while the number of git processes the gate starts is the same on every
+        machine. A shim ahead of git on PATH counts them."""
+        base = self.commit_as(self.ME, self.ME, "base")
+        self.on_deploy(base)
+        stream = "".join(
+            f"commit refs/heads/long\ncommitter me <{self.ME}> {1700000000 + n} +0000\n"
+            f"data 2\nc\n" + (f"from {base}\n" if n == 0 else "") + "\n"
+            for n in range(200))
+        imported = subprocess.run(["git", "fast-import", "--quiet"], cwd=self.repo,
+                                  input=stream.encode(), capture_output=True)
+        self.assertEqual(imported.returncode, 0, imported.stderr)
+        head = self.git("rev-parse", "refs/heads/long")
+        shim = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, shim, ignore_errors=True)
+        count = shim / "count"
+        count.write_text("", encoding="utf-8")
+        real = Path(shutil.which("git")).as_posix()
+        (shim / "git").write_text(
+            f'#!/bin/sh\necho x >> "{count.as_posix()}"\nexec "{real}" "$@"\n',
+            encoding="utf-8", newline="\n")
+        result = self.run_gate(head, base, path_prefix=str(shim))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("200 commit(s) checked", result.stdout)
+        spawned = len(count.read_text(encoding="utf-8").split())
+        self.assertGreater(spawned, 0, "the shim never ran, so the count proves nothing")
+        self.assertLessEqual(spawned, 10, f"{spawned} git processes for 200 commits")
+
+
 class PrePushCase(GateCase):
     """The hook itself, end to end against a local bare remote."""
 
