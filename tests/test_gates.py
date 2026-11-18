@@ -2163,6 +2163,16 @@ class TestsRangeByRef(GateCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.seen_range(), f"{first}..{second}")
 
+    def test_a_declared_command_does_not_see_the_remote_ref(self):
+        """Intent: the ref only chooses the range. A declared command that runs the
+        gate again in a scratch repository must not inherit a real push's ref."""
+        self.write(".github/test-roots", 'run: echo "${PUSH_REMOTE_REF-unset}" > ref.out\n')
+        first, second = self.two_commits()
+        result = self.run_ref(second, first, "refs/heads/feature")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        seen = (self.repo / "ref.out").read_text(encoding="utf-8").strip()
+        self.assertEqual(seen, "unset")
+
     def test_no_ref_behaves_as_before_and_prints_no_range_line(self):
         """Intent: the gate run by hand passes the arguments through untouched."""
         first, second = self.two_commits()
