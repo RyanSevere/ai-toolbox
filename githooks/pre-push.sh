@@ -317,6 +317,10 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   [ -z "$skipped" ] || printf '%s\n' "$skipped" \
     | sed 's/^/pre-push: skipped /; s/$/ (off in profile.lock)/' >&2
 
+  # Each line's own ref, set before its gates run; a gate that picks a range reads it.
+  PUSH_REMOTE_REF="$remote_ref"
+  export PUSH_REMOTE_REF
+
   if ! gates_json="$(run_gates "$local_sha" "$remote_sha" "$enabled")"; then
     # The deploy branch is the only one a failing gate blocks. Moving gates to
     # push time was to stop failing checks emailing and building, not to stop

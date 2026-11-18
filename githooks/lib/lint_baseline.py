@@ -82,6 +82,42 @@ def blob(sha: str, path: str) -> bytes | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def blobs(sha: str, paths: list[str]) -> dict[str, bytes | None]:
+    """Every path's bytes at sha, read through one `git cat-file --batch`. A missing object
+    maps to None, as blob() returns it. Raises LintError when cat-file itself fails: never an
+    empty map for a failure."""
+    wanted = list(dict.fromkeys(paths))
+    # A newline in a name cannot be asked of --batch, which reads one name per line.
+    batched = [p for p in wanted if "\n" not in p]
+    found: dict[str, bytes | None] = {p: blob(sha, p) for p in wanted if "\n" in p}
+    if batched:
+        request = "".join(f"{sha}:{p}\n" for p in batched).encode("utf-8")
+        result = subprocess.run(["git", "cat-file", "--batch"], input=request,
+                                capture_output=True, timeout=TIMEOUT)
+        if result.returncode != 0:
+            raise LintError("git cat-file --batch failed: "
+                            f"{result.stderr.decode(errors='replace').strip()}")
+        out, pos = result.stdout, 0
+        for path in batched:
+            end = out.find(b"\n", pos)
+            if end < 0:
+                raise LintError("git cat-file --batch ended before every path was answered")
+            header = out[pos:end]
+            pos = end + 1
+            if header.endswith(b" missing"):
+                found[path] = None
+                continue
+            parts = header.split(b" ")
+            if len(parts) != 3 or not parts[2].isdigit():
+                raise LintError(f"git cat-file --batch answered {header!r}")
+            size = int(parts[2])
+            if len(out) < pos + size + 1:
+                raise LintError("git cat-file --batch ended inside an object")
+            found[path] = out[pos:pos + size]
+            pos += size + 1
+    return {p: found[p] for p in wanted}
+
+
 def baseline_dir(sha: str) -> str:
     """<config-dir>/lint-baseline, read from the commit's gate-config like everything else
     here. A missing key refuses: guessing the folder would read no baseline as zero debt."""
@@ -355,8 +391,10 @@ def main(argv: list[str] | None = None) -> int:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             files = []
-            for path in candidate_paths(sha, base, args.write):
-                content = blob(sha, path)
+            paths = candidate_paths(sha, base, args.write)
+            contents = blobs(sha, paths)
+            for path in paths:
+                content = contents[path]
                 if content is None or not owns(path, content):
                     continue
                 target = root / path

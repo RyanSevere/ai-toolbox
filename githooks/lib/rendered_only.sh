@@ -53,6 +53,16 @@ rendered_only() {
   [ -n "$ro_local" ] && [ -n "$ro_remote" ] || return 1
   # All zeros is a new branch: there is no range to judge.
   case "$ro_remote" in *[!0]*) ;; *) return 1 ;; esac
+  # One python reads the whole range in two git processes. Only exit 0 skips: 1 is "not
+  # rendered-only" and 2 is "could not judge", and an unknown is never a skip. With no
+  # python that runs, the per-file loop below does the same job one process at a time.
+  ro_script="$(dirname "$0")/../lib/rendered_only.py"
+  for ro_py in python python3; do
+    "$ro_py" -c '' >/dev/null 2>&1 || continue
+    "$ro_py" -B "$ro_script" "$ro_local" "$ro_remote" 2>/dev/null
+    [ "$?" -eq 0 ] && return 0
+    return 1
+  done
   git cat-file -e "$ro_remote^{commit}" 2>/dev/null || return 1
   ro_changed="$(git diff --name-only "$ro_remote" "$ro_local" 2>/dev/null)" || return 1
   [ -n "$ro_changed" ] || return 1

@@ -53,11 +53,26 @@ local_sha="${1:-HEAD}"
 remote_sha="${2:-}"
 allow="secret-scan: allow"
 
-# No base means a new branch: every line in it is new, so every line is scanned.
+# No base means a new branch. Its new lines are the ones since it left the deploy
+# branch, so it is scanned from the merge base. Anything unknown scans every line:
+# an unknown is never a narrower scan.
 case "$remote_sha" in
   ""|*[!0]*) base="$remote_sha" ;;
   *) base="" ;;
 esac
+if [ -z "$base" ]; then
+  remote="${3:-origin}"
+  # shellcheck source=/dev/null
+  . "$(dirname "$0")/../lib/gate_config.sh"
+  if deploy_branch="$(gate_config deploy-branch)" \
+      && base="$(git merge-base "$local_sha" "refs/remotes/$remote/$deploy_branch" 2>/dev/null)" \
+      && [ -n "$base" ]; then
+    echo "scanning from merge-base with $remote/$deploy_branch"
+  else
+    base=""
+    echo "scanning the whole history (new branch, no merge base)"
+  fi
+fi
 if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
   base="$(git hash-object -t tree /dev/null)"
 fi

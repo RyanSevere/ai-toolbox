@@ -45,6 +45,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -460,6 +461,79 @@ class SecretScan(GateCase):
         self.write("new.txt", "clean\n")
         result = self.run_gate(self.commit("second"), base)
         self.assertEqual(result.returncode, 0)
+
+    ZEROS = "0" * 40
+
+    def deploy_branch_with_old_match(self, configured: bool = True) -> str:
+        """A deploy branch whose tip already carries a matching line, tracked as origin/main."""
+        if configured:
+            self.gate_config(deploy_branch="main")
+        self.write("old.md", f"`{self.FAKE_HEX}`\n")
+        tip = self.commit("deploy")
+        self.git("update-ref", "refs/remotes/origin/main", tip)
+        return tip
+
+    def test_new_branch_scans_from_the_merge_base(self):
+        """Intent: lines already on the deploy branch are not new on a branch cut from it."""
+        self.deploy_branch_with_old_match()
+        self.write("new.txt", "clean\n")
+        result = self.run_gate(self.commit("branch"), self.ZEROS)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("scanning from merge-base with origin/main", result.stdout)
+
+    def test_new_branch_adding_a_match_is_refused(self):
+        self.deploy_branch_with_old_match()
+        self.write("added.md", f"`{self.FAKE_HEX}`\n")
+        result = self.run_gate(self.commit("branch"), self.ZEROS)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("added.md:1", result.stdout)
+        self.assertNotIn("old.md", result.stdout)
+
+    def test_new_branch_at_the_deploy_tip_has_an_empty_diff(self):
+        tip = self.deploy_branch_with_old_match()
+        result = self.run_gate(tip, self.ZEROS)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_new_branch_uses_the_remote_named_by_the_third_argument(self):
+        tip = self.deploy_branch_with_old_match()
+        self.git("update-ref", "refs/remotes/upstream/main", tip)
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        self.write("new.txt", "clean\n")
+        result = self.run_gate(self.commit("branch"), self.ZEROS, "upstream")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("merge-base with upstream/main", result.stdout)
+
+    def test_new_branch_with_no_deploy_branch_configured_scans_everything(self):
+        self.deploy_branch_with_old_match(configured=False)
+        self.write("new.txt", "clean\n")
+        result = self.run_gate(self.commit("branch"), self.ZEROS)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("old.md:1", result.stdout)
+        self.assertIn("scanning the whole history (new branch, no merge base)", result.stdout)
+
+    def test_new_branch_with_no_remote_tracking_ref_scans_everything(self):
+        self.deploy_branch_with_old_match()
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        self.write("new.txt", "clean\n")
+        result = self.run_gate(self.commit("branch"), self.ZEROS)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("old.md:1", result.stdout)
+
+    def test_new_branch_with_orphan_history_scans_everything(self):
+        self.deploy_branch_with_old_match()
+        self.git("checkout", "-q", "--orphan", "island")
+        self.write("island.md", f"`{self.FAKE_HEX}`\n")
+        result = self.run_gate(self.commit("island"), self.ZEROS)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("island.md:1", result.stdout)
+        self.assertIn("scanning the whole history (new branch, no merge base)", result.stdout)
+
+    def test_existing_branch_still_scans_only_its_own_diff(self):
+        tip = self.deploy_branch_with_old_match()
+        self.write("new.txt", "clean\n")
+        result = self.run_gate(self.commit("branch"), tip)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("scanning", result.stdout)
 
 
 class SecretDefaults(GateCase):
@@ -1812,6 +1886,312 @@ class PrePushFlags(PrePushCase):
         result = self.push(self.commit(), "feature")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("disagree", result.stderr)
+
+
+RENDERED_ONLY_PY = ROOT / "githooks" / "lib" / "rendered_only.py"
+
+
+class RenderedOnly(GateCase):
+    """rendered_only() judged three ways on one range: the shell function with a python on
+    PATH (the batched script), the same function with none (the per-file loop), and the
+    script itself. They must agree."""
+
+    gate = "tests"
+    ZERO = "0" * 40
+
+    def stamp_at(self, line: int) -> str:
+        return "filler\n" * (line - 1) + STAMPED.splitlines()[0] + "\nmore\n"
+
+    def base(self, **files: str) -> str:
+        self.write("README.md", "plain\n")
+        for rel, text in files.items():
+            self.write(rel, text)
+        return self.commit("base")
+
+    def shell_verdict(self, local: str, remote: str, path: str | None = None) -> int:
+        script = '. "$(dirname "$0")/../lib/rendered_only.sh"; rendered_only "$1" "$2"'
+        env = {**os.environ, "LC_ALL": "C"}
+        env["PATH"] = str(Path(SH).parent) + os.pathsep + (path if path is not None else env["PATH"])
+        return subprocess.run([SH, "-c", script, (GATES / "tests.sh").as_posix(), local, remote],
+                              cwd=self.repo, capture_output=True, text=True, env=env).returncode
+
+    def script_verdict(self, local: str, remote: str) -> int:
+        return subprocess.run([sys.executable, "-B", str(RENDERED_ONLY_PY), local, remote],
+                              cwd=self.repo, capture_output=True, text=True).returncode
+
+    def assert_verdict(self, local: str, remote: str, rendered_only: bool) -> None:
+        path = path_without(python=False)
+        if path is None:
+            self.skipTest("python lives beside git or sh here; cannot hide it")
+        want = 0 if rendered_only else 1
+        self.assertEqual(self.shell_verdict(local, remote, path), want, "the per-file loop")
+        self.assertEqual(self.shell_verdict(local, remote), want, "the shell function")
+        self.assertEqual(self.script_verdict(local, remote), want, "the script")
+
+    def test_every_changed_file_stamped(self):
+        base = self.base()
+        self.write("AGENTS.md", STAMPED)
+        self.write("docs/CLAUDE.md", STAMPED)
+        self.assert_verdict(self.commit(), base, True)
+
+    def test_one_unstamped_file(self):
+        base = self.base()
+        self.write("AGENTS.md", STAMPED)
+        self.write("app.txt", "plain\n")
+        self.assert_verdict(self.commit(), base, False)
+
+    def test_a_deleted_rendered_file_is_judged_on_the_remote_side(self):
+        base = self.base(**{"AGENTS.md": STAMPED})
+        (self.repo / "AGENTS.md").unlink()
+        self.assert_verdict(self.commit(), base, True)
+
+    def test_a_deleted_plain_file_is_not_rendered_only(self):
+        base = self.base(**{"app.txt": "plain\n"})
+        (self.repo / "app.txt").unlink()
+        self.assert_verdict(self.commit(), base, False)
+
+    def test_gitignore_alone_is_skipped(self):
+        base = self.base()
+        self.write(".gitignore", "build/\n")
+        self.assert_verdict(self.commit(), base, True)
+
+    def test_a_path_with_a_space(self):
+        base = self.base()
+        self.write("my docs/AGENTS file.md", STAMPED)
+        self.assert_verdict(self.commit(), base, True)
+
+    def test_a_stamp_on_line_forty_counts(self):
+        base = self.base()
+        self.write("AGENTS.md", self.stamp_at(40))
+        self.assert_verdict(self.commit(), base, True)
+
+    def test_a_stamp_on_line_forty_one_does_not(self):
+        base = self.base()
+        self.write("AGENTS.md", self.stamp_at(41))
+        self.assert_verdict(self.commit(), base, False)
+
+    def test_a_zero_byte_blob_is_unstamped(self):
+        base = self.base()
+        self.write("AGENTS.md", STAMPED)
+        self.write("empty.txt", "")
+        self.assert_verdict(self.commit(), base, False)
+
+    def test_a_binary_blob_is_stamped_only_by_its_first_forty_lines(self):
+        base = self.base()
+        (self.repo / "a.bin").write_bytes(b"\x00\x01\x02\n" + STAMPED.encode())
+        self.assert_verdict(self.commit("stamped"), base, True)
+        (self.repo / "b.bin").write_bytes(b"\x00\x01\x02\n" * 3)
+        self.assert_verdict(self.commit("plain"), base, False)
+
+    def test_an_empty_diff_is_not_rendered_only(self):
+        base = self.base()
+        self.assert_verdict(base, base, False)
+
+    def test_an_all_zero_remote_is_not_rendered_only(self):
+        self.base()
+        self.write("AGENTS.md", STAMPED)
+        self.assert_verdict(self.commit(), self.ZERO, False)
+
+    def test_a_remote_that_is_not_a_commit_is_not_rendered_only(self):
+        self.base()
+        self.write("AGENTS.md", STAMPED)
+        self.assert_verdict(self.commit(), "1" * 40, False)
+
+    def test_a_tab_in_a_path(self):
+        if os.name == "nt":
+            self.skipTest("Windows file names cannot hold a tab")
+        base = self.base()
+        self.write("a\tb.md", STAMPED)
+        self.assert_verdict(self.commit(), base, True)
+
+    def test_a_non_ascii_path(self):
+        base = self.base()
+        self.write("café/AGENTS.md", STAMPED)
+        local = self.commit()
+        # The per-file loop is left out on purpose: it reads `git diff --name-only` without
+        # -z, so git quotes the name (core.quotepath) and the loop judges it unstamped. See
+        # the ticket report; the old behaviour is not changed here.
+        self.assertEqual(self.shell_verdict(local, base), 0, "the shell function")
+        self.assertEqual(self.script_verdict(local, base), 0, "the script")
+
+    def test_cat_file_dying_mid_stream_is_unknown(self):
+        """Intent: exit 2 means it could not judge. cat-file is replaced by a process that
+        exits at once, so the first answer never comes."""
+        base = self.base()
+        self.write("AGENTS.md", STAMPED)
+        local = self.commit()
+        sys.path.insert(0, str(RENDERED_ONLY_PY.parent))
+        self.addCleanup(sys.path.remove, str(RENDERED_ONLY_PY.parent))
+        import rendered_only
+        real_popen = subprocess.Popen
+
+        def popen(args, *a, **kw):
+            if args[:3] == ["git", "cat-file", "--batch"]:
+                args = [sys.executable, "-c", "pass"]
+            return real_popen(args, *a, **kw)
+
+        cwd = os.getcwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, cwd)
+        with unittest.mock.patch.object(subprocess, "Popen", popen), \
+                unittest.mock.patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(rendered_only.main([local, base]), 2)
+
+    def test_exit_two_makes_the_gate_run_not_skip(self):
+        """Intent: a git failure is exit 2 from the script, which the shell turns into
+        "not rendered-only", so the suite runs. A local sha git cannot diff stands in."""
+        self.gate_config(config_dir=".github")
+        self.write(".github/test-roots", "run: echo suite-ran\n")
+        base = self.commit()
+        bogus = "1" * 40
+        self.assertEqual(self.script_verdict(bogus, base), 2)
+        self.assertEqual(self.shell_verdict(bogus, base), 1)
+        result = self.run_gate(bogus, base)
+        self.assertNotIn("skipped: every file", result.stdout)
+        self.assertIn("suite-ran", result.stdout)
+
+
+class TestsRangeByRef(GateCase):
+    """The range the tests gate hands its suites depends on the ref being pushed:
+    targeted on branches, everything on the deploy branch."""
+
+    gate = "tests"
+    config_dir = ".github"
+
+    def setUp(self):
+        super().setUp()
+        self.gate_config(config_dir=".github", deploy_branch="main")
+        self.write(".github/test-roots",
+                   'run: echo "$PUSH_REMOTE_SHA..$PUSH_LOCAL_SHA" > range.out\n')
+
+    def run_ref(self, local, remote, ref, *extra, unset_ref=False):
+        script = (GATES / "tests.sh").as_posix()
+        env = {**os.environ, "LC_ALL": "C"}
+        env["PATH"] = str(Path(SH).parent) + os.pathsep + env.get("PATH", "")
+        env.pop("PUSH_REMOTE_REF", None)
+        if not unset_ref:
+            env["PUSH_REMOTE_REF"] = ref
+        return subprocess.run([SH, script, local, remote, *extra], cwd=self.repo,
+                              capture_output=True, text=True, env=env)
+
+    def seen_range(self) -> str:
+        return (self.repo / "range.out").read_text(encoding="utf-8").strip()
+
+    def range_line(self, result) -> str:
+        lines = [ln for ln in result.stdout.splitlines() if ln.startswith("range:")]
+        self.assertEqual(len(lines), 1, result.stdout)
+        return lines[0]
+
+    def two_commits(self):
+        first = self.commit()
+        self.write("b.txt")
+        return first, self.commit()
+
+    def test_a_push_to_the_deploy_branch_exports_an_empty_remote_sha(self):
+        """Intent: the deploy branch runs the full suite, so a selecting suite gets no range."""
+        first, second = self.two_commits()
+        result = self.run_ref(second, first, "refs/heads/main")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"..{second}")
+        self.assertIn("deploy branch", self.range_line(result))
+
+    def test_a_new_branch_exports_the_merge_base_with_the_deploy_branch(self):
+        """Intent: a branch's first push is targeted at what the branch added."""
+        first = self.commit()
+        self.git("update-ref", "refs/remotes/origin/main", first)
+        self.write("b.txt")
+        second = self.commit()
+        result = self.run_ref(second, "0" * 40, "refs/heads/feature")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"{first}..{second}")
+        line = self.range_line(result)
+        self.assertIn("merge-base with origin/main", line)
+        self.assertIn("new branch", line)
+
+    def test_the_merge_base_uses_the_remote_the_gate_is_given(self):
+        """Intent: the third argument names the remote, as the hook passes it."""
+        first = self.commit()
+        self.git("update-ref", "refs/remotes/upstream/main", first)
+        self.write("b.txt")
+        second = self.commit()
+        result = self.run_ref(second, "0" * 40, "refs/heads/feature", "upstream")
+        self.assertEqual(self.seen_range(), f"{first}..{second}")
+        self.assertIn("merge-base with upstream/main", self.range_line(result))
+
+    def test_a_new_branch_with_no_deploy_branch_ref_exports_an_empty_range(self):
+        """Intent: an unknown is never a narrower selection."""
+        _, second = self.two_commits()
+        result = self.run_ref(second, "0" * 40, "refs/heads/feature")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"..{second}")
+        self.assertIn("new branch", self.range_line(result))
+
+    def test_a_new_branch_with_no_merge_base_exports_an_empty_range(self):
+        """Intent: a failing merge-base runs everything, not a guess."""
+        self.git("checkout", "-q", "--orphan", "other")
+        self.write("o.txt")
+        orphan = self.commit()
+        self.git("update-ref", "refs/remotes/origin/main", orphan)
+        self.git("checkout", "-q", "--orphan", "feature")
+        self.write("f.txt")
+        tip = self.commit()
+        result = self.run_ref(tip, "0" * 40, "refs/heads/feature")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"..{tip}")
+        self.assertIn("range:", self.range_line(result))
+
+    def test_a_branch_at_the_deploy_tip_has_a_merge_base_equal_to_itself(self):
+        """Intent: the boundary is an empty range, not an error."""
+        first = self.commit()
+        self.git("update-ref", "refs/remotes/origin/main", first)
+        result = self.run_ref(first, "0" * 40, "refs/heads/feature")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"{first}..{first}")
+
+    def test_an_existing_branch_keeps_its_remote_sha(self):
+        """Intent: a later push to a branch is targeted at what it adds, as before."""
+        first, second = self.two_commits()
+        result = self.run_ref(second, first, "refs/heads/feature")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"{first}..{second}")
+        self.assertIn("as pushed", self.range_line(result))
+
+    def test_a_ref_outside_heads_is_not_the_deploy_branch(self):
+        """Intent: only refs/heads/<deploy-branch> triggers the full suite."""
+        first, second = self.two_commits()
+        result = self.run_ref(second, first, "refs/tags/main")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"{first}..{second}")
+
+    def test_no_ref_behaves_as_before_and_prints_no_range_line(self):
+        """Intent: the gate run by hand passes the arguments through untouched."""
+        first, second = self.two_commits()
+        result = self.run_ref(second, first, "", unset_ref=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.seen_range(), f"{first}..{second}")
+        self.assertNotIn("range:", result.stdout)
+
+    def test_a_missing_deploy_branch_in_gate_config_refuses(self):
+        """Intent: with a ref named, an unreadable deploy branch refuses rather than guessing."""
+        self.gate_config(config_dir=".github")
+        first, second = self.two_commits()
+        result = self.run_ref(second, first, "refs/heads/feature")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("deploy-branch", result.stdout)
+
+
+class PrePushRemoteRef(PrePushCase):
+    """The hook tells each gate which remote ref its line pushes."""
+
+    def test_each_line_exports_its_own_remote_ref(self):
+        """Intent: the gates of a line see that line's ref, set before they run."""
+        self.write(".githooks/gates/ref.sh", 'echo "ref=$PUSH_REMOTE_REF"\n')
+        self.enabled("ref")
+        sha = self.commit()
+        result = self.push(sha, "feature")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = self.reports()[0]
+        self.assertIn("ref=refs/heads/feature", report["gates"]["ref"]["detail"])
 
 
 # The base classes hold no test of their own and must not run as cases.
