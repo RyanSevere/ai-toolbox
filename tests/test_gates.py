@@ -1981,6 +1981,8 @@ class Identity(GateCase):
         (shim / "git").write_text(
             f'#!/bin/sh\necho x >> "{count.as_posix()}"\nexec "{real}" "$@"\n',
             encoding="utf-8", newline="\n")
+        # Without the execute bit a POSIX PATH lookup skips the shim and finds the real git.
+        (shim / "git").chmod(0o755)
         result = self.run_gate(head, base, path_prefix=str(shim))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("200 commit(s) checked", result.stdout)
