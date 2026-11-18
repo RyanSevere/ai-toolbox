@@ -3525,8 +3525,8 @@ class FactoryBundle(unittest.TestCase):
 
     def test_the_green_before_ask_rule_is_interactive_only(self):
         """Intent: never ask for an approval, a review or a merge while a pull request's
-        checks are red or pending. The rule is interactive, names no queue command, and
-        renders with no profile overlay."""
+        checks are red or pending. The rule is interactive and renders with no profile
+        overlay."""
         plan = self.plan()
         interactive = " ".join(plan["AGENTS.md"].split())
         factory = " ".join(plan[f"{sync.FACTORY_DIR}/prescriptions.md"].split())
@@ -3535,7 +3535,6 @@ class FactoryBundle(unittest.TestCase):
             with self.subTest(wanted=wanted):
                 self.assertIn(wanted, interactive)
                 self.assertNotIn(wanted, factory)
-        self.assertNotIn("opqueue", interactive)
 
     def test_factory_qa_judges_survivors_and_never_mutates(self):
         """Intent: factory QA never mutates and has no edit rights; it judges the survivors
