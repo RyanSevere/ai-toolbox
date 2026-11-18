@@ -66,6 +66,10 @@ jobs:
     runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Gates re-run from the core read the range before..sha, and a shallow clone
+          # has neither the pushed head of a pull request nor the commit before it.
+          fetch-depth: 0
       - uses: ./.github/actions/report-gate
         with:
           sha: ${{ github.event.pull_request.head.sha || github.sha }}
