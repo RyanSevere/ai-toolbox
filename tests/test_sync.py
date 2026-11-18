@@ -2552,7 +2552,7 @@ class ExampleProfile(unittest.TestCase):
         text = (self.FOLDER / "profile.yaml").read_text(encoding="utf-8")
         shown = {key for key in sync.PROFILE_KEYS if f"\n# {key}:" in text}
         self.assertEqual(set(profile) | shown, set(sync.PROFILE_KEYS))
-        self.assertEqual(shown, {"tracked", "tools"})
+        self.assertEqual(shown, {"tracked", "tools", "gate_report"})
 
     def test_every_example_target_renders(self):
         folder = locked_example(self)
@@ -2898,6 +2898,92 @@ class GateConfig(unittest.TestCase):
                                    cwd=repo, env=clean_env(), capture_output=True, text=True,
                                    timeout=60).stdout.strip()
             self.assertEqual(found, "")
+
+
+class GateReportSkip(unittest.TestCase):
+    """gate_report.skip_allowed is profile data: the refs on which the report check accepts a
+    skipped required gate. It renders into gate-config as one report-skip= line per ref."""
+
+    PATTERN = r"(?:refs/heads/)?scheme/[^/]+/tests"
+
+    def tearDown(self):
+        sync.set_stamp_source(MANIFEST)
+
+    def lines(self, gate_report) -> list[str]:
+        manifest = {**MANIFEST, "gate_report": gate_report}
+        text = build_plan("t", {}, DEFAULTS, SHA, manifest)[".githooks/gate-config"]
+        return [line for line in text.splitlines() if line.startswith("report-skip=")]
+
+    def loaded(self, body: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "profile.yaml").write_text("source: {repo: s}\n" + body, encoding="utf-8")
+            return sync.load_profile(Path(tmp))
+
+    def test_an_entry_renders_one_line_of_pattern_then_gates(self):
+        self.assertEqual(
+            self.lines({"skip_allowed": [{"ref": self.PATTERN, "gates": ["tests", "lint"]}]}),
+            [f"report-skip={self.PATTERN} tests,lint"])
+
+    def test_no_key_or_an_empty_list_renders_no_line(self):
+        self.assertEqual(self.lines({"skip_allowed": []}), [])
+        self.assertEqual(self.lines({}), [])
+        text = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)[".githooks/gate-config"]
+        self.assertNotIn("report-skip", text)
+
+    def test_the_same_ref_and_gate_twice_render_once(self):
+        """Intent: duplicates are accepted as one."""
+        self.assertEqual(
+            self.lines({"skip_allowed": [{"ref": "a/b", "gates": ["tests", "tests"]},
+                                         {"ref": "a/b", "gates": ["tests"]}]}),
+            ["report-skip=a/b tests"])
+
+    def test_two_refs_render_a_line_each(self):
+        self.assertEqual(
+            self.lines({"skip_allowed": [{"ref": "a/b", "gates": ["tests"]},
+                                         {"ref": "c/d", "gates": ["lint"]}]}),
+            ["report-skip=a/b tests", "report-skip=c/d lint"])
+
+    def test_the_key_loads_as_a_profile_key(self):
+        profile = self.loaded(
+            f"gate_report:\n  skip_allowed:\n    - {{ref: '{self.PATTERN}', gates: [tests]}}\n")
+        self.assertEqual(profile["gate_report"]["skip_allowed"][0]["gates"], ["tests"])
+
+    def test_a_malformed_entry_is_refused_naming_the_entry(self):
+        """Intent: an invalid pattern, an entry without gates, and a gate name with a space or
+        a comma are refused with the entry named, never rendered."""
+        good = "{ref: ok, gates: [tests]}"
+        for entry in ("{ref: '(unclosed', gates: [tests]}",
+                      "{ref: x}",
+                      "{ref: x, gates: []}",
+                      "{ref: x, gates: 'tests'}",
+                      "{ref: x, gates: ['two words']}",
+                      "{ref: x, gates: ['a,b']}",
+                      "{ref: x, gates: [3]}",
+                      "{gates: [tests]}",
+                      "{ref: '', gates: [tests]}",
+                      "{ref: 'has space', gates: [tests]}",
+                      "{ref: x, gates: [tests], extra: 1}",
+                      "not-a-mapping"):
+            with self.subTest(entry=entry), self.assertRaises(sync.SyncError) as caught:
+                self.loaded(f"gate_report:\n  skip_allowed:\n    - {good}\n    - {entry}\n")
+            self.assertIn("gate_report", str(caught.exception))
+            self.assertIn("skip_allowed[1]", str(caught.exception))
+
+    def test_a_skip_allowed_that_is_not_a_list_is_refused(self):
+        for body in ("gate_report:\n  skip_allowed: tests\n", "gate_report:\n  other: []\n",
+                     "gate_report: [x]\n"):
+            with self.subTest(body=body), self.assertRaises(sync.SyncError) as caught:
+                self.loaded(body)
+            self.assertIn("gate_report", str(caught.exception))
+
+    def test_a_malformed_entry_never_reaches_the_render(self):
+        """Intent: the render refuses too, for a manifest that did not come through
+        load_profile, so a newline cannot forge a gate-config line."""
+        for entry in ({"ref": "a\nidentity-email=x", "gates": ["tests"]},
+                      {"ref": "a", "gates": ["tests\nconfig-dir=x"]},
+                      {"ref": "(", "gates": ["tests"]}):
+            with self.subTest(entry=entry), self.assertRaises(sync.SyncError):
+                self.lines({"skip_allowed": [entry]})
 
 
 FIXTURE_TARGETS = {

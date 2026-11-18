@@ -102,6 +102,14 @@ with some enabled it prints one line per gate it runs.
   must then refuse rather than assume a default.
 - Keys: `deploy-branch`, the branch a failing gate blocks; `identity-email`;
   `config-dir`; and `consent-check`, in the profile's repository only.
+- `report-skip=<regex> <gate>[,<gate>...]`, once per ref, rendered from the
+  profile's `gate_report.skip_allowed` (a list of `{ref: <regex>, gates:
+  [<gate>, ...]}`). The check that reads the gate report treats a skipped
+  required gate as a finding, unless a line names that gate and its regex
+  matches the whole ref. A ref that matches only in part is not exempt, and
+  neither is the `deploy-branch`. With no line, nothing is exempt. A regex
+  holds no whitespace and a gate name no whitespace or comma, or the render
+  refuses. If the file cannot be read the check fails, never passes.
 - Files a repository keeps by hand for its gates live in `config-dir`, the
   profile's `gate_config_dir`. Read them as `$(gate_config config-dir)/<file>`,
   never from a fixed folder.

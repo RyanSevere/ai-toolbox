@@ -1,0 +1,71 @@
+################################################################################
+# File: report-gate.yml
+# Path: {PROJECT_ROOT}/workflows/report-gate.yml
+# Created by: Ryan Severe
+# Created: 2026-11-18
+# Last Updated: 2026-11-18
+# Description: The one CI gate the pre-push hook leaves behind. It runs no checks
+#              of its own - it establishes that the checks ran before the push,
+#              against this commit. The logic lives in the report-gate action so
+#              a deploy can require the same thing without reimplementing it.
+################################################################################
+# ===========================================================================
+#
+#
+#            "~,
+#                *m,
+#                   *9m;
+#                       *%pg
+#                          "YRWu
+#                              *9$&w
+#                                  *R$&w
+#   ;j]@@W;                   *w,      79&&w;
+#   :|*%MT"                     7&&w,      ?78BWw
+# . ,|*       -p     ~            *R$$$gw,     '*MU@m,
+#            =W/?*%NMWgw             *T&$F ,@w;     "*4[%m,
+#              7R$$$$$$$$g          yg$$Gg$@@Hh!j ,w     "*w|j=,
+#       ..     ]K@ww[T$Fff            >*MB&&@@Hh ]hk{!!~^     "*v'
+#          '|;, *M@@&&$P                 $$&@HHH\  ` ;w,,   ,~""
+#            "|jj]]%@F"                  ]$@@H, ;*M%P)a$$C  c
+#           . :|j[M"                     ]@@HHr TfR4&$NE*,/~<'
+#             `!||j]@@@A`                ]@@Hh~ *TT"" "* ^ r  '~
+#                *ojKM"                  l@Hh~  "*|"'   /        `
+#                                        @HHkC ,;!"
+#                                       ]HHhr/|!"'
+#                                       #Hhr!||"
+#                             ,@r       hkr!||'
+#                                      [k{|!"
+#                                     (r!!"        r
+#                                     !!"        r
+#                                      ";      /
+#                                             '
+#                                            '
+# ===========================================================================
+
+
+name: Gate report
+
+on:
+  push:
+    # branches is not optional here. A push: block carrying only tags-ignore
+    # stops the workflow firing on branch pushes at all.
+    branches:
+      - '**'
+    # The report itself is a tag. Without this the gate would run a second time
+    # for the report of the push it is already gating.
+    tags-ignore:
+      - 'gate-report/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/report-gate
+        with:
+          sha: ${{ github.event.pull_request.head.sha || github.sha }}

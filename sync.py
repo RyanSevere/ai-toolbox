@@ -93,6 +93,9 @@ PROFILE_KEYS = {
     "personal": list, "profile_name": str, "leak_extra": list,
     # Which rows of TOOLS render, for every target. Absent, every row does.
     "tools": list,
+    # {skip_allowed: [{ref: <regex>, gates: [<gate>, ...]}]}: refs on which the report check
+    # accepts a skipped required gate. Rendered into gate-config as report-skip= lines.
+    "gate_report": dict,
 }
 # Keys whose list elements must each be a non-empty string.
 STRING_LIST_KEYS = ("personal", "leak_extra")
@@ -371,6 +374,7 @@ def load_profile(folder: Path) -> dict:
                                     "non-empty string")
     check_tracked(data, path)
     selected_tools(data, str(path))
+    gate_report_skips(data, str(path))
     return data
 
 
@@ -1385,11 +1389,58 @@ def render_gate_config(target: str, cfg: dict, manifest: dict, sha: str) -> str:
     marker = f"# {stamp(sha)[5:-4].strip()}"
     # Only the profile repo holds a lock to check; a target trusts its rendered list.
     consent_check = f"consent-check={CONSENT_SCRIPT}\n" if cfg.get("profile_repo") else ""
+    report_skip = "".join(f"report-skip={ref} {','.join(gates)}\n"
+                          for ref, gates in gate_report_skips(manifest))
     return (f"{marker}\n"
             f"deploy-branch={branch}\n"
             f"identity-email={identity(manifest)['email']}\n"
             f"config-dir={gate_config_dir(manifest)}\n"
-            f"{consent_check}")
+            f"{consent_check}"
+            f"{report_skip}")
+
+
+GATE_NAME = re.compile(r"[^\s,]+")
+
+
+def gate_report_skips(manifest: dict, where: str = PROFILE_NAME) -> list[tuple[str, list[str]]]:
+    """The refs on which the report check accepts a skipped required gate, as (pattern, gates)
+    in declaration order, one row per pattern with its gates merged and deduplicated.
+
+    Absent, or an empty list, is no exemption at all. An entry that is not a mapping of exactly
+    `ref` and `gates`, a pattern that is not a regular expression or holds whitespace, or a
+    gate name with whitespace or a comma is refused naming the entry: each value ends up in
+    one line of gate-config, so a stray newline or space would forge or split it.
+    """
+    block = manifest.get("gate_report")
+    if block is None:
+        return []
+    if not isinstance(block, dict) or set(block) - {"skip_allowed"}:
+        raise SyncError(f"{where}: gate_report: must be a mapping with only skip_allowed:")
+    entries = block.get("skip_allowed")
+    if entries is None:
+        return []
+    if not isinstance(entries, list):
+        raise SyncError(f"{where}: gate_report: skip_allowed: must be a list")
+    merged: dict[str, list[str]] = {}
+    for index, entry in enumerate(entries):
+        name = f"{where}: gate_report: skip_allowed[{index}]"
+        if not isinstance(entry, dict) or set(entry) != {"ref", "gates"}:
+            raise SyncError(f"{name} must be a mapping of ref: and gates:")
+        ref, gates = entry["ref"], entry["gates"]
+        if not isinstance(ref, str) or not ref or re.search(r"\s", ref):
+            raise SyncError(f"{name}: ref must be a non-empty regular expression with no "
+                            "whitespace")
+        try:
+            re.compile(ref)
+        except re.error as exc:
+            raise SyncError(f"{name}: ref {ref!r} is not a regular expression: {exc}") from exc
+        if (not isinstance(gates, list) or not gates
+                or not all(isinstance(g, str) and GATE_NAME.fullmatch(g) for g in gates)):
+            raise SyncError(f"{name}: gates must be a non-empty list of gate names, none "
+                            "holding whitespace or a comma")
+        row = merged.setdefault(ref, [])
+        row.extend(g for g in gates if g not in row)
+    return list(merged.items())
 
 
 def gate_config_dir(manifest: dict) -> str:

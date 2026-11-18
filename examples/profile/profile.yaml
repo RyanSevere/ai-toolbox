@@ -54,6 +54,15 @@ not_onboarded:
 # Uncomment to use.
 # tools: [claude]
 
+# Refs on which the report check accepts a skipped required gate. `ref` is a regular
+# expression that must match the whole ref; `gates` names what may be skipped there. A pull
+# request into the deploy branch is never exempt. Absent, every skipped required gate is a
+# finding. Uncomment to use.
+# gate_report:
+#   skip_allowed:
+#     - ref: "(?:refs/heads/)?scheme/[^/]+/tests"
+#       gates: [tests]
+
 # Rules rendered into every target unless it excludes them. Each id names a
 # spec-<id>.md in the core's rules/ or in this profile's seeds/rules/.
 defaults:

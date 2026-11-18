@@ -1,0 +1,128 @@
+################################################################################
+# File: action.yml
+# Path: {PROJECT_ROOT}/actions/report-gate/action.yml
+# Created by: Ryan Severe
+# Created: 2026-11-18
+# Last Updated: 2026-11-18
+# Description: Fetches the pre-push gate report for a commit and validates it.
+#              Used by the report-gate workflow, and by any deploy that must
+#              not run on an ungated commit. Absence is failure: a skipped hook
+#              publishes no report, and a report bound to a different commit is
+#              treated exactly like a missing one. A skipped required gate is
+#              accepted only where the profile declared an exemption for it.
+################################################################################
+# ===========================================================================
+#
+#
+#            "~,
+#                *m,
+#                   *9m;
+#                       *%pg
+#                          "YRWu
+#                              *9$&w
+#                                  *R$&w
+#   ;j]@@W;                   *w,      79&&w;
+#   :|*%MT"                     7&&w,      ?78BWw
+# . ,|*       -p     ~            *R$$$gw,     '*MU@m,
+#            =W/?*%NMWgw             *T&$F ,@w;     "*4[%m,
+#              7R$$$$$$$$g          yg$$Gg$@@Hh!j ,w     "*w|j=,
+#       ..     ]K@ww[T$Fff            >*MB&&@@Hh ]hk{!!~^     "*v'
+#          '|;, *M@@&&$P                 $$&@HHH\  ` ;w,,   ,~""
+#            "|jj]]%@F"                  ]$@@H, ;*M%P)a$$C  c
+#           . :|j[M"                     ]@@HHr TfR4&$NE*,/~<'
+#             `!||j]@@@A`                ]@@Hh~ *TT"" "* ^ r  '~
+#                *ojKM"                  l@Hh~  "*|"'   /        `
+#                                        @HHkC ,;!"
+#                                       ]HHhr/|!"'
+#                                       #Hhr!||"
+#                             ,@r       hkr!||'
+#                                      [k{|!"
+#                                     (r!!"        r
+#                                     !!"        r
+#                                      ";      /
+#                                             '
+#                                            '
+# ===========================================================================
+
+
+name: Gate report check
+description: Require a complete, passing pre-push gate report bound to this commit
+
+inputs:
+  sha:
+    description: The commit the report must be bound to
+    required: false
+    default: ${{ github.sha }}
+  gates:
+    description: File listing the gates that must be present and passing
+    required: false
+    default: .githooks/gates/enabled
+  gate-config:
+    description: The rendered gate-config, which declares the refs a required gate may be skipped on
+    required: false
+    default: .githooks/gate-config
+  before:
+    description: The branch tip before this push (for a pull request update, its previous head); empty for a manual run or a new branch
+    required: false
+    default: ${{ github.event.before }}
+  ref:
+    description: The pull request base ref, or for a push the pushed ref; a ref the profile declares exempt may skip the gates it names
+    required: false
+    default: ${{ github.base_ref || github.ref }}
+
+runs:
+  using: composite
+  steps:
+    # Values reach shell only through env. A ${{ }} inside run: is pasted into the
+    # script text, which is how data becomes code.
+    - name: Fetch the report published for this commit
+      id: fetch
+      shell: bash
+      env:
+        SHA: ${{ inputs.sha }}
+      run: bash "$GITHUB_ACTION_PATH/fetch.sh"
+
+    - name: Every required gate must be present, passing, and bound to this commit
+      shell: bash
+      env:
+        FOUND: ${{ steps.fetch.outputs.found }}
+        SHA: ${{ inputs.sha }}
+        GATES: ${{ inputs.gates }}
+        GATE_CONFIG: ${{ inputs.gate-config }}
+        BEFORE: ${{ inputs.before }}
+        REF: ${{ inputs.ref }}
+      run: |
+        set -euo pipefail
+
+        if [ "$FOUND" != "yes" ]; then
+          # A merge made in the web UI ran no hook and has no report. It is accepted
+          # only as a clean merge of two covered parents. Output is held so a pass does
+          # not read as a refusal. History the branch held before this push is the base
+          # case: it was judged when it landed.
+          if cover="$(python3 "$GITHUB_ACTION_PATH/gate_report.py" \
+            --merge-cover \
+            --sha "$SHA" \
+            --before "$BEFORE" \
+            --gates "$GATES" 2>&1)"; then
+            echo "No gate report for $SHA."
+            echo "$cover"
+            exit 0
+          fi
+
+          echo "REFUSED: no gate report for $SHA."
+          echo ""
+          echo "A pre-push hook that ran publishes one. A hook that was skipped"
+          echo "does not, and this gate cannot tell those apart - so both fail."
+          echo ""
+          echo "If the hook is not installed, run sync.py against this repo."
+          echo ""
+          echo "$cover"
+          exit 1
+        fi
+
+        python3 "$GITHUB_ACTION_PATH/gate_report.py" \
+          --report "$RUNNER_TEMP/report.json" \
+          --sha "$SHA" \
+          --gates "$GATES" \
+          --gate-config "$GATE_CONFIG" \
+          --ref "$REF"
