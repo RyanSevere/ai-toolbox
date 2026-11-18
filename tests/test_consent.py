@@ -350,7 +350,7 @@ class CheckCommand(ProfileCase):
 
 
 CORE_GATES = [
-    "dead-variants", "eslint", "lockfile", "no-change-docs", "ruff", "run-expressions",
+    "dead-variants", "eslint", "identity", "lockfile", "no-change-docs", "ruff", "run-expressions",
     "secret-defaults", "secret-scan", "self-render", "shellcheck", "test-orphans",
     "test-provenance", "tests", "typecheck",
 ]
