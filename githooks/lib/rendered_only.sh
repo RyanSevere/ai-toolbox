@@ -64,7 +64,7 @@ rendered_only() {
     return 1
   done
   git cat-file -e "$ro_remote^{commit}" 2>/dev/null || return 1
-  ro_changed="$(git diff --name-only "$ro_remote" "$ro_local" 2>/dev/null)" || return 1
+  ro_changed="$(git -c core.quotepath=off diff --name-only "$ro_remote" "$ro_local" 2>/dev/null)" || return 1
   [ -n "$ro_changed" ] || return 1
   printf '%s\n' "$ro_changed" | {
     while IFS= read -r ro_file; do
