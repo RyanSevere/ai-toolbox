@@ -2552,7 +2552,7 @@ class ExampleProfile(unittest.TestCase):
         text = (self.FOLDER / "profile.yaml").read_text(encoding="utf-8")
         shown = {key for key in sync.PROFILE_KEYS if f"\n# {key}:" in text}
         self.assertEqual(set(profile) | shown, set(sync.PROFILE_KEYS))
-        self.assertEqual(shown, {"tracked", "tools"})
+        self.assertEqual(shown, {"tracked", "tools", "gate_report"})
 
     def test_every_example_target_renders(self):
         folder = locked_example(self)
@@ -2898,6 +2898,176 @@ class GateConfig(unittest.TestCase):
                                    cwd=repo, env=clean_env(), capture_output=True, text=True,
                                    timeout=60).stdout.strip()
             self.assertEqual(found, "")
+
+
+class GateReportSkip(unittest.TestCase):
+    """gate_report.skip_allowed is profile data: the refs on which the report check accepts a
+    skipped required gate. It renders into gate-config as one report-skip= line per ref."""
+
+    PATTERN = r"(?:refs/heads/)?scheme/[^/]+/tests"
+
+    def tearDown(self):
+        sync.set_stamp_source(MANIFEST)
+
+    def lines(self, gate_report) -> list[str]:
+        manifest = {**MANIFEST, "gate_report": gate_report}
+        text = build_plan("t", {}, DEFAULTS, SHA, manifest)[".githooks/gate-config"]
+        return [line for line in text.splitlines() if line.startswith("report-skip=")]
+
+    def loaded(self, body: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "profile.yaml").write_text("source: {repo: s}\n" + body, encoding="utf-8")
+            return sync.load_profile(Path(tmp))
+
+    def test_an_entry_renders_one_line_of_pattern_then_gates(self):
+        self.assertEqual(
+            self.lines({"skip_allowed": [{"ref": self.PATTERN, "gates": ["tests", "lint"]}]}),
+            [f"report-skip={self.PATTERN} tests,lint"])
+
+    def test_no_key_or_an_empty_list_renders_no_line(self):
+        self.assertEqual(self.lines({"skip_allowed": []}), [])
+        self.assertEqual(self.lines({}), [])
+        text = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)[".githooks/gate-config"]
+        self.assertNotIn("report-skip", text)
+
+    def test_the_same_ref_and_gate_twice_render_once(self):
+        """Intent: duplicates are accepted as one."""
+        self.assertEqual(
+            self.lines({"skip_allowed": [{"ref": "a/b", "gates": ["tests", "tests"]},
+                                         {"ref": "a/b", "gates": ["tests"]}]}),
+            ["report-skip=a/b tests"])
+
+    def test_two_refs_render_a_line_each(self):
+        self.assertEqual(
+            self.lines({"skip_allowed": [{"ref": "a/b", "gates": ["tests"]},
+                                         {"ref": "c/d", "gates": ["lint"]}]}),
+            ["report-skip=a/b tests", "report-skip=c/d lint"])
+
+    def test_the_key_loads_as_a_profile_key(self):
+        profile = self.loaded(
+            f"gate_report:\n  skip_allowed:\n    - {{ref: '{self.PATTERN}', gates: [tests]}}\n")
+        self.assertEqual(profile["gate_report"]["skip_allowed"][0]["gates"], ["tests"])
+
+    def test_a_malformed_entry_is_refused_naming_the_entry(self):
+        """Intent: an invalid pattern, an entry without gates, and a gate name with a space or
+        a comma are refused with the entry named, never rendered."""
+        good = "{ref: ok, gates: [tests]}"
+        for entry in ("{ref: '(unclosed', gates: [tests]}",
+                      "{ref: x}",
+                      "{ref: x, gates: []}",
+                      "{ref: x, gates: 'tests'}",
+                      "{ref: x, gates: ['two words']}",
+                      "{ref: x, gates: ['a,b']}",
+                      "{ref: x, gates: [3]}",
+                      "{gates: [tests]}",
+                      "{ref: '', gates: [tests]}",
+                      "{ref: 'has space', gates: [tests]}",
+                      "{ref: x, gates: [tests], extra: 1}",
+                      "not-a-mapping"):
+            with self.subTest(entry=entry), self.assertRaises(sync.SyncError) as caught:
+                self.loaded(f"gate_report:\n  skip_allowed:\n    - {good}\n    - {entry}\n")
+            self.assertIn("gate_report", str(caught.exception))
+            self.assertIn("skip_allowed[1]", str(caught.exception))
+
+    def test_a_skip_allowed_that_is_not_a_list_is_refused(self):
+        for body in ("gate_report:\n  skip_allowed: tests\n", "gate_report:\n  other: []\n",
+                     "gate_report: [x]\n"):
+            with self.subTest(body=body), self.assertRaises(sync.SyncError) as caught:
+                self.loaded(body)
+            self.assertIn("gate_report", str(caught.exception))
+
+    def test_a_malformed_entry_never_reaches_the_render(self):
+        """Intent: the render refuses too, for a manifest that did not come through
+        load_profile, so a newline cannot forge a gate-config line."""
+        for entry in ({"ref": "a\nidentity-email=x", "gates": ["tests"]},
+                      {"ref": "a", "gates": ["tests\nconfig-dir=x"]},
+                      {"ref": "(", "gates": ["tests"]}):
+            with self.subTest(entry=entry), self.assertRaises(sync.SyncError):
+                self.lines({"skip_allowed": [entry]})
+
+
+class GateReportRerun(unittest.TestCase):
+    """gate_report.rerun names the core gates CI runs again. A render writes core-source=,
+    core-tag= and one report-rerun= line per gate, the first two from the vendored record."""
+
+    SOURCE = "acme/core"
+    SHA40 = "0123456789abcdef0123456789abcdef01234567"
+
+    def tearDown(self):
+        sync.set_stamp_source(MANIFEST)
+
+    def profile(self, tag: str = "v1.2.3") -> Path:
+        """The locked example, as a profile that vendored its core."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        folder = Path(tmp.name) / "profile"
+        shutil.copytree(EXAMPLE, folder)
+        (folder / "core").mkdir()
+        (folder / "core" / "VENDORED").write_text(
+            f"source={self.SOURCE}\ntag={tag}\nsha={self.SHA40}\n"
+            f"content-hash=sha256:{'0' * 64}\n", encoding="utf-8")
+        return folder
+
+    def render(self, rerun, profile_dir: Path | None = None) -> list[str]:
+        manifest = {**MANIFEST, "gate_report": {"rerun": rerun}}
+        folder = profile_dir or self.profile()
+        text = build_plan("t", {}, DEFAULTS, SHA, manifest,
+                          profile_dir=folder)[".githooks/gate-config"]
+        return text.splitlines()
+
+    def test_each_listed_gate_renders_a_line_and_the_record_renders_two(self):
+        lines = self.render(["secret-scan", "identity"])
+        self.assertIn(f"core-source={self.SOURCE}", lines)
+        self.assertIn("core-tag=v1.2.3", lines)
+        self.assertEqual([x for x in lines if x.startswith("report-rerun=")],
+                         ["report-rerun=secret-scan", "report-rerun=identity"])
+
+    def test_a_core_vendored_by_sha_renders_the_sha_as_the_tag(self):
+        lines = self.render(["secret-scan"], self.profile(tag=""))
+        self.assertIn(f"core-tag={self.SHA40}", lines)
+
+    def test_a_gate_listed_twice_renders_once(self):
+        lines = self.render(["secret-scan", "identity", "secret-scan"])
+        self.assertEqual([x for x in lines if x.startswith("report-rerun=")],
+                         ["report-rerun=secret-scan", "report-rerun=identity"])
+
+    def test_no_key_or_an_empty_list_renders_no_rerun_line(self):
+        self.assertEqual([x for x in self.render([]) if x.startswith("report-rerun=")], [])
+        text = build_plan("t", {}, DEFAULTS, SHA, MANIFEST,
+                          profile_dir=self.profile())[".githooks/gate-config"]
+        self.assertNotIn("report-rerun", text)
+
+    def test_a_profile_with_no_vendored_record_writes_no_core_lines(self):
+        text = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)[".githooks/gate-config"]
+        self.assertNotIn("core-source", text)
+        self.assertNotIn("core-tag", text)
+
+    def test_a_list_without_a_vendored_record_is_refused(self):
+        """Intent: with nothing to fetch the gates by, a re-run list can promise nothing."""
+        manifest = {**MANIFEST, "gate_report": {"rerun": ["secret-scan"]}}
+        with self.assertRaises(sync.SyncError) as caught:
+            build_plan("t", {}, DEFAULTS, SHA, manifest)
+        self.assertIn("core", str(caught.exception))
+
+    def loaded(self, body: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "profile.yaml").write_text("source: {repo: s}\n" + body, encoding="utf-8")
+            return sync.load_profile(Path(tmp))
+
+    def test_the_key_loads_beside_skip_allowed(self):
+        profile = self.loaded("gate_report:\n  skip_allowed: []\n  rerun: [secret-scan]\n")
+        self.assertEqual(profile["gate_report"]["rerun"], ["secret-scan"])
+
+    def test_a_name_that_is_not_a_core_gate_is_refused_naming_it(self):
+        for item in ("no-such-gate", "3", "[x]", "'two words'", "''"):
+            with self.subTest(item=item), self.assertRaises(sync.SyncError) as caught:
+                self.loaded(f"gate_report:\n  rerun: [secret-scan, {item}]\n")
+            self.assertIn("rerun[1]", str(caught.exception))
+
+    def test_a_rerun_that_is_not_a_list_is_refused(self):
+        with self.assertRaises(sync.SyncError) as caught:
+            self.loaded("gate_report:\n  rerun: secret-scan\n")
+        self.assertIn("rerun", str(caught.exception))
 
 
 FIXTURE_TARGETS = {

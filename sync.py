@@ -93,6 +93,10 @@ PROFILE_KEYS = {
     "personal": list, "profile_name": str, "leak_extra": list,
     # Which rows of TOOLS render, for every target. Absent, every row does.
     "tools": list,
+    # {skip_allowed: [{ref: <regex>, gates: [<gate>, ...]}], rerun: [<gate>, ...]}: refs on
+    # which the report check accepts a skipped required gate (report-skip= lines), and the
+    # core gates CI runs again from the vendored release (report-rerun= lines).
+    "gate_report": dict,
 }
 # Keys whose list elements must each be a non-empty string.
 STRING_LIST_KEYS = ("personal", "leak_extra")
@@ -371,6 +375,8 @@ def load_profile(folder: Path) -> dict:
                                     "non-empty string")
     check_tracked(data, path)
     selected_tools(data, str(path))
+    gate_report_skips(data, str(path))
+    gate_report_rerun(data, str(path))
     return data
 
 
@@ -1371,7 +1377,33 @@ def issue_keys(manifest: dict) -> str:
 BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
 
 
-def render_gate_config(target: str, cfg: dict, manifest: dict, sha: str) -> str:
+def core_record_lines(manifest: dict, profile_dir: Path | None) -> str:
+    """core-source= and core-tag= from the profile's vendored record, and one report-rerun=
+    line per gate the profile lists for CI to run again.
+
+    The record is `<profile_dir>/core/VENDORED`. A render with none (the core rendering itself)
+    writes neither core line, and refuses a re-run list, since there would be nothing to fetch
+    the trusted gate scripts by. A core vendored by SHA renders the full SHA as the tag.
+    """
+    import vendor
+    rerun = gate_report_rerun(manifest)
+    record_path = None if profile_dir is None else Path(profile_dir) / vendor.CORE_DIR
+    if record_path is None or not (record_path / vendor.VENDORED).exists():
+        if rerun:
+            raise SyncError(f"{PROFILE_NAME}: gate_report: rerun: needs a vendored core to fetch "
+                            "the gates from, and there is no core/VENDORED. Run --vendor-core")
+        return ""
+    try:
+        record = vendor.read_record(record_path)
+    except vendor.VendorError as error:
+        raise SyncError(str(error)) from error
+    return (f"core-source={record.source}\n"
+            f"core-tag={record.tag or record.sha}\n"
+            + "".join(f"report-rerun={gate}\n" for gate in rerun))
+
+
+def render_gate_config(target: str, cfg: dict, manifest: dict, sha: str,
+                       profile_dir: Path | None = None) -> str:
     """What the pre-push hook and its gates read: key=value lines, never sourced.
 
     Tracked and stamped rather than per-clone git config, where one `git config` line
@@ -1385,11 +1417,87 @@ def render_gate_config(target: str, cfg: dict, manifest: dict, sha: str) -> str:
     marker = f"# {stamp(sha)[5:-4].strip()}"
     # Only the profile repo holds a lock to check; a target trusts its rendered list.
     consent_check = f"consent-check={CONSENT_SCRIPT}\n" if cfg.get("profile_repo") else ""
+    report_skip = "".join(f"report-skip={ref} {','.join(gates)}\n"
+                          for ref, gates in gate_report_skips(manifest))
     return (f"{marker}\n"
             f"deploy-branch={branch}\n"
             f"identity-email={identity(manifest)['email']}\n"
             f"config-dir={gate_config_dir(manifest)}\n"
-            f"{consent_check}")
+            f"{consent_check}"
+            f"{report_skip}"
+            f"{core_record_lines(manifest, profile_dir)}")
+
+
+GATE_NAME = re.compile(r"[^\s,]+")
+RERUN_GATE_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+
+def gate_report_rerun(manifest: dict, where: str = PROFILE_NAME) -> list[str]:
+    """The core gates CI runs again, in declaration order, each once.
+
+    Absent or empty is none. A name that is not a string, or not a gate under the core's
+    githooks/gates/, is refused naming its position: the re-run fetches the core's gates,
+    so a profile's own seeded gate is not there to run. Each name ends up in one gate-config
+    line and in a path, so the shape is checked as well.
+    """
+    block = manifest.get("gate_report")
+    entries = block.get("rerun") if isinstance(block, dict) else None
+    if entries is None:
+        return []
+    if not isinstance(entries, list):
+        raise SyncError(f"{where}: gate_report: rerun: must be a list of core gate names")
+    core_gates = {path.stem for path in (GITHOOKS_DIR / "gates").glob("*.sh")}
+    found: list[str] = []
+    for index, name in enumerate(entries):
+        if not isinstance(name, str) or not RERUN_GATE_NAME.fullmatch(name):
+            raise SyncError(f"{where}: gate_report: rerun[{index}] must be a gate name")
+        if name not in core_gates:
+            raise SyncError(f"{where}: gate_report: rerun[{index}]: {name} is not a core gate")
+        if name not in found:
+            found.append(name)
+    return found
+
+
+def gate_report_skips(manifest: dict, where: str = PROFILE_NAME) -> list[tuple[str, list[str]]]:
+    """The refs on which the report check accepts a skipped required gate, as (pattern, gates)
+    in declaration order, one row per pattern with its gates merged and deduplicated.
+
+    Absent, or an empty list, is no exemption at all. An entry that is not a mapping of exactly
+    `ref` and `gates`, a pattern that is not a regular expression or holds whitespace, or a
+    gate name with whitespace or a comma is refused naming the entry: each value ends up in
+    one line of gate-config, so a stray newline or space would forge or split it.
+    """
+    block = manifest.get("gate_report")
+    if block is None:
+        return []
+    if not isinstance(block, dict) or set(block) - {"skip_allowed", "rerun"}:
+        raise SyncError(f"{where}: gate_report: must be a mapping with only skip_allowed: "
+                        "and rerun:")
+    entries = block.get("skip_allowed")
+    if entries is None:
+        return []
+    if not isinstance(entries, list):
+        raise SyncError(f"{where}: gate_report: skip_allowed: must be a list")
+    merged: dict[str, list[str]] = {}
+    for index, entry in enumerate(entries):
+        name = f"{where}: gate_report: skip_allowed[{index}]"
+        if not isinstance(entry, dict) or set(entry) != {"ref", "gates"}:
+            raise SyncError(f"{name} must be a mapping of ref: and gates:")
+        ref, gates = entry["ref"], entry["gates"]
+        if not isinstance(ref, str) or not ref or re.search(r"\s", ref):
+            raise SyncError(f"{name}: ref must be a non-empty regular expression with no "
+                            "whitespace")
+        try:
+            re.compile(ref)
+        except re.error as exc:
+            raise SyncError(f"{name}: ref {ref!r} is not a regular expression: {exc}") from exc
+        if (not isinstance(gates, list) or not gates
+                or not all(isinstance(g, str) and GATE_NAME.fullmatch(g) for g in gates)):
+            raise SyncError(f"{name}: gates must be a non-empty list of gate names, none "
+                            "holding whitespace or a comma")
+        row = merged.setdefault(ref, [])
+        row.extend(g for g in gates if g not in row)
+    return list(merged.items())
 
 
 def gate_config_dir(manifest: dict) -> str:
@@ -2037,7 +2145,7 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
         for source in merged_seeds(GITHOOKS_DIR / "lib", profile_dir, "githooks/lib",
                                    lambda f: sorted(f.glob("*.py")) + sorted(f.glob("*.sh"))):
             plan[f".githooks/lib/{source.name}"] = render_asset(source, sha)
-        plan[".githooks/gate-config"] = render_gate_config(target, cfg, manifest, sha)
+        plan[".githooks/gate-config"] = render_gate_config(target, cfg, manifest, sha, profile_dir)
         plan[ENABLED_GATES] = render_enabled_gates(manifest, profile_dir, sha)
 
     # Ships with spec-response-shape.md. A shape that names a checker only
