@@ -117,7 +117,7 @@ with some enabled it prints one line per gate it runs.
   tag is the full SHA for a core vendored by SHA. A render with no vendored core
   (the core rendering itself) writes neither, and refuses a `rerun` list. With
   `report-rerun=` lines, the report check fetches `githooks/` at `core-tag` from
-  `core-source` into a fresh temporary directory (`actions/report-gate/rerun.sh`)
+  `core-source` into a fresh temporary directory (the report check's `rerun.sh`)
   and runs each listed gate once on the runner against the pushed commit, with
   `<sha> <before> origin`. It never runs the pushed commit's own
   `.githooks/gates/`. A listed gate that fails there fails the check even when the
@@ -125,7 +125,7 @@ with some enabled it prints one line per gate it runs.
   with no verdict, a fetch that fails, and a tag the core lacks all fail the
   check. List gates that need only the repository and their three arguments, and
   none that need Windows. With no `report-rerun=` line, the check is unchanged.
-  Limit: a commit that edits its own gate-config or report-gate workflow is not
+  Limit: a commit that edits its own gate-config or report-check job is not
   caught by this step. The drift check catches it, as both are rendered files.
 - Files a repository keeps by hand for its gates live in `config-dir`, the
   profile's `gate_config_dir`. Read them as `$(gate_config config-dir)/<file>`,
