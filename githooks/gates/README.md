@@ -48,6 +48,7 @@ Each is a script in this folder, and each reads only the repository it runs in.
 
 - `dead-variants`: refuses a tracked file named like a leftover copy, such as `x.bak` or `x.old`.
 - `eslint`: refuses a push that adds an eslint finding the baseline does not already hold.
+- `identity`: refuses a push carrying a commit whose author or committer is not the profile identity, or whose trailers name another identity. Reads the gate-config key `identity-email`.
 - `lockfile`: refuses a `package-lock.json` that npm calls an invalid tree.
 - `no-change-docs`: refuses markdown added outside the places documents live.
 - `ruff`: refuses a push that adds a ruff finding the baseline does not already hold.
