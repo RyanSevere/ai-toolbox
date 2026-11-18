@@ -73,6 +73,13 @@ spec files and load when they are needed.
   that raise one go last in the turn.
 - Never edit a file by running a terminal command unless asked to.
 <!-- mode: interactive -->
+- Never ask the operator to approve, review for merge or merge a pull request
+  while any of its checks is red or pending. Read them yourself - `gh pr checks
+  <n>` or `statusCheckRollup` - and fix or wait. Checks you cannot read count as
+  not green.
+- It holds for every channel you ask through. An open ask whose checks are not
+  green is withdrawn through that channel, or said in chat, and asked again once
+  they are.
 - Report findings as they land. No twenty-operation silences.
 - Never spend the operator's turn waiting. Anything long - a push, a suite, a
   deploy - runs in the background, and the turn moves on to the next undecided

@@ -3523,6 +3523,19 @@ class FactoryBundle(unittest.TestCase):
         self.assertNotIn("After a summary of the conversation", rules)
         self.assertNotIn("After the conversation is first summarised", rules)
 
+    def test_the_green_before_ask_rule_is_interactive_only(self):
+        """Intent: never ask for an approval, a review or a merge while a pull request's
+        checks are red or pending. The rule is interactive and renders with no profile
+        overlay."""
+        plan = self.plan()
+        interactive = " ".join(plan["AGENTS.md"].split())
+        factory = " ".join(plan[f"{sync.FACTORY_DIR}/prescriptions.md"].split())
+        for wanted in ("while any of its checks is red or pending", "gh pr checks <n>",
+                       "statusCheckRollup", "withdrawn"):
+            with self.subTest(wanted=wanted):
+                self.assertIn(wanted, interactive)
+                self.assertNotIn(wanted, factory)
+
     def test_factory_qa_judges_survivors_and_never_mutates(self):
         """Intent: factory QA never mutates and has no edit rights; it judges the survivors
         the brief lists, and a survivor is either weak or equivalent."""
