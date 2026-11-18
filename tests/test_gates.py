@@ -462,6 +462,79 @@ class SecretScan(GateCase):
         result = self.run_gate(self.commit("second"), base)
         self.assertEqual(result.returncode, 0)
 
+    ZEROS = "0" * 40
+
+    def deploy_branch_with_old_match(self, configured: bool = True) -> str:
+        """A deploy branch whose tip already carries a matching line, tracked as origin/main."""
+        if configured:
+            self.gate_config(deploy_branch="main")
+        self.write("old.md", f"`{self.FAKE_HEX}`\n")
+        tip = self.commit("deploy")
+        self.git("update-ref", "refs/remotes/origin/main", tip)
+        return tip
+
+    def test_new_branch_scans_from_the_merge_base(self):
+        """Intent: lines already on the deploy branch are not new on a branch cut from it."""
+        self.deploy_branch_with_old_match()
+        self.write("new.txt", "clean\n")
+        result = self.run_gate(self.commit("branch"), self.ZEROS)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("scanning from merge-base with origin/main", result.stdout)
+
+    def test_new_branch_adding_a_match_is_refused(self):
+        self.deploy_branch_with_old_match()
+        self.write("added.md", f"`{self.FAKE_HEX}`\n")
+        result = self.run_gate(self.commit("branch"), self.ZEROS)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("added.md:1", result.stdout)
+        self.assertNotIn("old.md", result.stdout)
+
+    def test_new_branch_at_the_deploy_tip_has_an_empty_diff(self):
+        tip = self.deploy_branch_with_old_match()
+        result = self.run_gate(tip, self.ZEROS)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_new_branch_uses_the_remote_named_by_the_third_argument(self):
+        tip = self.deploy_branch_with_old_match()
+        self.git("update-ref", "refs/remotes/upstream/main", tip)
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        self.write("new.txt", "clean\n")
+        result = self.run_gate(self.commit("branch"), self.ZEROS, "upstream")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("merge-base with upstream/main", result.stdout)
+
+    def test_new_branch_with_no_deploy_branch_configured_scans_everything(self):
+        self.deploy_branch_with_old_match(configured=False)
+        self.write("new.txt", "clean\n")
+        result = self.run_gate(self.commit("branch"), self.ZEROS)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("old.md:1", result.stdout)
+        self.assertIn("scanning the whole history (new branch, no merge base)", result.stdout)
+
+    def test_new_branch_with_no_remote_tracking_ref_scans_everything(self):
+        self.deploy_branch_with_old_match()
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        self.write("new.txt", "clean\n")
+        result = self.run_gate(self.commit("branch"), self.ZEROS)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("old.md:1", result.stdout)
+
+    def test_new_branch_with_orphan_history_scans_everything(self):
+        self.deploy_branch_with_old_match()
+        self.git("checkout", "-q", "--orphan", "island")
+        self.write("island.md", f"`{self.FAKE_HEX}`\n")
+        result = self.run_gate(self.commit("island"), self.ZEROS)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("island.md:1", result.stdout)
+        self.assertIn("scanning the whole history (new branch, no merge base)", result.stdout)
+
+    def test_existing_branch_still_scans_only_its_own_diff(self):
+        tip = self.deploy_branch_with_old_match()
+        self.write("new.txt", "clean\n")
+        result = self.run_gate(self.commit("branch"), tip)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("scanning", result.stdout)
+
 
 class SecretDefaults(GateCase):
     gate = "secret-defaults"
