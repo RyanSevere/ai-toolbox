@@ -4,11 +4,11 @@
 # Path: {PROJECT_ROOT}/tests/test_hooks.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-17
+# Last Updated: 2026-11-18
 # Description: Tests for the editor safety hooks, hooks/no-secret-defaults,
 #              hooks/no-shell-file-edits, hooks/no-destructive-shell and
 #              hooks/no-generated-edits, hooks/session-start,
-#              hooks/write-observer, and the
+#              hooks/write-observer, hooks/response-check, and the
 #              shared runtime library hooks/lib/hookio.py. Per hook: a violation it must
 #              catch, a near-miss it must allow, and malformed input it must
 #              not crash on. A guard that silently stops matching looks the
@@ -55,6 +55,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -1292,6 +1293,147 @@ class WriteObserver(unittest.TestCase):
         for line in ("event: file.write.after", "kind: observer", "tools: [claude]",
                      "timeout: 10", 'run: ["{python}", "{hooks}/write-observer/hook.py"]'):
             self.assertIn(line, text.splitlines())
+
+
+RESPONSE_CHECK = HOOKS / "response-check"
+RESPONSES = HOOKS.parent / "responses"
+
+
+class ResponseCheck(unittest.TestCase):
+    """Claude Code's Stop hook sends a malformed reply back once, through the rendered
+    .github/scripts/responses/check_response.py --stop, and never blocks otherwise."""
+
+    MARKER = "=== REPLY STARTS HERE ==="
+    # A well-formed condensed reply, synthetic.
+    CLEAN = """Mode: Planning
+Needs from you: 1 decision, 1 operator step
+Changed: nothing
+
+## Summary
+
+The live state matches the seed: `git status -sb` printed "## main...origin/main".
+
+## Logic and approach
+
+- LA1 Rank by what unblocks the most work
+  - Verdict: holds, because example-2 waits on example-1
+
+## Decisions and clarifications
+
+- DC1 Pick the next ticket
+  - Use case: decides what the next session builds
+  - Options:
+    - a. example-1 first (recommended)
+    - b. example-2 first
+  - Recommendation: (a), because it unblocks example-2, assuming example-2 is next
+  - Would change my answer: example-2 turning out to have no dependency on example-1
+  - Premise checked: `git log -1` on example-2 shows it depends on example-1
+
+## Operator steps
+
+- OS1 Run `python tools/probe.py --host example` and paste the output back
+
+## Recommended next
+
+- R1 Once OS1's output is back, decide whether example-1 can run on that host
+  - Reasoning: the probe is the only unknown
+
+## Came up while doing it
+
+None.
+"""
+    # The checker sends a turn back only for a decisions finding: here DC1 has no Use case.
+    MALFORMED = MARKER + "\n" + CLEAN.replace(
+        "  - Use case: decides what the next session builds\n", "")
+    # A formatting-only finding: reported, never sent back.
+    FORMATTING_ONLY = MARKER + "\n" + CLEAN.replace(
+        "The live state matches the seed:", "- The live state matches the seed:")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.hook = load("response_check", RESPONSE_CHECK / "hook.py")
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        # A machine with the hooks switched off must not skip these checks.
+        patch = mock.patch.dict(os.environ)
+        patch.start()
+        self.addCleanup(patch.stop)
+        os.environ.pop("AI_TOOLBOX_HOOKS", None)
+
+    def rendered_project(self) -> Path:
+        """A project root laid out the way sync renders it: the checker under
+        .github/scripts/responses/, the hook under .claude/hooks/response-check/."""
+        shutil.copytree(RESPONSES, self.tmp / ".github" / "scripts" / "responses",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        (self.tmp / ".claude" / "hooks" / "response-check").mkdir(parents=True)
+        return self.tmp
+
+    def run_hook(self, payload: dict | bytes, env: dict | None = None,
+                 checker: Path | None = None) -> tuple[int, str]:
+        raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
+        err = io.StringIO()
+        patches = [mock.patch.object(sys, "stdin", stdin_of(raw)),
+                   mock.patch.object(sys, "stderr", err),
+                   mock.patch.dict(os.environ, env or {}, clear=False)]
+        if checker is not None:
+            patches.append(mock.patch.object(self.hook, "find_checker", return_value=checker))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        code = self.hook.main()
+        return code, err.getvalue()
+
+    def test_the_spec_renders_for_claude_code_only(self):
+        text = (RESPONSE_CHECK / "hook.yaml").read_text(encoding="utf-8")
+        for line in ("event: turn.end", "kind: observer", "tools: [claude]",
+                     'run: ["{python}", "{hooks}/response-check/hook.py"]'):
+            self.assertIn(line, text.splitlines())
+
+    def test_the_rendered_checker_is_found_from_the_project_root(self):
+        root = self.rendered_project()
+        start = root / ".claude" / "hooks" / "response-check" / "hook.py"
+        self.assertEqual(self.hook.find_checker(start),
+                         (root / ".github" / "scripts" / "responses"
+                          / "check_response.py").resolve())
+
+    def test_a_malformed_reply_is_sent_back_once(self):
+        checker = self.rendered_project() / ".github" / "scripts" / "responses" / "check_response.py"
+        code, err = self.run_hook({"last_assistant_message": self.MALFORMED,
+                                   "stop_hook_active": False}, checker=checker)
+        self.assertEqual(code, 2)
+        self.assertTrue(err.strip(), "the findings go to stderr")
+
+    def test_a_formatting_only_reply_is_reported_not_sent_back(self):
+        checker = self.rendered_project() / ".github" / "scripts" / "responses" / "check_response.py"
+        code, err = self.run_hook({"last_assistant_message": self.FORMATTING_ONLY,
+                                   "stop_hook_active": False}, checker=checker)
+        self.assertEqual(code, 0)
+        self.assertIn("Compliance: FAIL", err)
+
+    def test_a_second_try_is_never_sent_back(self):
+        checker = self.rendered_project() / ".github" / "scripts" / "responses" / "check_response.py"
+        code, _ = self.run_hook({"last_assistant_message": self.MALFORMED,
+                                 "stop_hook_active": True}, checker=checker)
+        self.assertEqual(code, 0)
+
+    def test_the_off_switch_skips_the_check(self):
+        code, err = self.run_hook({"last_assistant_message": self.MALFORMED},
+                                  env={"AI_TOOLBOX_HOOKS": "off"})
+        self.assertEqual((code, err), (0, ""))
+
+    def test_no_checker_found_never_blocks(self):
+        code, err = self.run_hook({"last_assistant_message": self.MALFORMED},
+                                  checker=Path("/nonexistent/check_response.py"))
+        self.assertEqual(code, 0)
+        self.assertIn("not found", err)
+
+    def test_a_checker_that_crashes_never_blocks(self):
+        broken = self.tmp / "check_response.py"
+        broken.write_text("raise SystemExit(7)\n", encoding="utf-8")
+        code, _ = self.run_hook({"last_assistant_message": self.MALFORMED}, checker=broken)
+        self.assertEqual(code, 0)
 
 
 class HookInput(unittest.TestCase):

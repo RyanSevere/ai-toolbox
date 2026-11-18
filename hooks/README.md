@@ -186,6 +186,18 @@ shell gate can use it too.
 `.githooks/lib/secret_shapes.py`; the module raises; the input cannot be read; the tool is not
 Claude Code; or `AI_TOOLBOX_HOOKS=off`. It exits 0 in every case. Cursor is not covered.
 
+### `response-check` - agent hook on `turn.end`, Claude Code only
+
+An `observer` with `tools: [claude]`, run when a turn ends (`Stop`). It hands the hook payload
+to the rendered response checker, `.github/scripts/responses/check_response.py --stop`, found
+by walking up from the hook's own folder to the nearest ancestor that holds it. A reply that
+fails the response shape is sent back once: the checker's findings go to stderr and the hook
+exits 2. A second try (`stop_hook_active` true) is reported and never sent back again.
+
+**It never blocks on its own failure.** With no rendered checker above the hook, a checker that
+crashes or times out, or `AI_TOOLBOX_HOOKS=off`, it exits 0; the first three print why the reply
+was not graded. Cursor is not covered.
+
 ### `no-shell-file-edits` - Cursor hook, not shipped
 
 **Not rendered.** In Cursor it denied every agent `git commit` with "Blocked:
