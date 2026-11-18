@@ -1303,51 +1303,16 @@ class ResponseCheck(unittest.TestCase):
     """Claude Code's Stop hook sends a malformed reply back once, through the rendered
     .github/scripts/responses/check_response.py --stop, and never blocks otherwise."""
 
-    MARKER = "=== REPLY STARTS HERE ==="
-    # A well-formed condensed reply, synthetic.
-    CLEAN = """Mode: Planning
-Needs from you: 1 decision, 1 operator step
-Changed: nothing
+    MALFORMED = "No marker, no header, no sections at all."
 
-## Summary
-
-The live state matches the seed: `git status -sb` printed "## main...origin/main".
-
-## Logic and approach
-
-- LA1 Rank by what unblocks the most work
-  - Verdict: holds, because example-2 waits on example-1
-
-## Decisions and clarifications
-
-- DC1 Pick the next ticket
-  - Use case: decides what the next session builds
-  - Options:
-    - a. example-1 first (recommended)
-    - b. example-2 first
-  - Recommendation: (a), because it unblocks example-2, assuming example-2 is next
-  - Would change my answer: example-2 turning out to have no dependency on example-1
-  - Premise checked: `git log -1` on example-2 shows it depends on example-1
-
-## Operator steps
-
-- OS1 Run `python tools/probe.py --host example` and paste the output back
-
-## Recommended next
-
-- R1 Once OS1's output is back, decide whether example-1 can run on that host
-  - Reasoning: the probe is the only unknown
-
-## Came up while doing it
-
-None.
-"""
-    # The checker sends a turn back only for a decisions finding: here DC1 has no Use case.
-    MALFORMED = MARKER + "\n" + CLEAN.replace(
-        "  - Use case: decides what the next session builds\n", "")
-    # A formatting-only finding: reported, never sent back.
-    FORMATTING_ONLY = MARKER + "\n" + CLEAN.replace(
-        "The live state matches the seed:", "- The live state matches the seed:")
+    # A well-formed reply but for one decision whose reasoning lines are missing: only a
+    # `decisions:` finding sends a reply back.
+    DECISION_GAP = (
+        "=== REPLY STARTS HERE ===\nMode: Execution\nNeeds from you: 1 decision\n"
+        "Changed: nothing\n\n## Summary\n**Topic:** done, see `tests/x.py:1`.\n\n"
+        "## Decisions and clarifications\n- DC1 Pick one?\n  - Use case: decides the next step\n"
+        "  - Options:\n    - a. this (recommended)\n    - b. that\n\n"
+        "## Recommended next\nNone.\n\n## Came up while doing it\nNone.\n")
 
     @classmethod
     def setUpClass(cls):
@@ -1398,24 +1363,24 @@ None.
                          (root / ".github" / "scripts" / "responses"
                           / "check_response.py").resolve())
 
-    def test_a_malformed_reply_is_sent_back_once(self):
-        checker = self.rendered_project() / ".github" / "scripts" / "responses" / "check_response.py"
-        code, err = self.run_hook({"last_assistant_message": self.MALFORMED,
-                                   "stop_hook_active": False}, checker=checker)
-        self.assertEqual(code, 2)
-        self.assertTrue(err.strip(), "the findings go to stderr")
+    def rendered_checker(self) -> Path:
+        return self.rendered_project() / ".github" / "scripts" / "responses" / "check_response.py"
 
     def test_a_formatting_only_reply_is_reported_not_sent_back(self):
-        checker = self.rendered_project() / ".github" / "scripts" / "responses" / "check_response.py"
-        code, err = self.run_hook({"last_assistant_message": self.FORMATTING_ONLY,
-                                   "stop_hook_active": False}, checker=checker)
+        code, err = self.run_hook({"last_assistant_message": self.MALFORMED,
+                                   "stop_hook_active": False}, checker=self.rendered_checker())
         self.assertEqual(code, 0)
-        self.assertIn("Compliance: FAIL", err)
+        self.assertTrue(err.strip(), "the findings still go to stderr")
+
+    def test_a_reply_with_a_decision_finding_is_sent_back_once(self):
+        code, err = self.run_hook({"last_assistant_message": self.DECISION_GAP,
+                                   "stop_hook_active": False}, checker=self.rendered_checker())
+        self.assertEqual(code, 2)
+        self.assertIn("decisions:", err)
 
     def test_a_second_try_is_never_sent_back(self):
-        checker = self.rendered_project() / ".github" / "scripts" / "responses" / "check_response.py"
         code, _ = self.run_hook({"last_assistant_message": self.MALFORMED,
-                                 "stop_hook_active": True}, checker=checker)
+                                 "stop_hook_active": True}, checker=self.rendered_checker())
         self.assertEqual(code, 0)
 
     def test_the_off_switch_skips_the_check(self):
