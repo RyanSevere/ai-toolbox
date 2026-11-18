@@ -82,6 +82,18 @@ runs:
         SHA: ${{ inputs.sha }}
       run: bash "$GITHUB_ACTION_PATH/fetch.sh"
 
+    # Gates the profile lists as report-rerun= are run here, from the core release it
+    # vendored, so their verdict does not rest on the pushing machine's word. With no such
+    # line this does nothing. A fetch that fails fails the step.
+    - name: Run the listed gates again from the vendored core
+      if: steps.fetch.outputs.found == 'yes'
+      shell: sh
+      env:
+        SHA: ${{ inputs.sha }}
+        BEFORE: ${{ inputs.before }}
+        GATE_CONFIG: ${{ inputs.gate-config }}
+      run: sh "$GITHUB_ACTION_PATH/rerun.sh"
+
     - name: Every required gate must be present, passing, and bound to this commit
       shell: bash
       env:
@@ -125,4 +137,5 @@ runs:
           --sha "$SHA" \
           --gates "$GATES" \
           --gate-config "$GATE_CONFIG" \
-          --ref "$REF"
+          --ref "$REF" \
+          --rerun "$RUNNER_TEMP/rerun.txt"

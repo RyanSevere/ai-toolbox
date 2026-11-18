@@ -2986,6 +2986,90 @@ class GateReportSkip(unittest.TestCase):
                 self.lines({"skip_allowed": [entry]})
 
 
+class GateReportRerun(unittest.TestCase):
+    """gate_report.rerun names the core gates CI runs again. A render writes core-source=,
+    core-tag= and one report-rerun= line per gate, the first two from the vendored record."""
+
+    SOURCE = "acme/core"
+    SHA40 = "0123456789abcdef0123456789abcdef01234567"
+
+    def tearDown(self):
+        sync.set_stamp_source(MANIFEST)
+
+    def profile(self, tag: str = "v1.2.3") -> Path:
+        """The locked example, as a profile that vendored its core."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        folder = Path(tmp.name) / "profile"
+        shutil.copytree(EXAMPLE, folder)
+        (folder / "core").mkdir()
+        (folder / "core" / "VENDORED").write_text(
+            f"source={self.SOURCE}\ntag={tag}\nsha={self.SHA40}\n"
+            f"content-hash=sha256:{'0' * 64}\n", encoding="utf-8")
+        return folder
+
+    def render(self, rerun, profile_dir: Path | None = None) -> list[str]:
+        manifest = {**MANIFEST, "gate_report": {"rerun": rerun}}
+        folder = profile_dir or self.profile()
+        text = build_plan("t", {}, DEFAULTS, SHA, manifest,
+                          profile_dir=folder)[".githooks/gate-config"]
+        return text.splitlines()
+
+    def test_each_listed_gate_renders_a_line_and_the_record_renders_two(self):
+        lines = self.render(["secret-scan", "identity"])
+        self.assertIn(f"core-source={self.SOURCE}", lines)
+        self.assertIn("core-tag=v1.2.3", lines)
+        self.assertEqual([x for x in lines if x.startswith("report-rerun=")],
+                         ["report-rerun=secret-scan", "report-rerun=identity"])
+
+    def test_a_core_vendored_by_sha_renders_the_sha_as_the_tag(self):
+        lines = self.render(["secret-scan"], self.profile(tag=""))
+        self.assertIn(f"core-tag={self.SHA40}", lines)
+
+    def test_a_gate_listed_twice_renders_once(self):
+        lines = self.render(["secret-scan", "identity", "secret-scan"])
+        self.assertEqual([x for x in lines if x.startswith("report-rerun=")],
+                         ["report-rerun=secret-scan", "report-rerun=identity"])
+
+    def test_no_key_or_an_empty_list_renders_no_rerun_line(self):
+        self.assertEqual([x for x in self.render([]) if x.startswith("report-rerun=")], [])
+        text = build_plan("t", {}, DEFAULTS, SHA, MANIFEST,
+                          profile_dir=self.profile())[".githooks/gate-config"]
+        self.assertNotIn("report-rerun", text)
+
+    def test_a_profile_with_no_vendored_record_writes_no_core_lines(self):
+        text = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)[".githooks/gate-config"]
+        self.assertNotIn("core-source", text)
+        self.assertNotIn("core-tag", text)
+
+    def test_a_list_without_a_vendored_record_is_refused(self):
+        """Intent: with nothing to fetch the gates by, a re-run list can promise nothing."""
+        manifest = {**MANIFEST, "gate_report": {"rerun": ["secret-scan"]}}
+        with self.assertRaises(sync.SyncError) as caught:
+            build_plan("t", {}, DEFAULTS, SHA, manifest)
+        self.assertIn("core", str(caught.exception))
+
+    def loaded(self, body: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "profile.yaml").write_text("source: {repo: s}\n" + body, encoding="utf-8")
+            return sync.load_profile(Path(tmp))
+
+    def test_the_key_loads_beside_skip_allowed(self):
+        profile = self.loaded("gate_report:\n  skip_allowed: []\n  rerun: [secret-scan]\n")
+        self.assertEqual(profile["gate_report"]["rerun"], ["secret-scan"])
+
+    def test_a_name_that_is_not_a_core_gate_is_refused_naming_it(self):
+        for item in ("no-such-gate", "3", "[x]", "'two words'", "''"):
+            with self.subTest(item=item), self.assertRaises(sync.SyncError) as caught:
+                self.loaded(f"gate_report:\n  rerun: [secret-scan, {item}]\n")
+            self.assertIn("rerun[1]", str(caught.exception))
+
+    def test_a_rerun_that_is_not_a_list_is_refused(self):
+        with self.assertRaises(sync.SyncError) as caught:
+            self.loaded("gate_report:\n  rerun: secret-scan\n")
+        self.assertIn("rerun", str(caught.exception))
+
+
 FIXTURE_TARGETS = {
     "alpha": {},
     "bravo": {},

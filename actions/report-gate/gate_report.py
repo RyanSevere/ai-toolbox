@@ -132,6 +132,46 @@ def load_gate_config(path: Path) -> tuple[list[SkipRule], str]:
     return skips, deploy
 
 
+RERUN_GATE = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+
+def load_rerun_gates(path: Path) -> list[str]:
+    """The gates the profile lists for CI to run again: one report-rerun= line each, in order,
+    a repeat counting once. A malformed name refuses, since it names a file the re-run runs."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ReportError(f"gate-config {path} cannot be read ({exc.strerror or exc}), "
+                          "so the gates to re-run are unknown") from exc
+    gates: list[str] = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        key, sep, value = raw.strip().partition("=")
+        if not sep or key != "report-rerun":
+            continue
+        if not RERUN_GATE.fullmatch(value.strip()):
+            raise ReportError(f"gate-config {path} line {number}: report-rerun= wants one gate name")
+        if value.strip() not in gates:
+            gates.append(value.strip())
+    return gates
+
+
+def load_rerun_verdicts(path: Path | None, listed: list[str]) -> dict[str, str]:
+    """What the CI re-run found for each listed gate: 'pass', 'fail', or 'missing' when the
+    verdict file has no line for it, does not exist, or was not given. Missing is never a pass."""
+    verdicts = {gate: "missing" for gate in listed}
+    if path is None:
+        return verdicts
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return verdicts
+    for raw in text.splitlines():
+        name, _, status = raw.strip().partition(" ")
+        if name in verdicts and status in (PASS, "fail"):
+            verdicts[name] = status
+    return verdicts
+
+
 def parse_report(text: str) -> dict:
     try:
         report = json.loads(text)
@@ -162,8 +202,13 @@ def validate(
     ref: str = "",
     skip_allowed: list[SkipRule] | None = None,
     deploy_branch: str = "",
+    rerun: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Returns findings that fail the gate, and notes that do not.
+
+    `rerun` maps each gate CI ran again to 'pass', 'fail' or 'missing'. A fail is a finding
+    whatever the report says, and a pass changes nothing: it never stands in for a report
+    entry. With none, the check is exactly what it is without a re-run.
 
     `ref` is the pull request's base ref, or the pushed ref. A required gate the report
     skipped passes as a note only when `skip_allowed` has a rule for that gate whose pattern
@@ -224,6 +269,17 @@ def validate(
     for name in sorted(set(lists["skipped"]) - set(required)):
         notes.append(f"{name}: skipped, off in profile.lock")
     notes.extend(f"flag changed: {change}" for change in lists["flag_changes"])
+
+    for name, verdict in sorted((rerun or {}).items()):
+        entry = gates.get(name)
+        reported = entry.get("status") if isinstance(entry, dict) else entry
+        if verdict == "fail" and reported == PASS:
+            findings.append(f"{name}: the report and the commit disagree - the report says it "
+                            "passed, but CI ran the gate again from the vendored core and it failed")
+        elif verdict == "fail":
+            findings.append(f"{name}: failed when CI ran it again from the vendored core")
+        elif verdict != PASS:
+            findings.append(f"{name}: no CI re-run verdict, so the report's word is not confirmed")
 
     return findings, notes
 
@@ -442,6 +498,12 @@ def main() -> int:
         default="",
         help="the pull request base ref, or the pushed ref; a declared exemption may skip a gate",
     )
+    parser.add_argument(
+        "--rerun",
+        type=Path,
+        help="the verdicts rerun.sh wrote, one '<gate> pass|fail' line each; read only for "
+             "the gates gate-config lists as report-rerun=",
+    )
     args = parser.parse_args()
 
     if args.merge_cover:
@@ -452,6 +514,8 @@ def main() -> int:
     try:
         required = load_required_gates(args.gates)
         skip_allowed, deploy_branch = load_gate_config(args.gate_config)
+        listed = load_rerun_gates(args.gate_config)
+        verdicts = load_rerun_verdicts(args.rerun, listed) if listed else None
         if not args.report.exists():
             raise ReportError(
                 f"no report at {args.report}. A skipped hook writes no report, "
@@ -462,7 +526,8 @@ def main() -> int:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 1
 
-    findings, notes = validate(report, args.sha, required, args.ref, skip_allowed, deploy_branch)
+    findings, notes = validate(report, args.sha, required, args.ref, skip_allowed, deploy_branch,
+                               verdicts)
 
     print(f"{len(required)} gate(s) required for {args.sha}")
     for note in notes:

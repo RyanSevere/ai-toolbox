@@ -635,5 +635,201 @@ class MergeCoverAgainstRealGit(unittest.TestCase):
             self.assertFalse(accepted(self.base), before)
 
 
+class RerunVerdicts(unittest.TestCase):
+    """A gate the profile lists in report-rerun= is judged again in CI, and a CI fail beats a
+    report pass."""
+
+    def findings(self, rerun, doc=None) -> list[str]:
+        return gr.validate(doc or report(), SHA, REQUIRED, rerun=rerun)[0]
+
+    def test_a_ci_fail_against_a_report_pass_names_the_mismatch(self):
+        found = self.findings({"typecheck": "fail"})
+        self.assertEqual(len(found), 1)
+        self.assertIn("typecheck", found[0])
+        self.assertIn("disagree", found[0])
+
+    def test_a_ci_pass_changes_nothing(self):
+        self.assertEqual(self.findings({"typecheck": "pass", "dead-variants": "pass"}), [])
+
+    def test_no_list_behaves_as_before(self):
+        self.assertEqual(self.findings(None), [])
+        self.assertEqual(self.findings({}), [])
+        bad = {"commit": SHA, "gates": {"dead-variants": {"status": "pass"}}}
+        self.assertEqual(self.findings(None, bad), gr.validate(bad, SHA, REQUIRED)[0])
+
+    def test_a_ci_pass_never_stands_in_for_a_missing_report_entry(self):
+        bad = {"commit": SHA, "gates": {"dead-variants": {"status": "pass"}}}
+        found = self.findings({"typecheck": "pass"}, bad)
+        self.assertTrue(any("typecheck" in f and "absent" in f for f in found))
+
+    def test_a_ci_fail_where_the_report_also_failed_is_still_a_finding(self):
+        bad = report(**{"dead-variants": {"status": "pass"}, "typecheck": {"status": "fail"}})
+        found = self.findings({"typecheck": "fail"}, bad)
+        self.assertTrue(any("CI" in f and "typecheck" in f for f in found))
+
+    def test_a_listed_gate_with_no_verdict_is_a_finding(self):
+        found = self.findings({"typecheck": "missing"})
+        self.assertTrue(any("typecheck" in f and "no CI re-run verdict" in f for f in found))
+
+
+class RerunFiles(unittest.TestCase):
+    def path(self, text: str) -> Path:
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder, True)
+        path = folder / "file"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_report_rerun_lines_are_read_once_each_in_order(self):
+        path = self.path("deploy-branch=main\nreport-rerun=b\nreport-rerun=a\nreport-rerun=b\n")
+        self.assertEqual(gr.load_rerun_gates(path), ["b", "a"])
+
+    def test_no_line_lists_nothing(self):
+        self.assertEqual(gr.load_rerun_gates(self.path("deploy-branch=main\n")), [])
+
+    def test_a_malformed_line_refuses(self):
+        for line in ("report-rerun=", "report-rerun=two words", "report-rerun=../x"):
+            with self.subTest(line=line), self.assertRaises(gr.ReportError):
+                gr.load_rerun_gates(self.path(f"{line}\n"))
+
+    def test_verdicts_are_read_and_an_unlisted_or_absent_one_is_missing(self):
+        path = self.path("secret-scan pass\nidentity fail\n")
+        self.assertEqual(gr.load_rerun_verdicts(path, ["secret-scan", "identity", "x"]),
+                         {"secret-scan": "pass", "identity": "fail", "x": "missing"})
+        self.assertEqual(gr.load_rerun_verdicts(Path("absent"), ["x"]), {"x": "missing"})
+
+
+def _clean_env() -> dict:
+    import os
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+@unittest.skipUnless(shutil.which("sh") and shutil.which("git"), "needs sh and git")
+class RerunAgainstARealCore(unittest.TestCase):
+    """rerun.sh fetches githooks/ at the core tag from a local bare repository, never GitHub,
+    and runs each listed gate on the pushed commit."""
+
+    SOURCE = "acme/core"
+    TAG = "v9.9.9"
+
+    def git(self, cwd: Path, *args: str) -> str:
+        done = subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.test",
+             "-c", "commit.gpgsign=false", *args],
+            cwd=cwd, capture_output=True, text=True, env=_clean_env(), check=True)
+        return done.stdout.strip()
+
+    def setUp(self):
+        self.work = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.work, True)
+        # A core: a copy of this repository's githooks/, committed and tagged.
+        seed = self.work / "seed"
+        shutil.copytree(ROOT / "githooks", seed / "githooks",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        self.git(self.work, "init", "-q", str(seed))
+        self.git(seed, "add", "-A")
+        self.git(seed, "commit", "-q", "-m", "core")
+        self.git(seed, "tag", self.TAG)
+        self.bases = self.work / "bases"
+        bare = self.bases / "acme" / "core.git"
+        bare.parent.mkdir(parents=True)
+        self.git(self.work, "clone", "-q", "--bare", str(seed), str(bare))
+        # The pushed repository: a clean commit, then a second one a test fills in.
+        self.repo = self.work / "repo"
+        self.git(self.work, "init", "-q", str(self.repo))
+        (self.repo / "a.txt").write_text("hello\n", encoding="utf-8")
+        self.git(self.repo, "add", "-A")
+        self.git(self.repo, "commit", "-q", "-m", "one")
+        self.before = self.git(self.repo, "rev-parse", "HEAD")
+        self.temp = self.work / "temp"
+        self.temp.mkdir()
+
+    def push(self, text: str) -> str:
+        (self.repo / "b.txt").write_text(text, encoding="utf-8")
+        self.git(self.repo, "add", "-A")
+        self.git(self.repo, "commit", "-q", "-m", "two")
+        return self.git(self.repo, "rev-parse", "HEAD")
+
+    def config(self, *lines: str, tag: str | None = None) -> Path:
+        path = self.work / "gate-config"
+        body = [f"core-source={self.SOURCE}", f"core-tag={tag or self.TAG}", "deploy-branch=main",
+                *lines]
+        path.write_text("\n".join(body) + "\n", encoding="utf-8")
+        return path
+
+    def rerun(self, sha: str, config: Path):
+        env = {**_clean_env(), "SHA": sha, "BEFORE": self.before, "GATE_CONFIG": str(config),
+               "RUNNER_TEMP": str(self.temp), "CORE_URL_BASE": self.bases.as_uri()}
+        return subprocess.run(["sh", str(ACTION / "rerun.sh")], cwd=self.repo, env=env,
+                              capture_output=True, text=True)
+
+    def check(self, sha: str, config: Path, doc: dict):
+        gates = self.work / "gates"
+        gates.write_text("secret-scan\n", encoding="utf-8")
+        path = self.work / "report.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(Path(gr.__file__)), "--sha", sha, "--gates", str(gates),
+             "--gate-config", str(config), "--report", str(path),
+             "--rerun", str(self.temp / "rerun.txt")],
+            capture_output=True, text=True)
+
+    def passing_report(self, sha: str) -> dict:
+        return {"commit": sha, "gates": {"secret-scan": {"status": "pass"}}}
+
+    def test_a_credential_the_report_missed_fails_the_check_naming_the_mismatch(self):
+        sha = self.push("-----BEGIN " + "RSA PRIVATE KEY" + "-----\n")
+        config = self.config("report-rerun=secret-scan")
+        ran = self.rerun(sha, config)
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertIn("secret-scan", ran.stdout)
+        checked = self.check(sha, config, self.passing_report(sha))
+        self.assertNotEqual(checked.returncode, 0)
+        self.assertIn("disagree", checked.stderr)
+        self.assertIn("secret-scan", checked.stderr)
+
+    def test_a_clean_commit_passes_the_rerun_and_the_check(self):
+        sha = self.push("nothing to see\n")
+        config = self.config("report-rerun=secret-scan", "report-rerun=secret-scan")
+        ran = self.rerun(sha, config)
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertEqual(ran.stdout.count("secret-scan"), 1, "a gate listed twice runs once")
+        checked = self.check(sha, config, self.passing_report(sha))
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_a_tag_missing_from_the_core_fails_the_step(self):
+        sha = self.push("nothing to see\n")
+        ran = self.rerun(sha, self.config("report-rerun=secret-scan", tag="v0.0.1"))
+        self.assertNotEqual(ran.returncode, 0)
+        self.assertIn("v0.0.1", ran.stdout + ran.stderr)
+
+    def test_a_missing_core_repository_fails_the_step(self):
+        sha = self.push("nothing to see\n")
+        config = self.work / "gate-config"
+        config.write_text("core-source=acme/absent\ncore-tag=v9.9.9\ndeploy-branch=main\n"
+                          "report-rerun=secret-scan\n", encoding="utf-8")
+        self.assertNotEqual(self.rerun(sha, config).returncode, 0)
+
+    def test_no_list_runs_nothing_and_needs_no_fetch(self):
+        sha = self.push("nothing to see\n")
+        config = self.work / "gate-config"
+        config.write_text("deploy-branch=main\n", encoding="utf-8")
+        ran = self.rerun(sha, config)
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertFalse((self.temp / "rerun.txt").exists())
+
+    def test_a_list_with_no_core_source_fails_the_step(self):
+        sha = self.push("nothing to see\n")
+        config = self.work / "gate-config"
+        config.write_text("deploy-branch=main\nreport-rerun=secret-scan\n", encoding="utf-8")
+        self.assertNotEqual(self.rerun(sha, config).returncode, 0)
+
+    def test_a_listed_gate_the_core_does_not_have_fails_the_step(self):
+        sha = self.push("nothing to see\n")
+        ran = self.rerun(sha, self.config("report-rerun=no-such-gate"))
+        self.assertNotEqual(ran.returncode, 0)
+        self.assertIn("no-such-gate", ran.stdout + ran.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
