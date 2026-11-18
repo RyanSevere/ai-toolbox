@@ -102,6 +102,31 @@ with some enabled it prints one line per gate it runs.
   must then refuse rather than assume a default.
 - Keys: `deploy-branch`, the branch a failing gate blocks; `identity-email`;
   `config-dir`; and `consent-check`, in the profile's repository only.
+- `report-skip=<regex> <gate>[,<gate>...]`, once per ref, rendered from the
+  profile's `gate_report.skip_allowed` (a list of `{ref: <regex>, gates:
+  [<gate>, ...]}`). The check that reads the gate report treats a skipped
+  required gate as a finding, unless a line names that gate and its regex
+  matches the whole ref. A ref that matches only in part is not exempt, and
+  neither is the `deploy-branch`. With no line, nothing is exempt. A regex
+  holds no whitespace and a gate name no whitespace or comma, or the render
+  refuses. If the file cannot be read the check fails, never passes.
+- `core-source=<owner/repo>`, `core-tag=<tag>` and `report-rerun=<gate>`, once per
+  gate. The profile lists the gates in `gate_report.rerun: [<gate>, ...]`, and
+  `sync.py` refuses a name that is not a gate under the core's `githooks/gates/`.
+  `core-source` and `core-tag` come from the profile's `core/VENDORED`, and the
+  tag is the full SHA for a core vendored by SHA. A render with no vendored core
+  (the core rendering itself) writes neither, and refuses a `rerun` list. With
+  `report-rerun=` lines, the report check fetches `githooks/` at `core-tag` from
+  `core-source` into a fresh temporary directory (the report check's `rerun.sh`)
+  and runs each listed gate once on the runner against the pushed commit, with
+  `<sha> <before> origin`. It never runs the pushed commit's own
+  `.githooks/gates/`. A listed gate that fails there fails the check even when the
+  report says it passed, and the message says the two disagree. A listed gate
+  with no verdict, a fetch that fails, and a tag the core lacks all fail the
+  check. List gates that need only the repository and their three arguments, and
+  none that need Windows. With no `report-rerun=` line, the check is unchanged.
+  Limit: a commit that edits its own gate-config or report-check job is not
+  caught by this step. The drift check catches it, as both are rendered files.
 - Files a repository keeps by hand for its gates live in `config-dir`, the
   profile's `gate_config_dir`. Read them as `$(gate_config config-dir)/<file>`,
   never from a fixed folder.
