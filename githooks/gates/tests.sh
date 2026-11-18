@@ -108,6 +108,8 @@ if [ -n "${PUSH_REMOTE_REF:-}" ]; then
     esac
   fi
 fi
+# The ref only chose the range above; a declared command that runs this gate again must not inherit it.
+unset PUSH_REMOTE_REF
 export PUSH_LOCAL_SHA PUSH_REMOTE_SHA
 
 if [ ! -f "$decl" ]; then
