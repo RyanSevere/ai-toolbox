@@ -82,7 +82,7 @@ EXAMPLE_EMAIL_SUFFIX = "example.invalid"
 LEAK_KINDS = {"personal": "list", "profile_name": "text", "leak_extra": "list",
               "not_onboarded": "map"}
 # What source.owner, source.repo and source.key may hold. A space breaks `owner/repo`.
-OWNER_REPO_PATTERN = re.compile(r"[A-Za-z0-9_.-]+")
+OWNER_REPO_PATTERN = sync.GITHUB_NAME
 KEY_PATTERN = re.compile(r"[a-z0-9]{1,12}")
 SOURCE_RULES = {"owner": (OWNER_REPO_PATTERN, "letters, digits, - _ and ., with no spaces"),
                 "repo": (OWNER_REPO_PATTERN, "letters, digits, - _ and ., with no spaces"),
