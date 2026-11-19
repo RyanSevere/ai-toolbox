@@ -14,7 +14,7 @@ the same values in every step.
 | `acme-profile` | the new profile repository |
 | `acme-core` | the core repository |
 | `v0.1.19` | a release tag that carries `init` |
-| `acme-owner-acme-core-1a2b3c4` | the folder the release archive extracts to |
+| `acme-core-0.1.19` | the folder the release archive extracts to |
 | `work` and `scratch` | two new folders side by side: one for the clone, one for the archive |
 
 ## Before you start
@@ -94,7 +94,28 @@ the same values in every step.
    `scratch`, a new folder next to `work`, outside the clone.
 
    A release is a tag. The release workflow creates no GitHub Release, so
-   `gh release download` finds nothing. Fetch the tag's archive instead:
+   `gh release download` finds nothing. Fetch the tag's archive instead. The command
+   writes the file itself; never redirect a download with `>`, which Windows PowerShell
+   5.1 re-encodes as text, corrupting the archive.
+
+   For a public core, in bash:
+
+   ```
+   curl -fL -o core.tar.gz https://github.com/acme-owner/acme-core/archive/refs/tags/v0.1.19.tar.gz
+   ```
+
+   Or in PowerShell (5.1 or 7):
+
+   ```
+   curl.exe -fL -o core.tar.gz https://github.com/acme-owner/acme-core/archive/refs/tags/v0.1.19.tar.gz
+   ```
+
+   Type `curl.exe`, not `curl`: in Windows PowerShell 5.1 `curl` is an alias for
+   `Invoke-WebRequest`. Windows 10 and later ship `curl.exe` and `tar.exe`. With `-f`, a
+   mistyped tag fails here instead of saving GitHub's error page as `core.tar.gz`.
+
+   For a private core, use `gh`, in bash or PowerShell 7.4 or later only (5.1 corrupts the
+   redirected archive):
 
    ```
    gh api repos/acme-owner/acme-core/tarball/v0.1.19 > core.tar.gz
@@ -108,16 +129,18 @@ the same values in every step.
    tar -xzf core.tar.gz
    ```
 
-   The archive holds one top-level folder, named `<owner>-<core-repo>-<short sha>`, for
-   example `acme-owner-acme-core-1a2b3c4`. List the folder to read its real name.
+   The archive holds one top-level folder. From `curl` it is named
+   `<core-repo>-<tag without the leading v>`, for example `acme-core-0.1.19`; from
+   `gh api` it is `<owner>-<core-repo>-<short sha>`, for example
+   `acme-owner-acme-core-1a2b3c4`. List the folder to read its real name.
 
 3. **Run `init`.** Shell: as above. Folder: `scratch`.
 
    ```
-   python acme-owner-acme-core-1a2b3c4/toolboxctl.py init --profile ../work/acme-profile --source acme-owner/acme-core
+   python acme-core-0.1.19/toolboxctl.py init --profile ../work/acme-profile --source acme-owner/acme-core
    ```
 
-   Replace `acme-owner-acme-core-1a2b3c4` with the folder from step 2, `../work/acme-profile`
+   Replace `acme-core-0.1.19` with the folder from step 2, `../work/acme-profile`
    with the path to your clone, and `acme-owner/acme-core` with your core repository.
 
    `init` refuses, and changes nothing, if the folder is not a git work tree or already
