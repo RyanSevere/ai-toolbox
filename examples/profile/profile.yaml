@@ -12,8 +12,8 @@ source:
   repo: example-profile
   # The prefix of an issue reference, such as ex-12.
   key: ex
-  # The GitHub owner of every repository in this profile. The ticket tool builds
-  # owner/repo from it.
+  # The default GitHub owner; a target or tracked entry may set its own `owner:`. The
+  # ticket tool builds owner/repo from it.
   owner: example-owner
 
 # The commit identity for every target. sync.py sets it as each clone's local
@@ -40,7 +40,7 @@ not_onboarded:
   example-archived: "Retired project. Not onboarded until it is revived."
 
 # Repositories the ticket tool tracks and sync never renders into, each with the reason.
-# `key` and `remote` mean what they mean on a target; `reason` is required. The name may
+# `key`, `remote` and `owner` mean what they mean on a target; `reason` is required. The name may
 # not also be a target, a not_onboarded entry or the source. Uncomment to use.
 # tracked:
 #   example-public:
@@ -115,8 +115,10 @@ targets:
     notes: >
       A target with the common options: `estate: true` opts in to the estate map,
       `exclude:` drops rules by id, `remote:` names a GitHub repository whose name
-      differs from its folder, `branch:` names a working branch that is not main,
-      and `hooks: true` opts in to the agent hooks.
+      differs from its folder, `owner:` names its GitHub owner when that is not
+      `source.owner` (`remote:` is the repository name only, never owner/repo),
+      `branch:` names a working branch that is not main, and `hooks: true` opts in
+      to the agent hooks.
 
   example-scratch:
     key: scr

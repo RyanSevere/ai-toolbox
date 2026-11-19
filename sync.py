@@ -75,6 +75,8 @@ AGENTS_DIR = ROOT / "agents"
 # Git hooks, distinct from hooks/ which holds agent hooks for the editors.
 GITHOOKS_DIR = ROOT / "githooks"
 PROFILE_NAME = "profile.yaml"
+# What a GitHub owner or repository name may hold. A space or / breaks `owner/repo`.
+GITHUB_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 # The gates that run and that CI requires, one name per line, rendered from profile.lock.
 # The runner and CI both read it, so the two lists cannot drift.
 ENABLED_GATES = ".githooks/gates/enabled"
@@ -374,6 +376,7 @@ def load_profile(folder: Path) -> dict:
                     raise SyncError(f"{path}: every entry under {key!r} must be a "
                                     "non-empty string")
     check_tracked(data, path)
+    check_repo_names(data, path)
     selected_tools(data, str(path))
     gate_report_skips(data, str(path))
     gate_report_rerun(data, str(path))
@@ -396,6 +399,26 @@ def check_tracked(data: dict, path: Path) -> None:
             if name in names:
                 raise SyncError(f"{path}: {name!r} is under both tracked: and {place}:. "
                                 "A repository is rendered into or tracked, never both")
+
+
+def check_repo_names(data: dict, path: Path) -> None:
+    """Refuse a target or tracked `owner:` or `remote:` that is not one GitHub name part.
+
+    A `/` in `remote:` would build `owner/a/b`, a repository that does not exist, and
+    nothing else would notice until the first GitHub call."""
+    for section in ("targets", "tracked"):
+        for name, cfg in (data.get(section) or {}).items():
+            if not isinstance(cfg, dict):
+                continue
+            for key in ("owner", "remote"):
+                if key not in cfg:
+                    continue
+                value = cfg[key]
+                if not isinstance(value, str) or not GITHUB_NAME.fullmatch(value):
+                    raise SyncError(
+                        f"{path}: {section}: {name!r} {key}: {value!r} is not allowed. "
+                        "Use letters, digits, - _ and ., with no spaces or /. "
+                        "Set owner: for a repository under another owner")
 
 
 class SyncError(Exception):
@@ -1337,11 +1360,13 @@ def repo_list(manifest: dict) -> dict:
         cfg = cfg or {}
         if cfg.get("skip"):
             continue
-        repos.append({"name": name, "github": f"{owner}/{cfg.get('remote') or name}",
+        repos.append({"name": name,
+                      "github": f"{cfg.get('owner') or owner}/{cfg.get('remote') or name}",
                       "key": cfg.get("key")})
     for name, cfg in (manifest.get("tracked") or {}).items():
         cfg = cfg or {}
-        repos.append({"name": name, "github": f"{owner}/{cfg.get('remote') or name}",
+        repos.append({"name": name,
+                      "github": f"{cfg.get('owner') or owner}/{cfg.get('remote') or name}",
                       "key": cfg.get("key"), "tracked": True})
     not_onboarded = [{"name": name, "reason": reason}
                      for name, reason in (manifest.get("not_onboarded") or {}).items()]
