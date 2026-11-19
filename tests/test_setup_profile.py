@@ -557,7 +557,7 @@ class ExampleValues(Fixture):
 
     def test_the_explaining_comments_of_the_source_block_survive(self):
         self.run_setup()
-        self.assertIn("# The GitHub owner of every repository",
+        self.assertIn("# The default GitHub owner; a target or tracked entry may set its own",
                       self.profile.read_text(encoding="utf-8"))
 
 

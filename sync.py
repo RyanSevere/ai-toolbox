@@ -416,7 +416,7 @@ def check_repo_names(data: dict, path: Path) -> None:
                 value = cfg[key]
                 if not isinstance(value, str) or not GITHUB_NAME.fullmatch(value):
                     raise SyncError(
-                        f"{path.name}: {section}: {name!r} {key}: {value!r} is not allowed. "
+                        f"{path}: {section}: {name!r} {key}: {value!r} is not allowed. "
                         "Use letters, digits, - _ and ., with no spaces or /. "
                         "Set owner: for a repository under another owner")
 

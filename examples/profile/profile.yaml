@@ -116,8 +116,9 @@ targets:
       A target with the common options: `estate: true` opts in to the estate map,
       `exclude:` drops rules by id, `remote:` names a GitHub repository whose name
       differs from its folder, `owner:` names its GitHub owner when that is not
-      `source.owner` (`remote:` is the repository name only, never owner/repo), `branch:` names a working branch that is not main,
-      and `hooks: true` opts in to the agent hooks.
+      `source.owner` (`remote:` is the repository name only, never owner/repo),
+      `branch:` names a working branch that is not main, and `hooks: true` opts in
+      to the agent hooks.
 
   example-scratch:
     key: scr
