@@ -332,6 +332,70 @@ class BuildPlan(unittest.TestCase):
         self.assertEqual([r["name"] for r in repos[:-1]],
                          [r["name"] for r in sync.repo_list(MANIFEST)["repos"]])
 
+    def test_repo_list_uses_an_entry_owner(self):
+        """Intent: a target or tracked entry with its own owner is listed under that owner,
+        in the data and in the rendered file; one without keeps the source owner."""
+        owner = MANIFEST["source"]["owner"]
+        manifest = {**MANIFEST,
+                    "targets": {"x": {"owner": "other-org", "remote": "example-app"},
+                                "y": {"owner": "other-org"}, "z": {}},
+                    "tracked": {"t": {"owner": "other-org", "reason": "r"},
+                                "u": {"reason": "r"}}}
+        data = sync.repo_list(manifest)
+        names = {r["name"]: r["github"] for r in data["repos"]}
+        self.assertEqual(names["x"], "other-org/example-app")
+        self.assertEqual(names["y"], "other-org/y")
+        self.assertEqual(names["z"], f"{owner}/z")
+        self.assertEqual(names["t"], "other-org/t")
+        self.assertEqual(names["u"], f"{owner}/u")
+        self.assertEqual(names[MANIFEST["source"]["repo"]],
+                         f"{owner}/{MANIFEST['source']['repo']}")
+        self.assertEqual(data["owner"], owner)
+        plan = build_plan("t", {"estate": True}, DEFAULTS, SHA, manifest)
+        rendered = {r["name"]: r["github"] for r in json.loads(plan[sync.REPO_LIST])["repos"]}
+        self.assertEqual(rendered, names)
+
+    def refuse_profile(self, section: str, entry: str, key: str, value: str) -> str:
+        """The refusal text when `key: value` is set on a target or tracked entry of a copy
+        of the example profile."""
+        folder = example_copy(self)
+        path = folder / "profile.yaml"
+        text = path.read_text(encoding="utf-8")
+        if section == "targets":
+            old = f"  {entry}:\n"
+            self.assertIn(old, text)
+            text = text.replace(old, f"{old}    {key}: {value}\n", 1)
+        else:
+            text += f"\ntracked:\n  {entry}:\n    reason: r\n    {key}: {value}\n"
+        path.write_text(text, encoding="utf-8", newline="\n")
+        with self.assertRaises(sync.SyncError) as caught:
+            sync.load_profile(folder)
+        return str(caught.exception)
+
+    def test_load_profile_refuses_a_bad_repo_name(self):
+        """Intent: an owner or remote that is not one GitHub name part is refused at load,
+        naming the section, the entry and the key, so a wrong repository name is never built."""
+        cases = [("targets", "example-app", "remote", "a/b"),
+                 ("targets", "example-app", "owner", "a/b"),
+                 ("targets", "example-app", "owner", '""'),
+                 ("targets", "example-app", "owner", "12"),
+                 ("targets", "example-app", "owner", "[x]"),
+                 ("targets", "example-app", "remote", '""'),
+                 ("tracked", "example-public", "remote", "a/b"),
+                 ("tracked", "example-public", "owner", "a b")]
+        for section, entry, key, value in cases:
+            with self.subTest(section=section, entry=entry, key=key, value=value):
+                message = self.refuse_profile(section, entry, key, value)
+                self.assertIn(f"{section}: '{entry}' {key}:", message)
+
+    def test_load_profile_accepts_a_one_character_owner(self):
+        folder = example_copy(self)
+        path = folder / "profile.yaml"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text.replace("  example-app:\n", "  example-app:\n    owner: a\n", 1),
+                        encoding="utf-8", newline="\n")
+        self.assertEqual(sync.load_profile(folder)["targets"]["example-app"]["owner"], "a")
+
     def test_tracked_repo_gets_no_plan(self):
         """Intent: a tracked repository is never rendered into: no plan holds a path for
         it, and naming it as the target is refused."""
