@@ -123,7 +123,8 @@ A complete profile that shows every top-level key the core accepts, with
 invented values, some of them commented out with "Uncomment to use": `source`,
 `identity`, `not_onboarded`, `defaults`, `rollout`,
 `actions`, `gate_config_dir`, `features`, `capabilities`, `answers`,
-`personal`, `profile_name`, `leak_extra`, `tools` and `targets`. The three
+`personal`, `profile_name`, `leak_extra`, `tracked`, `tools`, `gate_report` and
+`targets`. The three
 before `tools` feed `toolboxctl.py gate-lists`. Each key has a comment saying what it is for. The renderer refuses a
 key outside that set. Copy it as the start of your own.
 

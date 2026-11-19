@@ -108,10 +108,10 @@ This repository is public, so the issue must name nothing of your own.
 | `skills/` | Skills. | Yes |
 | `tests/` | The test suite and its runner. | No |
 | `workflows/` | GitHub Actions workflow files. | Yes |
-| `cleanup.py` | Removes what a finished workstream owns in `scratch/`. | No |
+| `cleanup.py` | Removes what a finished workstream owns in `scratch/`. | Yes, as `.github/scripts/cleanup.py` |
 | `consent.py` | Writes gate flags after a typed yes. | No |
 | `gate_lists.py` | Builds the one-way gates' pattern files from a profile. | No |
-| `prime.py` | Collects repository facts for `/prime`. | No |
+| `prime.py` | Collects repository facts for `/prime`. | Yes, as `.github/scripts/prime.py` |
 | `setup_profile.py` | Creates or updates a profile from the example. | No |
 | `sync.py` | The renderer and drift check. | Is the renderer |
 | `toolboxctl.py` | A profile's entry point: version, check, update. | No |
