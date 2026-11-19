@@ -1,0 +1,227 @@
+<!--
+################################################################################
+# File: DESIGN.md
+# Path: {PROJECT_ROOT}/docs/DESIGN.md
+# Created by: Ryan Severe
+# Created: 2026-11-19
+# Last Updated: 2026-11-19
+# Description: How the ai-toolbox core is put together - seeds and rendered
+#              output, the core and a profile, tiers, the example profile, the
+#              tools that manage a profile, and the one-way gates. Moved from
+#              the README, which is the front page.
+################################################################################
+# ===========================================================================
+#
+#
+#            "~,
+#                *m,
+#                   *9m;
+#                       *%pg
+#                          "YRWu
+#                              *9$&w
+#                                  *R$&w
+#   ;j]@@W;                   *w,      79&&w;
+#   :|*%MT"                     7&&w,      ?78BWw
+# . ,|*       -p     ~            *R$$$gw,     '*MU@m,
+#            =W/?*%NMWgw             *T&$F ,@w;     "*4[%m,
+#              7R$$$$$$$$g          yg$$Gg$@@Hh!j ,w     "*w|j=,
+#       ..     ]K@ww[T$Fff            >*MB&&@@Hh ]hk{!!~^     "*v'
+#          '|;, *M@@&&$P                 $$&@HHH\  ` ;w,,   ,~""
+#            "|jj]]%@F"                  ]$@@H, ;*M%P)a$$C  c
+#           . :|j[M"                     ]@@HHr TfR4&$NE*,/~<'
+#             `!||j]@@@A`                ]@@Hh~ *TT"" "* ^ r  '~
+#                *ojKM"                  l@Hh~  "*|"'   /        `
+#                                        @HHkC ,;!"
+#                                       ]HHhr/|!"'
+#                                       #Hhr!||"
+#                             ,@r       hkr!||'
+#                                      [k{|!"
+#                                     (r!!"        r
+#                                     !!"        r
+#                                      ";      /
+#                                             '
+#                                            '
+# ===========================================================================
+-->
+
+# Design
+
+## Seeds and rendered output
+
+A seed is a source file: a rule, a skill, a context file, an agent, a hook. It
+sits in a `seeds/` folder (or, for the core's own, in `rules/`, `skills/` and
+so on) and no tool loads it from there. The rendered output is what tools load:
+`AGENTS.md`, `.github/instructions/`, `.github/rules/`, `.github/skills/`,
+`.cursor/rules/`, `.cursor/skills/`, `.claude/rules/`, `.claude/skills/`,
+`.claude/agents/`, `.githooks/` and the rest. You edit seeds.
+You never edit rendered files; the next render overwrites them.
+
+## The core and a profile
+
+The core, this repository, is generic. It holds the renderer, a set of rules,
+the gate scripts and the tooling around them, and names nothing about any one
+person or organisation.
+
+A profile is everything specific to you, kept in its own private repository:
+
+- `profile.yaml`, which names the repositories to render into, the commit
+  identity, which rules each gets, and the gate flags.
+- Its own seeds, for rules and skills the core does not carry.
+- A vendored copy of this core under `core/`, pinned to a release tag.
+
+The profile never holds a live link to the core. It holds a copy of one
+release, with a `core/VENDORED` file recording the source, tag, commit and a
+hash of the bytes. `core/` is never edited in place: a changed byte is refused.
+To change the core, change it here and release it.
+
+## Push gates
+
+The core ships generic push gates in `githooks/gates/`, so a profile made from
+it is gated from its first push: secret and lockfile checks, linters, type
+checks and a test runner. They are listed, one line each, in
+`githooks/gates/README.md`. A profile adds its own under `seeds/githooks/gates/`;
+setup puts every known gate to the operator for consent. When no gate is
+enabled, the pre-push hook says so aloud rather than passing quietly.
+
+## Updating a profile
+
+Run `python core/toolboxctl.py <subcommand>` inside the profile:
+
+| Subcommand | What it does |
+|---|---|
+| `init --profile PATH --source OWNER/REPO [--answers FILE]` | Bootstraps a new profile: vendors the release the archive is into `PATH/core/` and runs setup. The one subcommand run from a release archive rather than `core/`; see `docs/runbooks/RUNBOOK-NEW-PROFILE.md`. |
+| `version` | Prints the source, tag and commit `core/VENDORED` records. Reads only. |
+| `check` | Verifies `core/` against `VENDORED`, then lists newer releases. Changes nothing. |
+| `update [vX.Y.Z]` | Replaces `core/` with the newest or a named release, previews the render, and keeps it only after you type yes. On a yes it commits `core/` as one change and renders the profile from it, leaving the rendered output uncommitted for review. Otherwise it restores `core/` from git and commits and renders nothing. |
+| `flags` | Changes gate flags through `consent.py`, after a typed yes. |
+| `setup` | Creates or updates the profile through `setup_profile.py`. |
+| `gate-lists --leak FILE --core-names FILE` | Writes the one-way gates' pattern files from `profile.yaml`. Writes the two files named; prints counts, never patterns. |
+
+## Tiers
+
+Rules are sorted into tiers, and the tier is a field in each rule's front
+matter (`tier: 1` or `tier: 2`).
+
+- Tier 1 rules are the ones that would still be true in a repository that does
+  not exist yet. None of them names a language, a path or a project.
+- Tier 2 rules are those that name a language, a path or a project, such as
+  the Python, shell and TypeScript rules.
+- Tier 3 is hand-owned. The renderer never writes it, because mixing generated
+  and hand-written text in one file is how a rendering scheme stops being
+  trusted. The files it refuses to overwrite include `README.md` and
+  `.github/copilot-instructions.md`.
+
+A profile chooses which rules each target receives with the `tier1` and
+`tier2` lists under `defaults:` in `profile.yaml`; a target can drop rules with
+`exclude:`. The core documents no further tier semantics than these.
+
+## Profiles
+
+### `examples/profile`
+
+A complete profile that shows every top-level key the core accepts, with
+invented values, some of them commented out with "Uncomment to use": `source`,
+`identity`, `not_onboarded`, `defaults`, `rollout`,
+`actions`, `gate_config_dir`, `features`, `capabilities`, `answers`,
+`personal`, `profile_name`, `leak_extra`, `tools` and `targets`. The three
+before `tools` feed `toolboxctl.py gate-lists`. Each key has a comment saying what it is for. The renderer refuses a
+key outside that set. Copy it as the start of your own.
+
+`tools:` is an optional list naming which tools' files sync renders, for every
+target in the profile: `copilot`, `cursor` and `claude`. Absent, all three
+render. A rule's own `tools:` narrows further, and a rule left with no tool
+renders nowhere. Shared output (`AGENTS.md`, `.github/rules/`, gates,
+workflows, scripts) renders whatever is selected, and Cursor's agent hooks
+render only when `cursor` is. An empty list, an unknown name or a duplicate is
+refused. A tool left out stops receiving files, and the stamped ones it already
+holds are removed on the next write.
+
+Before it removes any such file, sync looks for readers. A reader is a tracked,
+text, unstamped file outside the render that names a removed path, or a folder
+two or more levels deep that the removal empties (`.github/skills`, with or
+without a trailing slash, `/` or `\`). Any reader makes `--write` and a rollout
+refuse with `file:line: path` for each (the first 20), removing nothing, and
+`--check` reports them as drift. To clear a refusal, fix the reader, or point it
+at the path the new render uses.
+
+```yaml
+tools: [claude]
+```
+
+### `setup_profile.py`
+
+`python setup_profile.py --profile <folder>` creates a profile from the
+example, asks each capability file's setup questions (or reads the answers
+from `--answers <file>`), hands the gate flags to the consent command, shows a
+diff before a re-run writes anything, and ends with a dry-run render that names
+what was dropped and what is still to build. Inside a profile,
+`toolboxctl.py setup` runs the same thing.
+
+### `toolboxctl.py`
+
+The profile's entry point, described above. It refuses to run unless
+`core/VENDORED` exists, so it belongs to a profile that vendors the core, not
+to a clone of this repository.
+
+### `vendor.py`
+
+Fetches and pins the core. A version is a `vX.Y.Z` release tag; a full 40
+character commit SHA is also accepted, but then `toolboxctl.py update` cannot
+tell which release is newer. The source is validated before it reaches a URL,
+the new core is built beside the old one and checked, and only then swapped
+in. A `core/` with local edits is never overwritten.
+
+### `consent.py`
+
+Gate flags live in `profile.yaml` under `features:` and are mirrored in
+`profile.lock`. Only `consent.py` writes either, and only after you type yes at
+an interactive console within two minutes. `sync.py` and the pre-push hook
+refuse to run when the two disagree, naming the flag.
+
+```
+python core/consent.py --profile . --init
+python core/consent.py --profile . --set <gate>=on|off
+python core/consent.py --profile . --check
+```
+
+The prompt reads the terminal itself, never standard input, so piped or
+scripted input is refused.
+
+### Claude Code settings
+
+When a profile's `tools:` includes `claude`, `sync.py` renders one committed,
+machine-independent `.claude/settings.json` per target: the agent hooks (when
+the target has `hooks: true`) and the permission rules. The rules come from the
+profile's `seeds/permissions.yaml`, a list of tool-neutral `command` prefixes,
+each with a `kind` (`allow`, `ask` or `deny`) and the tool-methods `job` it
+backs. The core renders each as `Bash(<command> *)` and `PowerShell(<command> *)`
+and ships no rule of its own. An optional `classifier:` block of prose lines is
+validated but not rendered into a repository. `--check` also fails when an
+entry's `job` is not the first cell of exactly one row across the `Job` tables
+(tables whose first header cell is `Job`) of the core's rules and of the
+profile's own `seeds/rules/`, or that row does not hold the entry's command.
+The profile's rules can carry `Job` tables for its own scripts. A `.claude/settings.json`
+that sync did not generate is never overwritten; see `hooks/README.md`.
+
+## One-way gates
+
+A profile is private and the core is public. The scripts in `githooks/one-way/`
+keep the profile's material out of the core. Each reads a list the profile
+supplies and reports where it found a match, never what it matched.
+
+| Gate | Script | What it refuses |
+|---|---|---|
+| 1 | `leak-denylist.sh PATTERNS LOCAL_SHA REMOTE_SHA` | A push whose added lines contain any string on the profile's denylist: repository names, private address prefixes, employer strings. |
+| 2 | `no-core-remote.sh CORE_URL PUSH_URL` | A push whose remote is the core repository, whatever URL form names it. A backstop: a vendored profile has no such remote by construction. |
+| 3 | `author-domains.sh DOMAINS LOCAL_SHA REMOTE_SHA` | A push carrying any commit authored or committed under a denylisted domain or its subdomains. Names the commit, never the address. |
+| 4 | `core-names-no-profile.sh NAMES TREE` | A core tree in which any file names a profile from the supplied list. It scans a given tree, because in a profile the core is a directory inside it. |
+
+The limit is stated plainly: these catch identifiers, not ideas. A list of
+names finds a name. It does not find a private design described in new words.
+The gates are a net for the mistakes that are easy to make, not a substitute
+for reading what you are about to publish.
+
+This repository's own CI runs gates 1 and 4 from the repository secrets
+`LEAK_DENYLIST` and `CORE_NAMES` (`.github/workflows/one-way-gates.yml`). It
+does not run them on fork pull requests, because GitHub withholds secrets from
+those. They run once the change reaches `dev` or `main`.
