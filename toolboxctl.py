@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/toolboxctl.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-19
 # Description: One entry point for a profile's vendored core.
 #              Run as python core/toolboxctl.py <subcommand>. Owns no logic:
 #              each subcommand delegates to the function its own ticket built.

@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_hooks.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-18
+# Last Updated: 2026-11-19
 # Description: Tests for the editor safety hooks, hooks/no-secret-defaults,
 #              hooks/no-shell-file-edits, hooks/no-destructive-shell and
 #              hooks/no-generated-edits, hooks/session-start,

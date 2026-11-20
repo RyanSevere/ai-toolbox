@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/.claude/hooks/session-start/hook.py
 # Created by: Ryan Severe
 # Created: 2026-11-15
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-19
 # Description: Agent hook on session.start. It orients every new session through
 #              Claude Code's SessionStart context: the response-shape rule when
 #              the repository holds it, and the role-skill step. When

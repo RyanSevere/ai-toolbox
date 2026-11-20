@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_prepush.py
 # Created by: Claude Code (Opus 5.5), for Ryan Severe
 # Created: 2026-11-16
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-19
 # Description: Tests for githooks/pre-push.sh helpers that build the gate
 #              report. json_escape must turn any gate detail into a valid JSON
 #              string body: coloured test output once made report.json

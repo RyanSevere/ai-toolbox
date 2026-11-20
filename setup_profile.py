@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/setup_profile.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-19
 # Description: The setup process. Creates a profile from the
 #              example, asks each capability file's setup questions (or reads
 #              them from --answers), hands features to the consent command,

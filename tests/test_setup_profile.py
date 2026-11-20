@@ -3,7 +3,7 @@
 # Path: {PROJECT_ROOT}/tests/test_setup_profile.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-19
 # Description: The setup process: a profile created from the
 #              example, answers collected interactively or from a file, features
 #              left to the consent command, a diff confirmed before any re-run

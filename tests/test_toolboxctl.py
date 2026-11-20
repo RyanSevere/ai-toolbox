@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_toolboxctl.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-19
 # Description: Tests for toolboxctl.py - the one entry point a
 #              profile's owner runs against its vendored core. Covers the
 #              refusal outside a vendored core, version, check's ordering, the
