@@ -1046,8 +1046,9 @@ class HookNotice(unittest.TestCase):
 
 
 class SessionStart(unittest.TestCase):
-    """Intent: hooks/session-start reports the off switch to the session and nothing else: the
-    line when AI_TOOLBOX_HOOKS=off, nothing when it is unset, and it still runs while it is off."""
+    """Intent: hooks/session-start orients every session: the shape line when the rule file is
+    under the payload's cwd, always the role-skill line, and first the off line when
+    AI_TOOLBOX_HOOKS=off. It still runs while the switch is off."""
 
     LINE = ("Agent hooks are OFF on this machine: AI_TOOLBOX_HOOKS=off is set, so no hook "
             "guards this session. Clear it to turn them back on.")
@@ -1068,17 +1069,72 @@ class SessionStart(unittest.TestCase):
 
     PAYLOAD = json.dumps({"hook_event_name": "SessionStart", "source": "startup"}).encode()
 
-    def test_with_the_switch_off_it_emits_the_line_in_claude_codes_shape(self):
-        code, out = self.start(self.PAYLOAD, {"AI_TOOLBOX_HOOKS": "off"})
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out), {"hookSpecificOutput": {
-            "hookEventName": "SessionStart", "additionalContext": self.LINE}})
-        self.assertEqual(len(out.splitlines()), 1)
+    SHAPE = ("Before your first reply, read `.github/rules/response-shape.md`. At the start of "
+             "every turn, run `python .github/scripts/responses/check_response.py --previous` "
+             "from the repository root and fix what it reports in the reply you are writing.")
+    ROLE = ("If your instructions name a role skill for this session, load it before acting and "
+            "do the steps it says belong on your first tool call.")
 
-    def test_with_the_switch_unset_or_anything_but_off_it_writes_nothing(self):
+    def context(self, out: str) -> str:
+        parsed = json.loads(out)
+        self.assertEqual(list(parsed), ["hookSpecificOutput"])
+        self.assertEqual(parsed["hookSpecificOutput"]["hookEventName"], "SessionStart")
+        self.assertEqual(len(out.splitlines()), 1)
+        return parsed["hookSpecificOutput"]["additionalContext"]
+
+    def repo(self, with_rule: bool = True) -> str:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        if with_rule:
+            rules = Path(tmp.name) / ".github" / "rules"
+            rules.mkdir(parents=True)
+            (rules / "response-shape.md").write_text("x", encoding="utf-8")
+        return tmp.name
+
+    def payload(self, **fields) -> bytes:
+        return json.dumps({"hook_event_name": "SessionStart", "source": "startup",
+                           **fields}).encode()
+
+    def test_with_the_rule_present_it_emits_the_shape_line_then_the_role_line(self):
+        code, out = self.start(self.payload(cwd=self.repo()))
+        self.assertEqual(code, 0)
+        self.assertEqual(self.context(out), f"{self.SHAPE}\n{self.ROLE}")
+
+    def test_with_the_rule_absent_it_emits_only_the_role_line(self):
+        code, out = self.start(self.payload(cwd=self.repo(with_rule=False)))
+        self.assertEqual(code, 0)
+        self.assertEqual(self.context(out), self.ROLE)
+
+    def test_a_missing_non_string_or_non_directory_cwd_gives_only_the_role_line(self):
+        file_path = Path(self.repo()) / ".github" / "rules" / "response-shape.md"
+        cases = {"no cwd": {}, "not a string": {"cwd": 7}, "null": {"cwd": None},
+                 "does not exist": {"cwd": str(Path(self.repo()) / "absent")},
+                 "a file": {"cwd": str(file_path)}}
+        for name, fields in cases.items():
+            with self.subTest(case=name):
+                code, out = self.start(self.payload(**fields))
+                self.assertEqual(code, 0)
+                self.assertEqual(self.context(out), self.ROLE)
+
+    def test_a_filesystem_error_checking_the_rule_counts_as_absent(self):
+        with mock.patch.object(Path, "is_file", side_effect=OSError("denied")):
+            code, out = self.start(self.payload(cwd=self.repo()))
+        self.assertEqual(code, 0)
+        self.assertEqual(self.context(out), self.ROLE)
+
+    def test_with_the_switch_off_the_off_line_comes_first_then_the_orientation(self):
+        code, out = self.start(self.payload(cwd=self.repo()), {"AI_TOOLBOX_HOOKS": "off"})
+        self.assertEqual(code, 0)
+        self.assertEqual(self.context(out), f"{self.LINE}\n{self.SHAPE}\n{self.ROLE}")
+        code, out = self.start(self.PAYLOAD, {"AI_TOOLBOX_HOOKS": "off"})
+        self.assertEqual(self.context(out), f"{self.LINE}\n{self.ROLE}")
+
+    def test_with_the_switch_unset_or_anything_but_off_there_is_no_off_line(self):
         for env in ({}, {"AI_TOOLBOX_HOOKS": ""}, {"AI_TOOLBOX_HOOKS": "0"}):
             with self.subTest(env=env):
-                self.assertEqual(self.start(self.PAYLOAD, env), (0, ""))
+                code, out = self.start(self.PAYLOAD, env)
+                self.assertEqual(code, 0)
+                self.assertEqual(self.context(out), self.ROLE)
 
     def test_an_unreadable_payload_writes_nothing_and_exits_zero(self):
         for env in ({}, {"AI_TOOLBOX_HOOKS": "off"}):

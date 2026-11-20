@@ -5,11 +5,12 @@
 # Created by: Ryan Severe
 # Created: 2026-11-15
 # Last Updated: 2026-11-15
-# Description: Agent hook on session.start. When AI_TOOLBOX_HOOKS=off it tells
-#              the session its hooks are off, through Claude Code's SessionStart
-#              context; otherwise it says nothing. It runs while the switch is
-#              off, because it is how a session finds out. Design in
-#              hooks/README.md, "The off switch".
+# Description: Agent hook on session.start. It orients every new session through
+#              Claude Code's SessionStart context: the response-shape rule when
+#              the repository holds it, and the role-skill step. When
+#              AI_TOOLBOX_HOOKS=off it first tells the session its hooks are
+#              off. It runs while the switch is off, because it is how a session
+#              finds out. Design in hooks/README.md, "session-start".
 ################################################################################
 # ===========================================================================
 #
@@ -60,8 +61,36 @@ LINE = ("Agent hooks are OFF on this machine: AI_TOOLBOX_HOOKS=off is set, so no
         "this session. Clear it to turn them back on.")
 
 
+RULE = Path(".github") / "rules" / "response-shape.md"
+
+SHAPE_LINE = ("Before your first reply, read `.github/rules/response-shape.md`. At the start of "
+              "every turn, run `python .github/scripts/responses/check_response.py --previous` "
+              "from the repository root and fix what it reports in the reply you are writing.")
+
+ROLE_LINE = ("If your instructions name a role skill for this session, load it before acting and "
+             "do the steps it says belong on your first tool call.")
+
+
+def has_rule(seen: dict) -> bool:
+    """True only when the payload's cwd is a directory that holds the rule file. A missing or
+    non-string cwd, or a filesystem error, is absence: never a guess at the path."""
+    raw = seen.get("raw")
+    cwd = raw.get("cwd") if isinstance(raw, dict) else None
+    if not isinstance(cwd, str) or not cwd:
+        return False
+    try:
+        root = Path(cwd)
+        return root.is_dir() and (root / RULE).is_file()
+    except (OSError, ValueError):
+        return False
+
+
 def notice(seen: dict) -> str | None:
-    return LINE if hookio.hooks_off() else None
+    lines = [LINE] if hookio.hooks_off() else []
+    if has_rule(seen):
+        lines.append(SHAPE_LINE)
+    lines.append(ROLE_LINE)
+    return "\n".join(lines)
 
 
 def main() -> int:
