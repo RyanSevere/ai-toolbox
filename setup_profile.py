@@ -92,7 +92,8 @@ MAX_ASKS = 3
 SOURCE_ASKS = {
     "repo": "The name of this profile repository. It is the name in every generated stamp.",
     "key": "The prefix of an issue reference, such as ex-12.",
-    "owner": "The GitHub owner of every repository in this profile.",
+    "owner": "The default GitHub owner of the repositories in this profile. A target or "
+             "tracked entry in profile.yaml may set its own owner:.",
 }
 LEAK_ASKS = {
     "personal": "Repository names that belong to you and that the core must never mention. "
