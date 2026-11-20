@@ -72,7 +72,7 @@ jobs:
       - name: Install dependencies
         run: |
           set -euo pipefail
-          python -m pip install pyyaml
+          python -m pip install pyyaml ruff==0.15.3
       - name: Set a git identity for tests that commit in temporary repositories
         run: |
           set -euo pipefail

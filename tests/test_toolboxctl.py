@@ -948,6 +948,74 @@ class InitGuided(GuidedFixture):
         self.assertNotIn("Traceback", out + err)
         self.assertIn("replace the example targets", out + err)
 
+class InitAnswerTargets(GuidedFixture):
+    """targets: in the answers file replaces the console question."""
+
+    def with_targets(self, text: str) -> None:
+        with self.answers.open("a", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def no_console(self) -> tuple[int, str, str]:
+        with mock.patch("builtins.input", side_effect=EOFError):
+            return self.run_init(setup_only=False)
+
+    def test_targets_in_the_answers_file_are_written_without_a_console(self):
+        """Intent: init --answers with targets: finishes the targets step with no console,
+        keeps the order as written, and notes a folder that does not exist yet."""
+        self.with_targets("targets:\n  - app-two\n  - app-one\n")
+        code, out, err = self.no_console()
+        self.assertEqual(code, 0, out + err)
+        data = yaml.safe_load((self.profile / "profile.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(list(data["targets"]), ["app-two", "app-one"])
+        self.assertIn("-> targets goes to profile.yaml", out)
+        self.assertIn("[NOTE]", out)
+
+    def test_a_refused_target_name_stops_init_before_anything_is_written(self):
+        """Intent: a path in targets: is refused naming it, and the folder is left as it was."""
+        self.with_targets("targets: [app-one, ../elsewhere]\n")
+        before = self.listing(self.profile)
+        code, out, err = self.no_console()
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("../elsewhere", err)
+        self.assertEqual(self.listing(self.profile), before)
+
+    def test_a_repeated_target_is_refused(self):
+        """Intent: a name twice is refused as the console answer is."""
+        self.with_targets("targets: [app-one, app-one]\n")
+        before = self.listing(self.profile)
+        code, out, err = self.no_console()
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("twice", err)
+        self.assertEqual(self.listing(self.profile), before)
+
+    def test_targets_that_are_not_a_list_of_strings_are_refused_naming_the_key(self):
+        """Intent: a string, a map or a list holding a non-string is refused, naming targets."""
+        for text in ("targets: app-one\n", "targets: {app-one: {}}\n", "targets: [1, 2]\n"):
+            with self.subTest(text=text):
+                self.answers.write_text(self.answers.read_text(encoding="utf-8").split(
+                    "targets")[0] + text, encoding="utf-8")
+                before = self.listing(self.profile)
+                code, out, err = self.no_console()
+                self.assertEqual(code, 1, out + err)
+                self.assertIn("targets", err)
+                self.assertEqual(self.listing(self.profile), before)
+
+    def test_an_empty_targets_list_is_refused_naming_the_key(self):
+        """Intent: targets: [] is not a silent fallback to the console."""
+        self.with_targets("targets: []\n")
+        before = self.listing(self.profile)
+        code, out, err = self.no_console()
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("targets", err)
+        self.assertEqual(self.listing(self.profile), before)
+
+    def test_no_targets_and_no_console_names_the_answers_file_as_the_way_out(self):
+        """Intent: the refusal says how to run without a console, targets: included."""
+        code, out, err = self.no_console()
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("add targets: to the answers file", err)
+
+
 class InitGuidedNoLock(GuidedFixture):
     LOCK = False
 

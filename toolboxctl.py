@@ -378,14 +378,38 @@ def ask_targets(profile: Path) -> list[str]:
         except setup_profile.SetupError as error:
             print(f"REFUSED: {error}")
             continue
-        for name in names:
-            if not (profile.parent / name).is_dir():
-                print(f"[NOTE] {profile.parent / name} does not exist yet. It is needed "
-                      "for that target's first sync, not for this step.")
-        print("  -> targets goes to profile.yaml, in place of the example targets.")
+        report_targets(profile, names)
         return names
     raise setup_profile.SetupError(
         f"targets was refused {setup_profile.MAX_ASKS} times")
+
+
+def answer_file_targets(answers: Path | None, profile: Path) -> list[str] | None:
+    """The targets: an answers file carries, checked by parse_targets' rules, or None when
+    it carries none. A wrong shape or a refused name raises SetupError naming the entry. A
+    file that cannot be read or parsed is left to setup, which refuses it in its own words."""
+    if answers is None:
+        return None
+    try:
+        data = yaml.safe_load(Path(answers).read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(data, dict) or "targets" not in data:
+        return None
+    listed = data["targets"]
+    if not isinstance(listed, list) or not listed or not all(isinstance(v, str) for v in listed):
+        raise setup_profile.SetupError("targets: must be a list of folder names, at least one")
+    return parse_targets("\n".join(listed), profile)
+
+
+def report_targets(profile: Path, names: list[str]) -> None:
+    """The note for a target folder that does not exist yet, and the line that says where
+    the targets go, as the console path prints them."""
+    for name in names:
+        if not (profile.parent / name).is_dir():
+            print(f"[NOTE] {profile.parent / name} does not exist yet. It is needed "
+                  "for that target's first sync, not for this step.")
+    print("  -> targets goes to profile.yaml, in place of the example targets.")
 
 
 def write_targets(profile: Path, names: list[str]) -> None:
@@ -418,13 +442,18 @@ def lock_gates(profile: Path) -> int:
     return consent.main(["--profile", str(profile), "--init"])
 
 
-def after_setup(profile: Path) -> int:
+def after_setup(profile: Path, targets: list[str] | None = None) -> int:
     """Everything init does once setup has finished: targets, the profile commit, the
-    render, the render commit. Nothing is ever removed here. A failure or Ctrl+C prints the
-    one step to run next and exits non-zero."""
+    render, the render commit. `targets` are the answers file's, already checked; without
+    them they are asked at the console. Nothing is ever removed here. A failure or Ctrl+C
+    prints the one step to run next and exits non-zero."""
     step = TARGETS_STEP
     try:
-        write_targets(profile, ask_targets(profile))
+        if targets is None:
+            targets = ask_targets(profile)
+        else:
+            report_targets(profile, targets)
+        write_targets(profile, targets)
         step = commit_step(CREATE_MESSAGE)
         # The lock is part of the profile, so it is asked before the profile is committed;
         # a lock written after that commit would leave the tree dirty for the render.
@@ -485,6 +514,11 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
               "Nothing was changed.", file=sys.stderr)
         return 1
     try:
+        named = answer_file_targets(answers, profile)
+    except setup_profile.SetupError as error:
+        print(f"[ERROR] {answers}: {error}. Nothing was changed.", file=sys.stderr)
+        return 1
+    try:
         tag = "v" + (core / "VERSION").read_text(encoding="utf-8").strip()
     except OSError as error:
         print(f"[ERROR] could not read this archive's VERSION: {error}", file=sys.stderr)
@@ -518,7 +552,7 @@ def init(core: Path, profile: Path, source: str, answers: Path | None,
         if setup_only:
             print(next_steps(profile))
         else:
-            return after_setup(profile)
+            return after_setup(profile, named)
     return code
 
 
