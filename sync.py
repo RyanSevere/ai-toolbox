@@ -1179,6 +1179,7 @@ CLAUDE_TOOLS = {
     "execute/killTerminal": (),
     "execute/testFailure": (),
     "agent": ("Agent",),
+    "skill": ("Skill",),
 }
 # What an agent seed's optional `model:` may say. Only Claude Code's agent file carries it.
 AGENT_MODELS = ("sonnet", "opus", "haiku", "fable", "inherit")
