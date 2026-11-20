@@ -78,7 +78,7 @@ Fixed sections, in this order. An empty one says `none`, never disappears.
 # Handoff - <workstream>
 
 ## Written
-<date and time>, by <tool or service>. Parent transcript: <id, or none>.
+<date and time>, by <tool or service>. Parent transcript (the transcript uuid, not a session id): <id, or none>.
 Reason: <why this session ended - the conversation was summarised, the arrears cap was reached, or the operator's call>.
 Repositories in scope: <list>.
 Workstream directory: `scratch/<objective>/`, in each repository in scope.
@@ -143,13 +143,15 @@ in the seed: the seed is spent at pickup, and the prompt is only the way in.
 
 ```
 [Load <role skill> before anything else.]
-[Previous session id: <id>. Detach from it first.]
+Read the response-shape rule and run its checker before your first reply, and load the handoff skill.
+[Previous session id: <id>. Detach from it first. Once I confirm, message it that the pickup is done, then check that it shows as archived before you call the pickup finished, and tell me if it does not.]
 Pick up the <workstream> workstream in <repository>, on branch <branch>. Read <seed path>
-in full and follow the handoff skill's "Picking up a seed" steps: do what its "First,
-before acting" section says, re-run every Live state command and say where the fresh
-output differs from the pasted one, re-ask anything under "Waiting on the operator", then
-restate the workstream's whole scope and objective and confirm the next step - <first
-item under Next, in order> - with me before acting. Mark the seed picked up once I confirm.
+in full and follow the handoff skill's "Picking up a seed" steps, in this order: detach,
+do what its "First, before acting" section says, re-run every Live state command and say
+where the fresh output differs from the pasted one, restate the workstream's whole scope
+and objective, re-ask anything under "Waiting on the operator", confirm the next step -
+<first item under Next, in order> - with me before acting, mark the seed picked up once I
+confirm, message the old session that the pickup is done, and check it is archived.
 [This rotation was ordered by <policy>, so it is pre-approved if the Live state matches
 and nothing is waiting on me.]
 ```
@@ -157,7 +159,10 @@ and nothing is waiting on me.]
 The three bracketed lines are optional. Fill the role line with the role skill the
 profile defines for this workstream, if any; with none, leave it out and the prompt
 reads as before. Fill the previous-session line only in Claude Code's desktop app,
-where the tool's own rule says why; everywhere else leave it out. Fill the rotation line
+where the tool's own rule says why; everywhere else leave it out. `<id>` is the
+writer's own session id, read from the tool's session lookup for itself (in Claude
+Code's desktop app, `get_session` with `"self"`) at the time of writing - never the
+transcript id, and never the writer's parent. Fill the rotation line
 only when a standing rotation policy ordered this handoff, naming the policy; step 5 of
 "Picking up a seed" says what it pre-approves.
 
@@ -196,6 +201,10 @@ Where the tool can start a session itself, its own rule says how; the prompt is 
    seed's first line `Picked up <date and time>, by <tool or service>.` - an edit, not a delete. A seed
    carrying that line is spent: a later session reads it as history, never as a
    workstream to take. It goes with the directory's cleanup. Leave `Not yours` alone.
+8. Where the prompt names a previous session, message it that the pickup is done, check
+   it shows as archived, and tell the operator if it does not. A session is not
+   reported as archived until the check shows it. If the check cannot read the old
+   session, say so to the operator; never report it archived.
 
 ## Closing a workstream
 
@@ -224,3 +233,5 @@ evidence, not on a summary.
   removed with the workstream; the finding goes with it.
 - **A seed with no pickup prompt.** The operator has to write the way in by hand, and
   a hand-written prompt drops the steps that make the pickup safe.
+- **A pickup that stops at the confirmation.** The old session stays open and the
+  operator archives it by hand.
