@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/setup_profile.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-19
 # Description: The setup process. Creates a profile from the
 #              example, asks each capability file's setup questions (or reads
 #              them from --answers), hands features to the consent command,
@@ -70,7 +70,7 @@ ROOT = Path(__file__).resolve().parent
 EXAMPLE = ROOT / "examples" / "profile" / sync.PROFILE_NAME
 # Everything an answers file may carry. features: belongs to the consent command alone.
 ANSWER_FILE_KEYS = {"identity", "answers", "source", "personal", "profile_name", "leak_extra",
-                    "not_onboarded"}
+                    "not_onboarded", "targets"}
 IDENTITY_KEYS = {"name", "email"}
 SOURCE_FIELDS = ("repo", "key", "owner")
 # An answer that says a question does not apply to this profile.
@@ -92,7 +92,8 @@ MAX_ASKS = 3
 SOURCE_ASKS = {
     "repo": "The name of this profile repository. It is the name in every generated stamp.",
     "key": "The prefix of an issue reference, such as ex-12.",
-    "owner": "The GitHub owner of every repository in this profile.",
+    "owner": "The default GitHub owner of the repositories in this profile. A target or "
+             "tracked entry in profile.yaml may set its own owner:.",
 }
 LEAK_ASKS = {
     "personal": "Repository names that belong to you and that the core must never mention. "
@@ -166,7 +167,8 @@ def console_ask(key: str, prompt: str, current: str | None) -> str:
             if lines:
                 break
             raise SetupError("input closed before every question was answered. "
-                             "Use --answers <file> to run without a console") from error
+                             "Use --answers <file> to run without a console, "
+                             "or add targets: to the answers file") from error
         if one_line(key):
             return line
         if not line.strip():
@@ -387,6 +389,10 @@ def check_blocks(blocks: dict, kinds: dict) -> None:
         raise SetupError("source: must hold repo:, key: and owner: strings only")
     for field, value in (source or {}).items():
         check_source_value(field, value.strip())
+    targets = blocks.get("targets")
+    if "targets" in blocks and (not isinstance(targets, list) or not targets
+                                or not all(isinstance(v, str) for v in targets)):
+        raise SetupError("targets: must be a list of folder names, at least one")
     for key, kind in kinds.items():
         value = blocks.get(key)
         if value is None:

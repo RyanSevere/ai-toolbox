@@ -154,16 +154,27 @@ denied for the missing field.
 
 ### `session-start` - agent hook on `session.start`, Claude Code only
 
-An `observer` with `tools: [claude]`. When `AI_TOOLBOX_HOOKS=off` it adds one line to the
-session's context, through Claude Code's `SessionStart` output
-(`hookSpecificOutput.additionalContext`):
+An `observer` with `tools: [claude]`. On every session start, hooks on or off, it adds an
+orientation to the session's context, through Claude Code's `SessionStart` output
+(`hookSpecificOutput.additionalContext`). The response-shape rule renders on demand, so a
+fresh session would not otherwise have it before its first reply. The text is up to three
+lines, joined in this order into one string:
 
-> Agent hooks are OFF on this machine: AI_TOOLBOX_HOOKS=off is set, so no hook guards this
-> session. Clear it to turn them back on.
+1. **Off line**, only when `AI_TOOLBOX_HOOKS=off`: "Agent hooks are OFF on this machine:
+   AI_TOOLBOX_HOOKS=off is set, so no hook guards this session. Clear it to turn them back on."
+2. **Shape line**, only when `.github/rules/response-shape.md` exists under the payload's
+   `cwd`: read that file before the first reply, and at the start of every turn run
+   `python .github/scripts/responses/check_response.py --previous` from the repository root
+   and fix what it reports.
+3. **Role line**, always: if the session's instructions name a role skill, load it before
+   acting and do the steps it says belong on the first tool call.
 
-With the switch unset, or any value but `off`, it writes nothing. Input it cannot read, or a
-tool other than Claude Code, writes nothing and exits 0. It is the one hook that runs while
-the switch is off; see "The off switch". Cursor is not covered.
+A payload with no `cwd`, a `cwd` that is not a string, does not exist or is not a directory,
+or a filesystem error while checking for the rule file, leaves out the shape line: the hook
+never guesses the path. A repository without the rule (a target that excludes it) also gets
+no shape line. Input it cannot read, or a tool other than Claude Code, writes nothing and
+exits 0. It is the one hook that runs while the switch is off; see "The off switch". Cursor
+is not covered.
 
 ### `write-observer` - agent hook on `file.write.after`, Claude Code only
 
