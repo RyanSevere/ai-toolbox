@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_first_push.py
 # Created by: Ryan Severe
 # Created: 2026-11-16
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-19
 # Description: A profile made by toolboxctl init from a fixture core, with its gates
 #              locked and rendered into itself, makes its first push with every
 #              gate passing: the vendored core's tests and lint findings are not the
@@ -77,6 +77,7 @@ ANSWERS = (
     "personal: [acme-private]\nprofile_name: acme-profile-name\n"
     "leak_extra: [internal.acme.example]\n"
     "not_onboarded: {acme-archived: Retired project}\n"
+    "targets: [acme-app]\n"
     "answers:\n  tracker.system: ExampleTracker, a hosted tracker.\n")
 
 
@@ -127,28 +128,21 @@ class FirstPush(unittest.TestCase):
             return buffer.getvalue()
 
         out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        # No console: targets come from the answers file, and the lock is answered through
+        # the mocked console. init then commits the profile, renders it and commits the render.
+        with mock.patch.object(consent, "open_console", return_value=io.StringIO("yes\n")), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = toolboxctl.main(["init", "--profile", str(profile), "--source", SOURCE,
                                     "--answers", str(answers)], core=ROOT, fetch=fetch)
-        # 3: the profile is written and its render unchecked until consent locks the gates.
-        self.assertEqual(code, 3, out.getvalue() + err.getvalue())
-        with mock.patch.object(consent, "open_console", return_value=io.StringIO("yes\n")), \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(consent.main(["--profile", str(profile), "--init"]), 0)
+        self.assertEqual(code, 0, out.getvalue() + err.getvalue())
+        self.assertIn("-> targets goes to profile.yaml", out.getvalue())
+        self.assertIn("[OK] committed: Render the profile", out.getvalue())
         self.assertTrue((profile / "core" / "tests").is_dir(), "the core's tests are vendored")
-
-        run(profile, "git", "add", "-A")
-        committed = run(profile, "git", "commit", "-q", "-m", "Create the profile")
-        self.assertEqual(committed.returncode, 0, committed.stdout + committed.stderr)
+        self.assertEqual(run(profile, "git", "log", "--format=%s").stdout.splitlines(),
+                         ["Render the profile", "Create the profile"])
         remote = tmp / "remote.git"
         run(tmp, "git", "init", "-q", "--bare", str(remote))
         run(profile, "git", "remote", "add", "origin", str(remote))
-        rendered = run(profile, sys.executable, "-B", "core/sync.py", "--profile", ".",
-                       "--self", "--write", "--no-fetch")
-        self.assertEqual(rendered.returncode, 0, rendered.stdout + rendered.stderr)
-        run(profile, "git", "add", "-A")
-        committed = run(profile, "git", "commit", "-q", "-m", "Render the profile")
-        self.assertEqual(committed.returncode, 0, committed.stdout + committed.stderr)
 
         sha = run(profile, "git", "rev-parse", "HEAD").stdout.strip()
         hook = profile / ".githooks" / "pre-push"

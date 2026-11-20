@@ -36,8 +36,9 @@ the same values in every step.
   terminal after installing, so `PATH` is read again.
 - The core repository and a release tag that carries `init`.
 - Be ready to answer setup's questions at the console. Or write an answers file holding
-  `identity:`, `source:`, `answers:` and the leak-gate keys (`personal`, `profile_name`,
-  `leak_extra`, `not_onboarded`), and pass it with `--answers answers.yaml`. Setup locks
+  `identity:`, `source:`, `answers:`, the leak-gate keys (`personal`, `profile_name`,
+  `leak_extra`, `not_onboarded`) and `targets:` (a list of the target repositories' folder
+  names; without it `init` asks for them at the console), and pass it with `--answers answers.yaml`. Setup locks
   the push gates only when you answer at the console; after an answers file, `init`'s next
   steps tell you to run `python core/consent.py --profile . --init`.
 - Any text editor works for `profile.yaml`. Notepad, nano and VS Code are all fine.

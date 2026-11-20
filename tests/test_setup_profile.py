@@ -3,7 +3,7 @@
 # Path: {PROJECT_ROOT}/tests/test_setup_profile.py
 # Created by: Ryan Severe
 # Created: 2026-10-29
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-19
 # Description: The setup process: a profile created from the
 #              example, answers collected interactively or from a file, features
 #              left to the consent command, a diff confirmed before any re-run
@@ -464,6 +464,12 @@ class SourceValidation(Fixture):
                 self.assertEqual(code, 1, out)
                 self.assertFalse(self.profile.exists())
                 self.assertIn(f"source.{field}", out)
+
+    def test_the_owner_prompt_says_it_is_the_default(self):
+        """An entry may set its own owner:, so the prompt must not claim every repository."""
+        ask = setup_profile.SOURCE_ASKS["owner"]
+        self.assertIn("default", ask)
+        self.assertIn("owner:", ask)
 
 
 class ExampleWarning(Fixture):
