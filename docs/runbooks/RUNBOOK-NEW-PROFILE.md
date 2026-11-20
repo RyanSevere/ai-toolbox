@@ -38,9 +38,18 @@ the same values in every step.
 - Be ready to answer setup's questions at the console. Or write an answers file holding
   `identity:`, `source:`, `answers:`, the leak-gate keys (`personal`, `profile_name`,
   `leak_extra`, `not_onboarded`) and `targets:` (a list of the target repositories' folder
-  names; without it `init` asks for them at the console), and pass it with `--answers answers.yaml`. Setup locks
-  the push gates only when you answer at the console; after an answers file, `init`'s next
-  steps tell you to run `python core/consent.py --profile . --init`.
+  names; without it `init` asks for them at the console), and pass it with `--answers answers.yaml`.
+  Locking the push gates always needs a person typing `yes` at the console, never piped
+  input, and `init` asks for it in each case below.
+  - You answer setup at the console: setup asks to lock the gates right after your answers.
+  - You pass an answers file with `targets:`: setup skips the lock, and `init` asks for it
+    before it commits the profile. With no console, `init` stops there, keeps what it wrote,
+    and prints the command to lock the gates, commit and render.
+  - You pass an answers file without `targets:`: `init` first asks for the targets at the
+    terminal, which needs stdin to be a terminal, then asks for the lock as above.
+  - You add `--setup-only`: with console answers, setup still asks for the lock. With an
+    answers file, nothing asks; the next steps tell you to run
+    `python core/consent.py --profile . --init`.
 - Any text editor works for `profile.yaml`. Notepad, nano and VS Code are all fine.
 
 ## Steps
