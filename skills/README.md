@@ -72,5 +72,6 @@ Not everything is. A skill for something done once is overhead.
 | `exchange` | Coordinate chats live in one repository at once through an exchange log, appending through a locked tool so no entry is lost |
 | `delegate` | Hand settled work to a subagent through a written brief, and review its result before anything ships |
 | `route-change` | Decide whether a change to rule source belongs in the core or a profile, and audit a profile's seeds for items that read as core |
+| `terminal-walkthrough` | Walk the operator through a runbook or terminal process at runbook level, one fenced block per command, reading the result before the next batch |
 
 A profile documents its own skills in a `README.md` beside their seeds.

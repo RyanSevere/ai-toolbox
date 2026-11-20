@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/README.md
 # Created by: Ryan Severe
 # Created: 2026-11-08
-# Last Updated: 2026-11-19
+# Last Updated: 2026-11-20
 # Description: The front page of the ai-toolbox repository - what it is for,
 #              how to start a profile, how to ask for a change, a map of the
 #              repository, and how to install and test it. The design material
@@ -66,14 +66,10 @@ profile repository that vendors a pinned copy of the core.
 To start a profile, follow
 [the new-profile runbook](docs/runbooks/RUNBOOK-NEW-PROFILE.md).
 
-To see what the example profile renders, without writing anything:
-
-```
-python sync.py --profile examples/profile --self --no-fetch
-```
-
-Without `--write` this is a dry run. Do not add `--write` in a clone of this
-repository: a write also sets its local git identity and edits its `.gitignore`.
+`examples/profile` is a starting point to copy, not a profile that renders as it
+stands. A render needs the push gates locked first, and only the profile's owner
+can lock them, by typing `yes` at a console. So the example ships with no lock, and
+the runbook covers locking a copy of it before the first render.
 
 ## Updating a profile
 
