@@ -49,7 +49,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -57,6 +59,11 @@ from pathlib import Path
 
 HOOK = Path(__file__).resolve().parent.parent / "githooks" / "pre-push.sh"
 ESC = "\x1b"
+
+SH = shutil.which("sh") or next(
+    (p for p in (r"C:\Program Files\Git\usr\bin\sh.exe", "/bin/sh") if Path(p).exists()),
+    None,
+)
 
 
 def json_escape(text: str) -> str:
@@ -69,11 +76,15 @@ def json_escape(text: str) -> str:
     with tempfile.TemporaryDirectory() as folder:
         script = Path(folder) / "escape.sh"
         script.write_bytes((match.group(0) + "json_escape\n").encode("utf-8"))
-        done = subprocess.run(["sh", str(script)], input=text.encode("utf-8"),
-                              capture_output=True, check=True)
+        # The shell's own bin directory has to be on PATH, for the tools json_escape runs.
+        env = dict(os.environ)
+        env["PATH"] = str(Path(SH).parent) + os.pathsep + env.get("PATH", "")
+        done = subprocess.run([SH, str(script)], input=text.encode("utf-8"),
+                              capture_output=True, check=True, env=env)
     return done.stdout.decode("utf-8")
 
 
+@unittest.skipIf(SH is None, "no POSIX shell available; not reporting a pass")
 class JsonEscape(unittest.TestCase):
     def parsed(self, text: str) -> str:
         return json.loads('"' + json_escape(text) + '"')
