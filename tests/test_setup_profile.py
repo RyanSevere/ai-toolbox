@@ -465,6 +465,12 @@ class SourceValidation(Fixture):
                 self.assertFalse(self.profile.exists())
                 self.assertIn(f"source.{field}", out)
 
+    def test_the_owner_prompt_says_it_is_the_default(self):
+        """An entry may set its own owner:, so the prompt must not claim every repository."""
+        ask = setup_profile.SOURCE_ASKS["owner"]
+        self.assertIn("default", ask)
+        self.assertIn("owner:", ask)
+
 
 class ExampleWarning(Fixture):
     """A shipped example value that will be refused is not offered as one Enter keeps."""
