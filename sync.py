@@ -4,11 +4,13 @@
 # Path: {PROJECT_ROOT}/sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-14
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-20
 # Description: Renders the core and a profile's seeds into a consuming repository's
 #              per-tool formats and stamps each output with the source SHA.
 #              Dry-run by default; --write applies. Never writes Tier 3.
 #              --rollout renders and commits every live target in one run.
+#              --pull renders a profile's newest release tag into the repository
+#              it runs in; --print-source-sha names the commit a release tags.
 ################################################################################
 # ===========================================================================
 #
@@ -251,6 +253,8 @@ LOCK_HEARTBEAT_TIMEOUT = timedelta(minutes=20)
 # Local git calls. Pushes run the target's pre-push gates, which take minutes.
 GIT_TIMEOUT = 300
 PUSH_TIMEOUT = 30 * 60
+# --pull renders one target from a release's own sync.py; it runs no gates.
+PULL_RENDER_TIMEOUT = 10 * 60
 FETCH_TIMEOUT = 2 * 60
 # How many targets push at once: probed once per machine, kept in this clone's git
 # config. PROVISIONAL per-push budget, sized 2026-09-29 against a 20-core, 32 GiB
@@ -478,7 +482,7 @@ def ensure_current(fetch: bool, profile_dir: Path) -> None:
         )
 
 
-def source_sha(fetch: bool, profile_dir: Path) -> str:
+def refuse_dirty_source() -> None:
     # Sync writes its own workflow copy into this repo, so rendering a second
     # target would otherwise refuse on a tree this process just dirtied.
     dirty = [
@@ -490,7 +494,17 @@ def source_sha(fetch: bool, profile_dir: Path) -> str:
             "Source tree is dirty. Commit before rendering - a stamp pointing at a "
             "SHA that does not contain the rendered content makes the drift check lie."
         )
+
+
+def source_sha(fetch: bool, profile_dir: Path) -> str:
+    refuse_dirty_source()
     ensure_current(fetch, profile_dir)
+    return source_commit(profile_dir)[:STAMP_SHA_LENGTH]
+
+
+def source_commit(profile_dir: Path) -> str:
+    """The full sha of the newest commit that touched anything this renders from: the
+    commit a render stamps, and the one a rules release tag must point at."""
     # Derived from the source constants so a new input directory is covered on sight.
     # tests/test_sync.py checks this list against every file build_plan reads.
     # Absolute, because the core and the profile are different folders of one repository.
@@ -502,8 +516,7 @@ def source_sha(fetch: bool, profile_dir: Path) -> str:
     inputs = [str(p) for p in sources]
     # Not %h: git lengthens it as a repo gains objects, so a self-hosted runner's clone
     # stamped 8 characters where a workstation stamped 7 and drift failed on both.
-    full = run("git", "log", "-1", "--format=%H", "--", *inputs)
-    return full[:STAMP_SHA_LENGTH]
+    return run("git", "log", "-1", "--format=%H", "--", *inputs)
 
 
 def load_doc(path: Path, *required: str) -> tuple[dict, str]:
@@ -1428,6 +1441,38 @@ def core_record_lines(manifest: dict, profile_dir: Path | None) -> str:
             + "".join(f"report-rerun={gate}\n" for gate in rerun))
 
 
+def release_tag_glob(manifest: dict, where: str = PROFILE_NAME) -> str | None:
+    """rollout.release_tag, the glob that names a rules release in the profile. None when the
+    profile sets none. The value ends up in one gate-config line and in a git command, so
+    anything but a non-empty glob with no whitespace, and not starting with '-', is refused."""
+    block = manifest.get("rollout") or {}
+    if "release_tag" not in block:
+        return None
+    glob = block["release_tag"]
+    if not isinstance(glob, str) or not glob or re.search(r"\s", glob) or glob.startswith("-"):
+        raise SyncError(f"{where}: rollout: release_tag must be a non-empty glob with no "
+                        f"whitespace, not {glob!r}")
+    return glob
+
+
+def release_lines(manifest: dict, profile_dir: Path | None) -> str:
+    """The gate-config lines a target's freshness check reads: the profile repository's own
+    origin URL at render time, and the release tag glob. Written only by a profile that sets
+    rollout.release_tag, so every other render is unchanged. A profile that sets it and has
+    no origin refuses: a remote nobody can name is not one to write."""
+    glob = release_tag_glob(manifest)
+    if glob is None:
+        return ""
+    try:
+        url = git_at(profile_dir, "remote", "get-url", "origin").strip() if profile_dir else ""
+    except SyncError:
+        url = ""
+    if not url:
+        raise SyncError(f"{PROFILE_NAME} sets rollout.release_tag, but the profile repository "
+                        f"({profile_dir}) has no origin remote to write as profile-remote")
+    return f"profile-remote={url}\nrelease-tag={glob}\n"
+
+
 def render_gate_config(target: str, cfg: dict, manifest: dict, sha: str,
                        profile_dir: Path | None = None) -> str:
     """What the pre-push hook and its gates read: key=value lines, never sourced.
@@ -1449,6 +1494,7 @@ def render_gate_config(target: str, cfg: dict, manifest: dict, sha: str,
             f"deploy-branch={branch}\n"
             f"identity-email={identity(manifest)['email']}\n"
             f"config-dir={gate_config_dir(manifest)}\n"
+            f"{release_lines(manifest, profile_dir)}"
             f"{consent_check}"
             f"{report_skip}"
             f"{core_record_lines(manifest, profile_dir)}")
@@ -3000,8 +3046,16 @@ def probe_report(manifest: dict) -> int:
     return 0
 
 
-def rollout_parallel(manifest: dict) -> int:
-    """How many targets push at once. Read-only probe on first use, then git config."""
+def rollout_parallel(manifest: dict, override: int | None = None) -> int:
+    """How many targets push at once. Read-only probe on first use, then git config.
+
+    An override (--parallel) is for that run only: nothing is probed, read or stored.
+    """
+    if override is not None:
+        if not 1 <= override <= PARALLEL_MAX:
+            raise SyncError(f"--parallel is {override}; it must be a whole number from 1 "
+                            f"to {PARALLEL_MAX}")
+        return override
     stored = subprocess.run(("git", "config", "--get", PARALLEL_KEY), cwd=ROOT, capture_output=True,
                             text=True, timeout=GIT_TIMEOUT).stdout.strip()
     if stored:
@@ -3034,6 +3088,8 @@ def rollout(args: argparse.Namespace, manifest: dict, defaults: dict) -> int:
         raise SyncError("--rollout needs a one-line subject for the commit message")
     if args.target or args.self_only or args.write or args.check or args.no_fetch:
         raise SyncError("--rollout takes no target, --self, --write, --check or --no-fetch")
+    if args.parallel is not None and not args.push:
+        raise SyncError("--parallel only applies to --rollout --push")
 
     profile_dir = resolve_profile(args.profile)
     source = source_repo(manifest)
@@ -3064,7 +3120,7 @@ def rollout(args: argparse.Namespace, manifest: dict, defaults: dict) -> int:
         )
     if args.push:
         profile_module("ghcli", profile_dir, "--push")
-    workers = rollout_parallel(manifest) if args.push else 0
+    workers = rollout_parallel(manifest, args.parallel) if args.push else 0
 
     lock_path = profile_dir / ROLLOUT_LOCK
     if args.break_lock and lock_path.exists():
@@ -3166,6 +3222,131 @@ def dispatch_drift(manifest: dict, profile_dir: Path) -> None:
     print(f"drift check triggered: https://github.com/{repo}/actions/workflows/rules-drift.yml")
 
 
+def repo_name_from_url(url: str) -> str | None:
+    """The last path segment of a remote URL, without .git: the same name from an SSH,
+    an HTTPS or a plain path form. None when there is no segment to name."""
+    name = re.split(r"[/\\:]", url.strip().rstrip("/\\"))[-1]
+    name = name[:-4] if name.endswith(".git") else name
+    return name or None
+
+
+def pull_profile(target: Path) -> Path:
+    """The profile checkout named by git config rules.profile-path, or a refusal that says
+    how to set it. Read with git config --get, so a machine sets it once with --global."""
+    try:
+        value = git_at(target, "config", "--get", "rules.profile-path").strip()
+    except SyncError:
+        value = ""
+    how = "Set it once per machine: git config --global rules.profile-path <path to the profile>"
+    if not value:
+        raise SyncError(f"rules.profile-path is not set. {how}")
+    folder = Path(value).expanduser()
+    if not (folder / PROFILE_NAME).is_file():
+        raise SyncError(f"rules.profile-path is {value!r}, which is not a profile directory: "
+                        f"there is no {PROFILE_NAME} in it. {how}")
+    return folder
+
+
+def pull_target_name(target: Path, manifest: dict) -> str:
+    """The one target whose remote matches the last segment of this clone's origin URL."""
+    try:
+        origin = git_at(target, "remote", "get-url", "origin").strip()
+    except SyncError as exc:
+        raise SyncError(f"{target} has no origin remote, so its target name cannot be "
+                        "told") from exc
+    repo = repo_name_from_url(origin)
+    targets = manifest.get("targets") or {}
+    matches = [name for name, cfg in targets.items() if (cfg or {}).get("remote", name) == repo]
+    if not matches:
+        raise SyncError(f"no target in {PROFILE_NAME} has the remote name {repo!r} "
+                        f"(origin {origin})")
+    if len(matches) > 1:
+        raise SyncError(f"targets {', '.join(matches)} in {PROFILE_NAME} all have the remote "
+                        f"name {repo!r} (origin {origin}), so which one this is cannot be told")
+    if (targets[matches[0]] or {}).get("skip"):
+        raise SyncError(f"'{matches[0]}' is marked skip in {PROFILE_NAME}")
+    return matches[0]
+
+
+def pull(args: argparse.Namespace) -> int:
+    """--pull: render the profile's newest release tag into the repository this runs in.
+
+    The release is checked out in a temporary worktree of the profile, so the profile's own
+    working tree is never touched, and rendered by that release's own sync.py. The result is
+    committed on the current branch. Nothing is pushed.
+    """
+    if (args.target or args.self_only or args.write or args.check or args.no_fetch
+            or args.push or args.break_lock or args.rollout is not None
+            or args.parallel is not None or args.profile or args.root):
+        raise SyncError("--pull takes no target and none of --self, --write, --check, "
+                        "--no-fetch, --profile, --root, --rollout, --push, --break-lock "
+                        "or --parallel: it is run in the repository to update")
+    target = Path(git_at(Path.cwd(), "rev-parse", "--show-toplevel").strip())
+    profile_dir = pull_profile(target)
+    manifest = load_profile(profile_dir)
+    glob = release_tag_glob(manifest)
+    if glob is None:
+        raise SyncError(f"{profile_dir / PROFILE_NAME} has no rollout.release_tag, so there "
+                        "is no telling which tags are releases")
+    name = pull_target_name(target, manifest)
+    if target.name != name:
+        raise SyncError(f"this folder is {target.name!r} but its target is {name!r}: --pull "
+                        f"renders into <parent folder>/{name}, so rename the folder")
+    if git_at(target, "rev-parse", "--abbrev-ref", "HEAD").strip() == "HEAD":
+        raise SyncError("HEAD is detached; check out the branch to commit on first")
+    if git_at(target, "status", "--porcelain").strip():
+        raise SyncError("uncommitted changes here - commit or stash them first")
+    tags = git_at(profile_dir, "tag", "--list", "--sort=-creatordate", glob).split()
+    if not tags:
+        raise SyncError(f"no tag in {profile_dir} matches rollout.release_tag {glob!r}")
+    tag = tags[0]
+    release = git_at(profile_dir, "rev-list", "-n", "1", tag).strip()
+
+    scratch = Path(tempfile.mkdtemp(prefix="rules-pull-"))
+    tree = scratch / "tree"
+    try:
+        try:
+            git_at(profile_dir, "worktree", "add", "--quiet", "--detach", str(tree), tag)
+        except SyncError as exc:
+            raise SyncError(f"could not check out {tag} of {profile_dir}: {exc}") from exc
+        entry = next((p for p in (tree / "core" / "sync.py", tree / "sync.py") if p.is_file()),
+                     None)
+        if entry is None:
+            raise SyncError(f"{tag} holds no core/sync.py or sync.py to render with")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        done = subprocess.run(
+            (sys.executable, str(entry), "--profile", str(tree), name, "--write", "--no-fetch",
+             "--root", str(target.parent)),
+            cwd=tree, capture_output=True, text=True, env=env, timeout=PULL_RENDER_TIMEOUT)
+        if done.returncode != 0:
+            raise SyncError(f"rendering {tag} failed: "
+                            f"{(done.stderr.strip() or done.stdout.strip())}")
+    finally:
+        try:
+            git_at(profile_dir, "worktree", "remove", "--force", str(tree))
+        except SyncError:
+            pass
+        shutil.rmtree(scratch, ignore_errors=True)
+        try:
+            git_at(profile_dir, "worktree", "prune")
+        except SyncError:
+            pass
+
+    changed = [entry[3:] for entry in
+               git_at(target, "status", "--porcelain=v1", "-z", "-uall").split("\0") if entry]
+    if not changed:
+        print(f"{name}: already current ({tag})")
+        return 0
+    staged = [rel for rel in changed if rel not in LOCAL_RENDERED]
+    if staged:
+        git_at(target, "add", "-A", "--", *staged)
+    git_at(target, "commit", "--quiet", "-m", f"Sync rules: {tag}", "-m",
+           f"From {source_repo(manifest)}@{release[:STAMP_SHA_LENGTH]}.")
+    commit = git_at(target, "rev-parse", "--short", "HEAD").strip()
+    print(f"{name}: pulled {tag}, committed {commit} ({len(changed)} file(s)), not pushed")
+    return 0
+
+
 def runner(args: argparse.Namespace, manifest: dict) -> int:
     """--runner: hand the profile's runner module the action and the repos it governs."""
     rs = profile_module("runner_switch", resolve_profile(args.profile), "--runner")
@@ -3209,6 +3390,22 @@ def main(argv: list[str] | None = None) -> int:
         help="with --rollout: remove a rollout lock of any age first",
     )
     parser.add_argument(
+        "--parallel", type=int, metavar="N",
+        help="with --rollout --push: push N targets at once, for this run only, instead of "
+             "rollout.parallel",
+    )
+    parser.add_argument(
+        "--pull", action="store_true",
+        help="run in a target: render the profile's newest release tag (profile.yaml "
+             "rollout.release_tag, the checkout named by git config rules.profile-path) "
+             "into it and commit on the current branch. Never pushes",
+    )
+    parser.add_argument(
+        "--print-source-sha", action="store_true",
+        help="read-only: print the full sha of the commit a render stamps, which a rules "
+             "release tag must point at",
+    )
+    parser.add_argument(
         "--probe-capacity", action="store_true",
         help="read-only: show how many pushes --rollout --push would run at once, and why",
     )
@@ -3249,6 +3446,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.check_core:
             import vendor
             return vendor.check_report(resolve_profile(args.profile) / vendor.CORE_DIR)
+        if args.pull and args.print_source_sha:
+            raise SyncError("--pull and --print-source-sha are separate runs")
+        if args.pull:
+            return pull(args)
+        if args.print_source_sha:
+            if (args.target or args.self_only or args.write or args.check or args.no_fetch
+                    or args.rollout is not None or args.push or args.break_lock
+                    or args.parallel is not None):
+                raise SyncError("--print-source-sha takes only --profile")
+            refuse_dirty_source()
+            print(source_commit(resolve_profile(args.profile)))
+            return 0
         manifest = load_profile(resolve_profile(args.profile))
         defaults = manifest.get("defaults") or {}
         if args.root is None:
@@ -3260,8 +3469,8 @@ def main(argv: list[str] | None = None) -> int:
             return runner(args, manifest)
         if args.rollout is not None:
             return rollout(args, manifest, defaults)
-        if args.push or args.break_lock:
-            raise SyncError("--push and --break-lock only apply to --rollout")
+        if args.push or args.break_lock or args.parallel is not None:
+            raise SyncError("--push, --break-lock and --parallel only apply to --rollout")
 
         if args.self_only:
             if args.target:
