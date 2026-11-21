@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/README.md
 # Created by: Ryan Severe
 # Created: 2026-11-08
-# Last Updated: 2026-11-20
+# Last Updated: 2026-11-21
 # Description: The front page of the ai-toolbox repository - what it is for,
 #              how to start a profile, how to ask for a change, a map of the
 #              repository, and how to install and test it. The design material
@@ -163,7 +163,7 @@ This repository is public, so the issue must name nothing of your own.
 | `responses/` | Response-shape checks, one module per tool. | Yes |
 | `rules/` | The rules, with their tier in front matter. | Yes |
 | `skills/` | Skills. | Yes |
-| `tests/` | The test suite and its runner. | No |
+| `tests/` | The test suite and its runner. | Only the runner and selector, as `.githooks/lib/run_shard.py` and `.githooks/lib/select_tests.py` |
 | `workflows/` | GitHub Actions workflow files. | Yes |
 | `cleanup.py` | Removes what a finished workstream owns in `scratch/`. | Yes, as `.github/scripts/cleanup.py` |
 | `consent.py` | Writes gate flags after a typed yes. | No |
@@ -186,6 +186,30 @@ python -m ruff check .
 
 `tests/run_shard.py` runs shard `K` of `N` of the suite; `1/1` is all of it.
 Ruff is the linter CI runs.
+
+### Selecting a consuming repository's tests
+
+A render writes the test selector into every consuming repository as
+`.githooks/lib/run_shard.py` and `.githooks/lib/select_tests.py`. A repository
+whose `.github/test-roots` runs a `python -m unittest discover` suite opts in
+from its `run:` line, with `<dir>` the folder that holds its tests:
+
+```
+run: python .githooks/lib/run_shard.py --tests <dir> 1/1
+```
+
+The tests gate hands the push range to that line, so a push runs only the
+test classes its changed files can affect, and the gate report shows the
+`selected:` line. The map and the weights live in `<dir>`:
+
+```
+python .githooks/lib/run_shard.py --tests <dir> --map
+python .githooks/lib/run_shard.py --tests <dir> --measure
+```
+
+`--map` writes `<dir>/depmap.json` and needs `coverage` installed; `--measure`
+writes `<dir>/shard_weights.json`. A class that is missing from the map runs on
+every push until the map is rebuilt.
 
 ## Contributing
 
