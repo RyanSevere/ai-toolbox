@@ -90,6 +90,8 @@ checked.
   paths, real names, real versions. When one value cannot be resolved, ask for that
   single value, and post the step once it is known.
 - No prompt characters (`$`, `>`) and no output inside the block.
+- A command posted again, as a repost or in a later step, is copied word for word
+  from where it was first given. Never retype it from memory.
 
 ## 5. How results come back
 
@@ -104,8 +106,12 @@ use copy and paste back info as needed".
 - **Any other case,** such as a remote host or another window: the operator copies
   each command and pastes back only the fields or counts the step names, never a
   whole output. The step says exactly which fields.
+- **The agent can read the step's logs itself,** over read-only access to the
+  place the step writes them: the step names that log path. The operator pastes back
+  only the step's final status line and whether it asked anything, and the agent
+  reads the logs. If the agent cannot read them, the step falls back to named fields.
 
-Each step's header says which of the two applies. Where it is the terminal read, it
+Each step's header says which of these applies. Where it is the terminal read, it
 names the tab. If several tabs are open and none is named, ask once which one to
 read.
 
@@ -134,7 +140,8 @@ being reused.
 
 1. Diagnose read-only first.
 2. Say whether the operator should stop and wait.
-3. Repost only the commands not yet run, under their original step IDs.
+3. Repost only the commands not yet run, under their original step IDs, copied
+   word for word from the first posting.
 4. Offer the cheap fix loop before a push-and-pull loop: a hand copy of the fixed
    file, the one step alone, or a dry run. Each comes with a restore command and a
    check that the state is clean again.
@@ -175,5 +182,8 @@ as the ticket or the session that asked for the walk.
 - **The operator asked to paste a whole output.** It costs a turn and leaks what the
   operator then has to redact.
 - **A wrong fence language.** A Run button types a bash command into PowerShell.
+- **A retyped command.** A command reposted from memory, instead of copied, can name
+  a subcommand or flag that does not exist, and the step fails for a reason the
+  runbook does not have.
 - **Asking "what do you see?"** where the agent could have read the terminal or named
   the field it needs.
