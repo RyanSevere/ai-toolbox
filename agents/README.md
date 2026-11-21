@@ -45,6 +45,11 @@ Two optional keys decide where else a role runs:
   `inherit`, the session's model. Any other value refuses on every target. For
   Claude Code, `tools:` is mapped to its tool names, a tool with no equivalent
   is dropped with a warning, and `agents:` is not rendered (also with a warning).
+- **`skill`** is a tool name in `tools:`. For Claude Code it maps to the `Skill`
+  tool. It grants every skill the session has, with no subset: Claude Code has
+  no per-agent skill allowlist. Withholding it blocks all skills, so a role
+  that must not load one leaves it out. Other targets handle it as they handle
+  any tool name they do not map.
 - **`skills:`** names the factory skills the role is given, each a skill seed
   whose `sessions:` lists `factory`. It is written into the factory agent file
   only, where the harness reads it and grants those skills and no others. A name

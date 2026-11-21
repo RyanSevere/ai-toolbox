@@ -5,7 +5,7 @@ description: >-
   and never edits a test. Use when the user says any of: "implement X against
   the tests", "make the tests pass", "write the code for this ticket", or
   after a ticket's tests have been approved.
-tools: [read, search, edit, execute, agent]
+tools: [read, search, edit, execute, agent, skill]
 agents: [Explore]
 sessions: [interactive, factory]
 model: sonnet

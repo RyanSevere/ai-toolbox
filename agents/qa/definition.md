@@ -6,7 +6,7 @@ description: >-
   Cannot edit files. Use when the user says any of: "QA this", "review the
   tests", "are these tests any good", "check this change against the ticket",
   or before closing a ticket whose work added tests.
-tools: [read, search, execute/runInTerminal, execute/getTerminalOutput, execute/killTerminal, execute/testFailure, agent]
+tools: [read, search, execute/runInTerminal, execute/getTerminalOutput, execute/killTerminal, execute/testFailure, agent, skill]
 agents: [Explore]
 sessions: [interactive, factory]
 model: inherit
