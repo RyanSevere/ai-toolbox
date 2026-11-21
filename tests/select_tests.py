@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/select_tests.py
 # Created by: Ryan Severe
 # Created: 2026-10-01
-# Last Updated: 2026-11-07
+# Last Updated: 2026-11-21
 # Description: Chooses which test classes a push runs. A class
 #              runs when its own file, a dependency coverage measured for it,
 #              or a path it declares in EXERCISES changed, or when the map has
@@ -82,7 +82,7 @@ def select(names: list[str], changed: set[str] | None, depmap: dict[str, list[st
         if name not in depmap:
             chosen.add(name)
             continue
-        own = f"tests/{name.split('.', 1)[0]}.py"
+        own = PurePath(os.path.relpath(TESTS / f"{name.split('.', 1)[0]}.py", ROOT)).as_posix()
         if changed & ({own} | set(depmap[name])):
             chosen.add(name)
         elif any(fnmatch.fnmatchcase(path, pattern)

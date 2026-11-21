@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_select_tests.py
 # Created by: Ryan Severe
 # Created: 2026-10-01
-# Last Updated: 2026-11-07
+# Last Updated: 2026-11-21
 # Description: Pins how the pre-push test selector decides what a push runs.
 #              Unknown change sets and changes to the selection
 #              machinery run everything; otherwise a class runs when its own
@@ -101,6 +101,18 @@ class Select(unittest.TestCase):
 
     def test_a_changed_test_file_runs_its_own_classes(self):
         self.assertEqual(pick({"tests/test_gates.py"}), ["test_gates.Tests"])
+
+    def test_a_suite_outside_tests_selects_by_its_own_folder(self):
+        """Intent: the folder under test is the caller's configuration - a consumer's suite
+        in checks/ selects a class on a change to checks/<module>.py, not on tests/."""
+        names = ["test_a.Alpha", "test_a.Beta", "test_b.Gamma"]
+        depmap = {"test_a.Alpha": ["lib.py"], "test_a.Beta": ["other.py"],
+                  "test_b.Gamma": ["lib.py"]}
+        with mock.patch.object(select_tests, "TESTS", select_tests.ROOT / "checks"):
+            chosen = sorted(select_tests.select(names, {"checks/test_b.py"}, depmap, {}))
+            ignored = sorted(select_tests.select(names, {"tests/test_b.py"}, depmap, {}))
+        self.assertEqual(chosen, ["test_b.Gamma"])
+        self.assertEqual(ignored, [])
 
     def test_a_measured_dependency_selects_every_class_that_ran_it(self):
         self.assertEqual(pick({"sync.py"}), ["test_sync.Render", "test_sync.Rollout"])

@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-20
+# Last Updated: 2026-11-21
 # Description: Tests for sync.py - the renderer that decides what every AI
 #              session in the estate reads. Covers build_plan over every real
 #              manifest target, exclude validation, the hand-owned guard, stamp
@@ -180,6 +180,15 @@ class BuildPlan(unittest.TestCase):
             with self.subTest(target=name):
                 plan = build_plan(name, cfg, DEFAULTS, SHA, MANIFEST)
                 self.assertIn("def apply", plan.get(".github/scripts/cleanup.py", ""))
+
+    def test_the_test_selector_reaches_every_target(self):
+        """Intent: a consumer selects its tests from its `run:` line through
+        .githooks/lib/run_shard.py and .githooks/lib/select_tests.py, rendered beside the gate."""
+        for name, cfg in live_targets().items():
+            with self.subTest(target=name):
+                plan = build_plan(name, cfg, DEFAULTS, SHA, MANIFEST)
+                self.assertIn("def select", plan.get(".githooks/lib/select_tests.py", ""))
+                self.assertIn("--tests", plan.get(".githooks/lib/run_shard.py", ""))
 
     def test_unmatched_exclude_raises_and_names_only_the_typo(self):
         real = (DEFAULTS.get("tier1") or DEFAULTS.get("tier2"))[0]
@@ -3167,6 +3176,56 @@ def configure(repo: Path) -> None:
 
 def branch_of(name: str) -> str:
     return FIXTURE_TARGETS[name].get("branch", "main")
+
+
+class ConsumerSelection(unittest.TestCase):
+    """Intent: a consumer whose suite is not in tests/ selects through the rendered
+    .githooks/lib files from its `run:` line. Fixture approach: the two files are taken from
+    a real render's plan, so the test runs them as rendered, stamp included, in a synthetic
+    repository with a checks/ folder and a hand-built depmap.json."""
+
+    MODULE = ("import unittest\n\n\nclass {cls}(unittest.TestCase):\n"
+              "    def test_runs(self):\n        print('RAN {cls}')\n        {tail}\n")
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name)
+        name, cfg = next(iter(live_targets().items()))
+        plan = build_plan(name, cfg, DEFAULTS, SHA, MANIFEST)
+        lib = self.repo / ".githooks" / "lib"
+        lib.mkdir(parents=True)
+        for file in ("run_shard.py", "select_tests.py"):
+            (lib / file).write_text(plan[f".githooks/lib/{file}"], encoding="utf-8")
+        git("init", "-q", cwd=self.repo)
+        configure(self.repo)
+        checks = self.repo / "checks"
+        checks.mkdir()
+        (checks / "test_a.py").write_text(self.MODULE.format(cls="Alpha", tail="pass"),
+                                          encoding="utf-8")
+        (checks / "test_b.py").write_text(self.MODULE.format(cls="Beta", tail="pass"),
+                                          encoding="utf-8")
+        (checks / "depmap.json").write_text('{"test_a.Alpha": [], "test_b.Beta": []}\n',
+                                            encoding="utf-8")
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-q", "-m", "first", cwd=self.repo)
+        self.before = git("rev-parse", "HEAD", cwd=self.repo)
+
+    def test_a_push_runs_only_the_class_whose_file_changed(self):
+        (self.repo / "checks" / "test_b.py").write_text(
+            self.MODULE.format(cls="Beta", tail="self.assertTrue(True)"), encoding="utf-8")
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-q", "-m", "second", cwd=self.repo)
+        after = git("rev-parse", "HEAD", cwd=self.repo)
+        result = subprocess.run(
+            (sys.executable, ".githooks/lib/run_shard.py", "--tests", "checks", "1/1"),
+            cwd=self.repo, env=clean_env(PUSH_LOCAL_SHA=after, PUSH_REMOTE_SHA=self.before),
+            capture_output=True, text=True, timeout=120)
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("selected: 1 of 2", output)
+        self.assertIn("RAN Beta", output)
+        self.assertNotIn("RAN Alpha", output)
 
 
 class GateFlags(unittest.TestCase):

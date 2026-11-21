@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-14
-# Last Updated: 2026-11-20
+# Last Updated: 2026-11-21
 # Description: Renders the core and a profile's seeds into a consuming repository's
 #              per-tool formats and stamps each output with the source SHA.
 #              Dry-run by default; --write applies. Never writes Tier 3.
@@ -511,6 +511,7 @@ def source_commit(profile_dir: Path) -> str:
     sources = (RULES_DIR, CONTEXT_DIR, SKILLS_DIR, WORKFLOWS_DIR, ACTIONS_DIR, AGENTS_DIR,
                GITHOOKS_DIR, ROOT / "consent.py", RESPONSES_DIR, ROOT / "prime.py", HOOKS_DIR,
                EXCHANGE_DIR, ROOT / "cleanup.py",
+               ROOT / "tests" / "run_shard.py", ROOT / "tests" / "select_tests.py",
                CAPABILITIES_DIR, ROOT / "sync.py", profile_dir / consent.LOCK_NAME,
                profile_dir / PROFILE_NAME, profile_dir / "seeds")
     inputs = [str(p) for p in sources]
@@ -2217,6 +2218,11 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
         for source in merged_seeds(GITHOOKS_DIR / "lib", profile_dir, "githooks/lib",
                                    lambda f: sorted(f.glob("*.py")) + sorted(f.glob("*.sh"))):
             plan[f".githooks/lib/{source.name}"] = render_asset(source, sha)
+        # A consumer selects its tests through these from its `run:` line.
+        for name in ("run_shard.py", "select_tests.py"):
+            selector = ROOT / "tests" / name
+            if selector.exists():
+                plan[f".githooks/lib/{name}"] = render_asset(selector, sha)
         plan[".githooks/gate-config"] = render_gate_config(target, cfg, manifest, sha, profile_dir)
         plan[ENABLED_GATES] = render_enabled_gates(manifest, profile_dir, sha)
 
