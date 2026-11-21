@@ -6,7 +6,7 @@ description: >-
   of: "write the tests for X", "tests first", "pin down what X should do", "turn
   this ticket into tests", or before implementing a ticket whose Done when can
   be expressed as a test.
-tools: [read, search, edit, execute, agent]
+tools: [read, search, edit, execute, agent, skill]
 sessions: [interactive, factory]
 skills: [edge-cases]
 model: sonnet

@@ -242,6 +242,38 @@ class ClaudeAgents(unittest.TestCase):
         self.assertIn("x", self.warnings[0])
         self.assertIn("'web'", self.warnings[0])
 
+    def test_skill_maps_to_the_claude_code_skill_tool(self):
+        head = frontmatter(self.render(tools=["read", "skill"]))
+        self.assertIn("tools: Read, Skill\n", head)
+        self.assertEqual(self.warnings, [])
+
+    def test_skill_listed_twice_renders_once(self):
+        head = frontmatter(self.render(tools=["skill", "read", "skill"]))
+        self.assertIn("tools: Skill, Read\n", head)
+        self.assertEqual(self.warnings, [])
+
+    def test_capitalised_or_plural_skill_is_dropped_with_a_warning_never_granted(self):
+        head = frontmatter(self.render(tools=["read", "Skill", "skills"]))
+        self.assertIn("tools: Read\n", head)
+        self.assertEqual(len(self.warnings), 2)
+        for warning, name in zip(self.warnings, ("'Skill'", "'skills'")):
+            self.assertIn("no Claude Code equivalent", warning)
+            self.assertIn(name, warning)
+
+    def test_the_four_working_roles_get_skill_and_the_two_reviewers_do_not(self):
+        def allowlist(name: str) -> list[str]:
+            meta, body = sync.load_doc(sync.AGENTS_DIR / name / "definition.md", "name")
+            head = frontmatter(sync.render_claude_agent(meta, body, SHA, self.warnings.append))
+            line = [x for x in head.splitlines() if x.startswith("tools:")][0]
+            return line.removeprefix("tools:").strip().split(", ")
+
+        for name in ("coder", "test-writer", "qa", "design-partner"):
+            with self.subTest(agent=name):
+                self.assertIn("Skill", allowlist(name))
+        for name in ("auditor", "fact-keeper"):
+            with self.subTest(agent=name):
+                self.assertNotIn("Skill", allowlist(name))
+
     def test_omitted_tools_stay_omitted(self):
         self.assertNotIn("tools:", frontmatter(self.render()))
 

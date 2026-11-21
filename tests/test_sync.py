@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-20
 # Description: Tests for sync.py - the renderer that decides what every AI
 #              session in the estate reads. Covers build_plan over every real
 #              manifest target, exclude validation, the hand-owned guard, stamp
@@ -4791,6 +4791,73 @@ class Rollout(unittest.TestCase):
         that stops test_rollout_pushes_targets_in_parallel passing while ignoring it."""
         self.assertFalse(self.overlapping(self.push_intervals("1")), "pushes overlapped at 1")
 
+    def hooked_push(self, *rollout_args: str) -> list[tuple[float, float]]:
+        """--rollout --push with a 3 s pre-push hook in each target and the given extra
+        arguments; each hook's span."""
+        logs = self.root.parent / "hook-logs"
+        logs.mkdir()
+        py = Path(sys.executable).as_posix()
+        for name in LIVE:
+            hook = self.root / name / ".git" / "hooks" / "pre-push"
+            hook.write_text(
+                "#!/bin/sh\n"
+                f'log="{logs.as_posix()}/{name}"\n'
+                f'"{py}" -c "import time; print(time.time())" >> "$log"\n'
+                "sleep 3\n"
+                f'"{py}" -c "import time; print(time.time())" >> "$log"\n',
+                encoding="utf-8", newline="\n")
+            hook.chmod(0o755)
+        result = self.rollout("x", "--push", *rollout_args)
+        self.assertEqual(self.summary(result.stdout), "ROLLOUT COMPLETE: 3 ok, 0 failed",
+                         result.stdout + result.stderr)
+        return [tuple(float(t) for t in (logs / name).read_text(encoding="utf-8").split())
+                for name in LIVE]
+
+    @staticmethod
+    def most_at_once(spans: list[tuple[float, float]]) -> int:
+        return max(sum(1 for other in spans if other[0] <= start < other[1])
+                   for start, _ in spans)
+
+    def test_rollout_parallel_flag_caps_the_pushes_at_once_for_that_run(self):
+        """Intent: Decided 5 - --parallel N overrides rollout.parallel for the run only: with
+        3 stored and 3 targets, --parallel 2 never has 3 pushes running, and the stored
+        number is left as it was."""
+        git("config", "rollout.parallel", "3", cwd=self.source)
+        spans = self.hooked_push("--parallel", "2")
+        self.assertEqual(self.most_at_once(spans), 2, spans)
+        self.assertEqual(git("config", "--get", "rollout.parallel", cwd=self.source), "3")
+
+    def test_rollout_parallel_flag_neither_probes_nor_stores(self):
+        """Intent: the override is for one run; a machine with nothing stored stays that way."""
+        result = self.rollout("x", "--push", "--parallel", "1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("1 at a time", result.stdout)
+        self.assertNotIn("set rollout.parallel=", result.stdout)
+        stored = subprocess.run(("git", "config", "--get", "rollout.parallel"), cwd=self.source,
+                                env=clean_env(), capture_output=True, text=True, timeout=60)
+        self.assertEqual(stored.stdout.strip(), "")
+
+    def test_rollout_parallel_flag_of_one_beats_a_stored_larger_number(self):
+        git("config", "rollout.parallel", "3", cwd=self.source)
+        self.assertEqual(self.most_at_once(self.hooked_push("--parallel", "1")), 1)
+
+    def test_rollout_refuses_a_parallel_flag_that_is_not_a_whole_number_in_range(self):
+        """Intent: validate every externally supplied value - the same range as the setting."""
+        before = {name: self.state(name) for name in LIVE}
+        for value in ("0", "17", "-1", "lots"):
+            with self.subTest(value=value):
+                result = self.rollout("x", "--push", "--parallel", value)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("parallel", result.stdout + result.stderr)
+                self.assertEqual({name: self.state(name) for name in LIVE}, before)
+
+    def test_parallel_without_push_refuses(self):
+        before = {name: self.state(name) for name in LIVE}
+        result = self.rollout("x", "--parallel", "2")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("--parallel", result.stdout + result.stderr)
+        self.assertEqual({name: self.state(name) for name in LIVE}, before)
+
     def test_rollout_capacity_is_probed_once_per_machine(self):
         """Intent: a once-per-machine read-only check, not per push or repo, stored so later rollouts reuse it."""
         first = self.rollout("x", "--push")
@@ -5013,6 +5080,389 @@ class ProfileModules(unittest.TestCase):
             sync.profile_module("core_twice", self.profile, "--x")
         self.assertIn(str(self.profile), str(ctx.exception))
         self.assertIn(str(self.profile / "seeds" / "scripts"), str(ctx.exception))
+
+
+class GateConfigRemote(unittest.TestCase):
+    """A profile that names a release tag glob gets its remote and that glob rendered into
+    every target's gate-config. One that does not renders what it always did."""
+
+    URL = "git@example.invalid:acme-owner/acme-profile.git"
+
+    def setUp(self):
+        self.folder = locked_example(self)
+        git("init", "--quiet", cwd=self.folder)
+        self.addCleanup(sync.set_stamp_source, MANIFEST)
+
+    def config(self, release_tag=...) -> dict[str, str]:
+        profile = sync.load_profile(self.folder)
+        rollout = dict(profile.get("rollout") or {})
+        if release_tag is not ...:
+            rollout["release_tag"] = release_tag
+        profile = {**profile, "rollout": rollout}
+        text = build_plan("t", {}, profile["defaults"], SHA, profile,
+                          profile_dir=self.folder)[".githooks/gate-config"]
+        return dict(line.split("=", 1) for line in text.splitlines()[1:])
+
+    def test_a_render_writes_the_profile_remote_and_the_release_tag(self):
+        """Intent: Decided 3 - profile-remote is the profile repository's own origin URL at
+        render time, release-tag the glob from rollout.release_tag."""
+        git("remote", "add", "origin", self.URL, cwd=self.folder)
+        found = self.config("rules-*")
+        self.assertEqual(found["profile-remote"], self.URL)
+        self.assertEqual(found["release-tag"], "rules-*")
+
+    def test_a_profile_without_a_release_tag_renders_neither_key(self):
+        """Intent: opting in is setting rollout.release_tag, so every other render is
+        unchanged."""
+        git("remote", "add", "origin", self.URL, cwd=self.folder)
+        found = self.config()
+        self.assertNotIn("profile-remote", found)
+        self.assertNotIn("release-tag", found)
+
+    def test_a_release_tag_with_no_origin_refuses_naming_it(self):
+        """Intent: unknown is never written as a remote the hook would trust."""
+        with self.assertRaises(sync.SyncError) as caught:
+            self.config("rules-*")
+        self.assertIn("origin", str(caught.exception))
+
+    def test_a_release_tag_that_could_forge_a_line_is_refused(self):
+        """Intent: prescriptions - validate every externally supplied value before it reaches
+        a file read line by line. A newline would write a key of its own."""
+        git("remote", "add", "origin", self.URL, cwd=self.folder)
+        for value in ("rules-*\nidentity-email=x@y.z", "has space", "", 3, "-x"):
+            with self.subTest(value=value), self.assertRaises(sync.SyncError) as caught:
+                self.config(value)
+            self.assertIn("release_tag", str(caught.exception))
+
+
+class RepoNameFromUrl(unittest.TestCase):
+    def test_ssh_https_and_path_forms_give_the_same_name(self):
+        for url in ("git@example.invalid:acme-owner/alpha.git",
+                    "https://example.invalid/acme-owner/alpha.git",
+                    "https://example.invalid/acme-owner/alpha",
+                    "https://example.invalid/acme-owner/alpha.git/",
+                    "/srv/remotes/alpha.git",
+                    "C:\\srv\\remotes\\alpha.git"):
+            with self.subTest(url=url):
+                self.assertEqual(sync.repo_name_from_url(url), "alpha")
+
+    def test_nothing_to_name_gives_none(self):
+        for url in ("", "   ", "/", ".git"):
+            with self.subTest(url=url):
+                self.assertIsNone(sync.repo_name_from_url(url))
+
+
+class Pull(unittest.TestCase):
+    """`sync.py --pull`, run with a target as the working directory, renders the newest
+    release tag of the profile into it and commits. `--print-source-sha` names the commit a
+    tag must point at.
+
+    The source is a profile repository vendoring a copy of this core, as in Rollout; each
+    test gets its own clone of it and its own target. Global git config is pointed at an
+    empty home so a machine's own rules.profile-path cannot answer for a test.
+    """
+
+    OLD = "rules-2026-11-01"
+    NEW = "rules-2026-11-15"
+    ORIGIN = "https://example.invalid/acme-owner/acme-profile.git"
+    EXERCISES = ["examples/profile/profile.yaml"]
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.template = Path(cls._tmp.name) / "template"
+        listed = git("ls-files", "-z", "--cached", "--others", "--exclude-standard", cwd=sync.ROOT)
+        for rel in filter(None, listed.split("\0")):
+            if rel.split("/", 1)[0] == "githooks":
+                continue
+            src = sync.ROOT / rel
+            if src.is_file():
+                dest = cls.template / "core" / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+        shutil.copytree(EXAMPLE / "seeds", cls.template / "seeds")
+        (cls.template / ".gitignore").write_text("scratch/\n__pycache__/\n", encoding="utf-8",
+                                                 newline="\n")
+        manifest = {**MANIFEST, "targets": {"alpha": {}, "bravo": {}},
+                    "rollout": {**MANIFEST["rollout"], "release_tag": "rules-*"}}
+        (cls.template / "profile.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False),
+                                                   encoding="utf-8", newline="\n")
+        git("init", "--quiet", "-b", "main", cwd=cls.template)
+        configure(cls.template)
+        git("remote", "add", "origin", cls.ORIGIN, cwd=cls.template)
+        git("add", "-A", cwd=cls.template)
+        git("commit", "--quiet", "-m", "fixture source", cwd=cls.template)
+        Rollout.render_self(cls.template)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        self.profile = base / "profile"
+        git("clone", "--quiet", str(self.template), str(self.profile), cwd=base)
+        configure(self.profile)
+        self.root = base / "repos"
+        self.remotes = base / "remotes"
+        self.temp = base / "temp"
+        home = base / "home"
+        for folder in (self.root, self.remotes, self.temp, home):
+            folder.mkdir()
+        self.env = clean_env(HOME=str(home), USERPROFILE=str(home), XDG_CONFIG_HOME=str(home),
+                             TEMP=str(self.temp), TMP=str(self.temp), TMPDIR=str(self.temp))
+        self.alpha = self.root / "alpha"
+        self.tag(self.OLD, self.print_source_sha().stdout.strip())
+        self.make_target("alpha")
+        git("config", "--local", "rules.profile-path", self.profile.as_posix(), cwd=self.alpha)
+
+    def sync(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run((sys.executable, str(self.profile / "core" / "sync.py"), *args),
+                              cwd=cwd or self.alpha, env=self.env, capture_output=True,
+                              text=True, timeout=300)
+
+    def print_source_sha(self) -> subprocess.CompletedProcess:
+        return self.sync("--profile", str(self.profile), "--print-source-sha", cwd=self.profile)
+
+    def pull(self) -> subprocess.CompletedProcess:
+        return self.sync("--pull")
+
+    def tag(self, name: str, sha: str) -> None:
+        git("tag", name, sha, cwd=self.profile)
+
+    def make_target(self, name: str) -> None:
+        """A clone of a bare remote, rendered at the old release and committed as a pull would."""
+        remote = self.remotes / f"{name}.git"
+        git("init", "--quiet", "--bare", "-b", "main", str(remote), cwd=self.remotes)
+        repo = self.root / name
+        git("init", "--quiet", "-b", "main", str(repo), cwd=self.root)
+        configure(repo)
+        (repo / "README.md").write_text(f"{name}\n", encoding="utf-8", newline="\n")
+        git("add", "-A", cwd=repo)
+        git("commit", "--quiet", "-m", "initial", cwd=repo)
+        git("remote", "add", "origin", str(remote), cwd=repo)
+        git("push", "--quiet", "-u", "origin", "main", cwd=repo)
+        done = self.sync("--profile", str(self.profile), name, "--write", "--no-fetch",
+                         "--root", str(self.root), cwd=self.profile)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        git("add", "-A", cwd=repo)
+        git("commit", "--quiet", "-m", f"Sync rules: {self.OLD}", cwd=repo)
+
+    def release(self, tag: str | None = None, *, break_profile: bool = False) -> str:
+        """A new source commit in the profile, tagged where --print-source-sha says. A broken
+        one lives on a side branch, so the profile's own checkout still loads."""
+        if break_profile:
+            git("checkout", "--quiet", "-b", "broken", cwd=self.profile)
+        notes = self.profile / "seeds" / "context" / "estate.md"
+        notes.write_text(notes.read_text(encoding="utf-8") + "\nA new line for the release.\n",
+                         encoding="utf-8", newline="\n")
+        if break_profile:
+            manifest = self.profile / "profile.yaml"
+            manifest.write_text(manifest.read_text(encoding="utf-8") + "bogus_key: 1\n",
+                                encoding="utf-8", newline="\n")
+        git("add", "-A", cwd=self.profile)
+        git("commit", "--quiet", "-m", "a rules change", cwd=self.profile)
+        sha = self.print_source_sha().stdout.strip()
+        self.tag(tag or self.NEW, sha)
+        if break_profile:
+            git("checkout", "--quiet", "main", cwd=self.profile)
+        return sha
+
+    def edit_profile(self, change) -> None:
+        path = self.profile / "profile.yaml"
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        change(data)
+        path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8", newline="\n")
+
+    def stamp_line(self) -> str:
+        """The stamp a render left in the target. The fixture's core has no githooks, so no
+        gate-config is rendered: the keys that file carries are checked by GateConfigRemote."""
+        return (self.alpha / "AGENTS.md").read_text(encoding="utf-8").splitlines()[0]
+
+    def head(self, repo: Path | None = None) -> str:
+        return git("rev-parse", "HEAD", cwd=repo or self.alpha)
+
+    def profile_state(self) -> tuple[str, str]:
+        return (git("worktree", "list", cwd=self.profile),
+                git("branch", "--list", cwd=self.profile))
+
+    def assert_refused(self, result: subprocess.CompletedProcess, *words: str) -> None:
+        said = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, said)
+        for word in words:
+            self.assertIn(word, said)
+
+    def assert_untouched(self, head: str, state: tuple[str, str]) -> None:
+        self.assertEqual(self.head(), head, "the target was committed to")
+        self.assertEqual(git("status", "--porcelain", cwd=self.alpha), "")
+        self.assertEqual(self.profile_state(), state, "the profile was left changed")
+        self.assertEqual(list(self.temp.iterdir()), [], "a temporary folder was left behind")
+
+    # --print-source-sha
+
+    def test_print_source_sha_prints_the_sha_a_render_stamps(self):
+        """Intent: Decided 1 - the full 40-character sha of the commit source_sha stamps,
+        and nothing else on stdout, so a tagging workflow can use it as it is."""
+        head, state = self.head(self.profile), self.profile_state()
+        result = self.print_source_sha()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        sha = result.stdout.strip()
+        self.assertRegex(sha, r"^[0-9a-f]{40}$")
+        self.assertEqual(result.stdout, sha + "\n")
+        self.assertIn(f"@{sha[:sync.STAMP_SHA_LENGTH]} ", self.stamp_line())
+        self.assertEqual((self.head(self.profile), self.profile_state()), (head, state))
+        self.assertEqual(git("status", "--porcelain", cwd=self.profile), "")
+
+    def test_print_source_sha_follows_the_newest_source_change(self):
+        new = self.release()
+        self.assertEqual(self.print_source_sha().stdout.strip(), new)
+
+    def test_print_source_sha_takes_no_target(self):
+        result = self.sync("--profile", str(self.profile), "--print-source-sha", "alpha",
+                           cwd=self.profile)
+        self.assert_refused(result, "--print-source-sha")
+
+    # --pull
+
+    def test_pull_at_an_old_release_commits_once_on_the_current_branch_and_pushes_nothing(self):
+        """Intent: Decided 2 - one new commit, stamps naming the newest release, on the
+        branch the target is on; the profile's working tree, branches and worktrees are
+        as they were; nothing is pushed."""
+        new = self.release()
+        git("checkout", "--quiet", "-b", "topic", cwd=self.alpha)
+        before, state = self.head(), self.profile_state()
+        main_before = git("rev-parse", "main", cwd=self.alpha)
+        remote_before = git("for-each-ref", cwd=self.remotes / "alpha.git")
+        profile_status = git("status", "--porcelain", cwd=self.profile)
+
+        result = self.pull()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(git("rev-list", "--count", f"{before}..HEAD", cwd=self.alpha), "1")
+        self.assertEqual(git("log", "-1", "--format=%s", cwd=self.alpha), f"Sync rules: {self.NEW}")
+        self.assertIn(f"From {MANIFEST['source']['repo']}@{new[:7]}.",
+                      git("log", "-1", "--format=%b", cwd=self.alpha))
+        self.assertEqual(git("rev-parse", "--abbrev-ref", "HEAD", cwd=self.alpha), "topic")
+        self.assertEqual(git("rev-parse", "main", cwd=self.alpha), main_before)
+        self.assertEqual(git("status", "--porcelain", cwd=self.alpha), "")
+        self.assertIn(f"@{new[:7]} ", self.stamp_line())
+        self.assertEqual(git("for-each-ref", cwd=self.remotes / "alpha.git"), remote_before,
+                         "something was pushed")
+        self.assertEqual(self.profile_state(), state)
+        self.assertEqual(git("status", "--porcelain", cwd=self.profile), profile_status)
+        self.assertEqual(list(self.temp.iterdir()), [], "a temporary folder was left behind")
+
+    def test_pull_at_the_newest_release_is_already_current(self):
+        """Intent: Boundary - exactly at the newest release commits nothing, now and after a
+        pull that moved it there."""
+        head, state = self.head(), self.profile_state()
+        first = self.pull()
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertIn("already current", first.stdout)
+        self.assert_untouched(head, state)
+
+        self.release()
+        self.assertEqual(self.pull().returncode, 0)
+        moved = self.head()
+        again = self.pull()
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("already current", again.stdout)
+        self.assertEqual(self.head(), moved)
+
+    def test_pull_takes_the_newest_release_by_creation_date(self):
+        """Intent: Decided 2 - git tag --sort=-creatordate, so a name that sorts first is not
+        the newest."""
+        newer = self.release("rules-2026-01-01")
+        result = self.pull()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(git("log", "-1", "--format=%s", cwd=self.alpha),
+                         "Sync rules: rules-2026-01-01")
+        self.assertIn(f"@{newer[:7]} ", self.stamp_line())
+
+    def test_pull_with_no_profile_path_refuses_and_prints_the_command(self):
+        head, state = self.head(), self.profile_state()
+        git("config", "--local", "--unset", "rules.profile-path", cwd=self.alpha)
+        self.assert_refused(self.pull(), "git config --global rules.profile-path")
+        self.assert_untouched(head, state)
+
+    def test_pull_with_a_path_that_is_not_a_profile_refuses(self):
+        head, state = self.head(), self.profile_state()
+        git("config", "--local", "rules.profile-path", self.root.as_posix(), cwd=self.alpha)
+        self.assert_refused(self.pull(), "profile.yaml", "git config --global rules.profile-path")
+        self.assert_untouched(head, state)
+
+    def test_pull_with_uncommitted_changes_refuses(self):
+        self.release()
+        head, state = self.head(), self.profile_state()
+        readme = self.alpha / "README.md"
+        readme.write_text("alpha\nlocal edit\n", encoding="utf-8", newline="\n")
+        self.assert_refused(self.pull(), "uncommitted")
+        self.assertEqual(readme.read_text(encoding="utf-8"), "alpha\nlocal edit\n")
+        self.assertEqual((self.head(), self.profile_state()), (head, state))
+
+    def test_pull_without_a_release_tag_key_refuses_naming_it(self):
+        head, state = self.head(), self.profile_state()
+        self.edit_profile(lambda data: data["rollout"].pop("release_tag"))
+        self.assert_refused(self.pull(), "rollout.release_tag")
+        self.assert_untouched(head, state)
+
+    def test_pull_with_no_tag_matching_the_glob_refuses(self):
+        head, state = self.head(), self.profile_state()
+        self.edit_profile(lambda data: data["rollout"].update(release_tag="nomatch-*"))
+        self.assert_refused(self.pull(), "nomatch-*")
+        self.assert_untouched(head, state)
+
+    def test_pull_in_a_repository_no_target_names_refuses(self):
+        head, state = self.head(), self.profile_state()
+        git("remote", "set-url", "origin", str(self.remotes / "zulu.git"), cwd=self.alpha)
+        self.assert_refused(self.pull(), "zulu")
+        self.assert_untouched(head, state)
+
+    def test_pull_matches_an_ssh_origin_by_its_last_segment(self):
+        self.release()
+        git("remote", "set-url", "origin", "git@example.invalid:acme-owner/alpha.git",
+            cwd=self.alpha)
+        result = self.pull()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(git("log", "-1", "--format=%s", cwd=self.alpha),
+                         f"Sync rules: {self.NEW}")
+
+    def test_pull_with_two_targets_matching_one_origin_refuses_naming_both(self):
+        head, state = self.head(), self.profile_state()
+        self.edit_profile(lambda data: data["targets"].update(bravo={"remote": "alpha"}))
+        self.assert_refused(self.pull(), "alpha", "bravo")
+        self.assert_untouched(head, state)
+
+    def test_pull_in_a_folder_named_for_another_target_refuses(self):
+        head, state = self.head(), self.profile_state()
+        other = self.root / "other"
+        os.rename(self.alpha, other)
+        self.alpha = other
+        self.assert_refused(self.pull(), "alpha", "other")
+        self.assert_untouched(head, state)
+
+    def test_pull_on_a_detached_head_refuses(self):
+        self.release()
+        git("checkout", "--quiet", "--detach", cwd=self.alpha)
+        head, state = self.head(), self.profile_state()
+        self.assert_refused(self.pull(), "detached")
+        self.assert_untouched(head, state)
+
+    def test_pull_whose_worktree_cannot_be_made_refuses_and_leaves_nothing(self):
+        """Intent: Edge cases - git worktree add failing refuses. A tag on a tree is a tag
+        that cannot be checked out."""
+        git("tag", "-a", "-m", "not a commit", "rules-2026-12-01", "HEAD^{tree}", cwd=self.profile)
+        head, state = self.head(), self.profile_state()
+        self.assert_refused(self.pull())
+        self.assert_untouched(head, state)
+
+    def test_pull_whose_render_fails_leaves_no_worktree_and_no_commit(self):
+        self.release(break_profile=True)
+        head, state = self.head(), self.profile_state()
+        self.assert_refused(self.pull(), "bogus_key")
+        self.assert_untouched(head, state)
 
 
 class CoreRulesCarryNoHeaderArt(unittest.TestCase):

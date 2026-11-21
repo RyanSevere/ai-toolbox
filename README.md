@@ -77,6 +77,67 @@ Inside a profile, run `python core/toolboxctl.py check` to see whether a newer
 release exists, then `python core/toolboxctl.py update` to preview it and keep
 it after you type yes. The other subcommands are in [the design notes](docs/DESIGN.md).
 
+## Rules by pull
+
+A profile can let each repository pull its rules itself, instead of pushing them
+to every repository in one rollout. The profile marks a release by tagging a
+commit; each repository renders the newest tag when asked.
+
+**Setting up.** In `profile.yaml`, set `rollout.release_tag` to a glob that names
+the release tags, for example `rules-*`. Set `rules.profile-path` once per
+machine, to the profile checkout:
+
+```
+git config --global rules.profile-path <path to the profile>
+```
+
+**Tagging a release.** `python core/sync.py --print-source-sha` prints the full
+40-character sha of the commit a render stamps. It writes nothing. Tag that
+commit. `--pull` picks the newest tag by creation date, and the push check
+(below) picks it by name, so tag names must sort by date: start them with the
+date, as in `rules-2026-11-15`. The profile checkout needs the tags fetched.
+
+**Pulling.** In the repository to update, run `python <profile>/core/sync.py --pull`.
+
+- The repository is found by its `origin` URL: its last path segment, without
+  `.git`, must equal exactly one target's `remote` (default: the target's name).
+  The folder must be named for that target.
+- The newest release is checked out in a temporary worktree of the profile, so
+  the profile's own working tree is never touched, and rendered by that
+  release's own `sync.py`.
+- The result is one commit on the current branch, `Sync rules: <tag>`. Nothing
+  is pushed. A repository already at the release prints `already current` and
+  commits nothing.
+- It refuses on uncommitted changes, a detached HEAD, an unset or wrong
+  `rules.profile-path`, a missing `rollout.release_tag`, no tag matching it, or
+  no single matching target.
+
+**Gate-config keys.** A profile that sets `rollout.release_tag` also renders two
+lines into every repository's `.githooks/gate-config`: `profile-remote=<url>`,
+the profile repository's own `origin` URL at render time, and
+`release-tag=<glob>`. A profile without the setting renders neither, and a
+profile with it but no `origin` refuses to render.
+
+**Freshness at push.** Opt-in: only a gate-config with a `release-tag` line is
+checked, so a repository whose profile does not use release tags is never held.
+The pre-push hook reads the newest release tag from `profile-remote` with
+`git ls-remote` (20 second limit), and compares it with the sha in the stamp on
+line 1 of the gate-config.
+
+| Outcome | On the deploy branch | On any other branch |
+|---|---|---|
+| Current | silent | silent |
+| Behind, or the stamp matches no release | refuses, naming the `--pull` command | one warning line |
+| Cannot tell (no network, no `profile-remote`, an unreadable stamp, no tag, a timeout) | refuses: "cannot tell whether the rules are current" | one warning line |
+
+A stamp with no sha (the profile's own repository) skips the check. Unknown is
+never read as current. Nothing is cached.
+
+**Urgent releases.** `python core/sync.py --rollout <subject> --push --parallel N`
+pushes `N` repositories at once for that run, instead of `rollout.parallel`. It
+neither probes nor stores anything. How a profile marks a release urgent is the
+profile's own procedure.
+
 ## Asking for a core change
 
 A profile never edits its `core/`; a change is made here and released. Open an

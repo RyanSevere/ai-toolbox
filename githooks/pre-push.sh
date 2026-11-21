@@ -4,9 +4,11 @@
 # Path: {PROJECT_ROOT}/githooks/pre-push.sh
 # Created by: Ryan Severe
 # Created: 2026-09-23
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-20
 # Description: Runs the gates named in the pushed commit's .githooks/gates/enabled
-#              before a push, and names every gate it skips. A failing gate
+#              before a push, and names every gate it skips. Where gate-config
+#              names a release-tag, first checks the rendered rules are the
+#              profile's newest release. A failing gate
 #              refuses the push here; a passing set is published as a report
 #              tag so CI can confirm the push was gated. In the profile repo it
 #              first refuses a profile.lock that disagrees with features:.
@@ -141,6 +143,106 @@ consent_check() {
     printf '%s\n' "$cc_out" | sed 's/^/    /' >&2
     return 1
   fi
+}
+
+rules_ls_remote() {
+  # The profile's release tags on $1 matching the glob $2, peeled: `git ls-remote` output,
+  # failing if the remote cannot be read or does not answer within 20 seconds. timeout(1)
+  # where it is the real one (Windows has an unrelated timeout.exe, and macOS has none),
+  # otherwise a background watchdog. stdin is closed: the hook's own is the ref list.
+  if timeout 1 true >/dev/null 2>&1; then
+    timeout 20 git ls-remote --tags "$1" "refs/tags/$2" "refs/tags/$2^{}" < /dev/null 2>/dev/null
+    return
+  fi
+  rl_out="$(mktemp)"
+  git ls-remote --tags "$1" "refs/tags/$2" "refs/tags/$2^{}" < /dev/null > "$rl_out" 2>/dev/null &
+  rl_pid=$!
+  ( sleep 20; kill "$rl_pid" 2>/dev/null ) > /dev/null 2>&1 &
+  rl_dog=$!
+  rl_status=0
+  wait "$rl_pid" || rl_status=1
+  kill "$rl_dog" 2>/dev/null || true
+  wait "$rl_dog" 2>/dev/null || true
+  if [ "$rl_status" -eq 0 ]; then
+    cat "$rl_out" || rl_status=1
+  fi
+  rm -f "$rl_out"
+  return "$rl_status"
+}
+
+rules_newest_release() {
+  # "<name> <commit>" for the release tag sorting last by name on the profile remote $1,
+  # among the tags matching $2. Peeled, so an annotated tag gives its commit. Fails with
+  # nothing printed if the remote cannot be read or no tag matches.
+  rn_listing="$(rules_ls_remote "$1" "$2")" || return 1
+  # name, 0 for a tag's own line or 1 for its peeled one, sha: the peeled line sorts after.
+  rn_last="$(printf '%s\n' "$rn_listing" \
+    | sed -n -e 's#^\([0-9a-f]*\)[[:space:]]*refs/tags/\(.*\)^{}$#\2 1 \1#p;t' \
+             -e 's#^\([0-9a-f]*\)[[:space:]]*refs/tags/\(.*\)$#\2 0 \1#p' \
+    | LC_ALL=C sort -k1,1 -k2,2 | tail -n 1)"
+  [ -n "$rn_last" ] || return 1
+  read -r rn_name _ rn_commit <<EOF
+$rn_last
+EOF
+  printf '%s %s\n' "$rn_name" "$rn_commit"
+}
+
+rules_verdict() {
+  # Says how the rendered rules stand against the newest release, or why that cannot be told.
+  # Prints nothing when current; otherwise one line starting "behind" or "unknown". The
+  # stamp is line 1 of gate-config; a gate-config with no release-tag line is not checked,
+  # and neither is one whose stamp carries no sha (the profile's own repository).
+  rv_glob="$(gate_config release-tag)" || return 0
+  rv_stamp="$(sed -n '1p' "$repo_root/.githooks/gate-config" 2>/dev/null | tr -d '\r')"
+  rv_rest="${rv_stamp#\# generated from }"
+  if [ "$rv_rest" = "$rv_stamp" ]; then
+    echo "unknown: line 1 of .githooks/gate-config is not a generated-from stamp"
+    return 0
+  fi
+  rv_source="${rv_rest%% *}"
+  case "$rv_source" in
+    *@*) rv_sha="${rv_source#*@}" ;;
+    *)
+      case "${rv_rest#"$rv_source"}" in
+        " - edit the source"*) return 0 ;;
+      esac
+      echo "unknown: the stamp in .githooks/gate-config is not in the stamp format"
+      return 0 ;;
+  esac
+  if ! printf '%s' "$rv_sha" | grep -qx '[0-9a-f]\{7,40\}'; then
+    echo "unknown: the stamp sha '$rv_sha' in .githooks/gate-config is not a commit sha"
+    return 0
+  fi
+  if ! rv_remote="$(gate_config profile-remote)"; then
+    echo "unknown: .githooks/gate-config has release-tag but no profile-remote"
+    return 0
+  fi
+  if ! rv_newest="$(rules_newest_release "$rv_remote" "$rv_glob")"; then
+    echo "unknown: no release tag matching $rv_glob could be read from $rv_remote"
+    return 0
+  fi
+  rv_name="${rv_newest%% *}"
+  rv_commit="${rv_newest#* }"
+  case "$rv_commit" in
+    "$rv_sha"*) ;;
+    *) echo "behind: the rendered rules ($rv_sha) are not the newest release $rv_name ($(printf '%.7s' "$rv_commit"))" ;;
+  esac
+}
+
+rules_freshness() {
+  # Refuses (returns 1) on the deploy branch when the rules are behind or cannot be told
+  # to be current; elsewhere warns once and carries on. $1 is the ref being pushed.
+  rf_verdict="$(rules_verdict)"
+  [ -n "$rf_verdict" ] || return 0
+  case "$rf_verdict" in
+    behind:*) rf_text="${rf_verdict#behind: }. Run 'python <profile>/core/sync.py --pull' in this repository" ;;
+    *) rf_text="cannot tell whether the rules are current (${rf_verdict#unknown: })" ;;
+  esac
+  if [ "$1" = "refs/heads/$deploy_branch" ]; then
+    echo "pre-push: refusing - $rf_text." >&2
+    return 1
+  fi
+  echo "pre-push: warning - $rf_text." >&2
 }
 
 cutoff_stamp() {
@@ -320,6 +422,10 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   # Each line's own ref, set before its gates run; a gate that picks a range reads it.
   PUSH_REMOTE_REF="$remote_ref"
   export PUSH_REMOTE_REF
+
+  # Opt-in by the rendered release-tag line. Before the gates: a target on stale rules has
+  # no business spending minutes on gates the newer rules may have changed.
+  rules_freshness "$remote_ref" || exit 1
 
   if ! gates_json="$(run_gates "$local_sha" "$remote_sha" "$enabled")"; then
     # The deploy branch is the only one a failing gate blocks. Moving gates to
