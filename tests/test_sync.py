@@ -282,7 +282,8 @@ class BuildPlan(unittest.TestCase):
         self.assertEqual([(p.parts[-2], caps) for p, caps in bare.dropped],
                          [("design-partner", ["tracker.create", "tracker.edit", "tracker.status"])])
         self.assertEqual(sorted(p.parent.name for p, _, _ in bare.dropped_sections),
-                         ["context", "context", "handoff", "workstream-primary"])
+                         ["context", "context", "handoff", "orchestrator", "orchestrator",
+                          "workstream-primary"])
 
     def test_agents_md_says_to_hand_off_after_a_summary(self):
         """Intent: an interactive render tells the session to re-check its state and carry
@@ -5584,6 +5585,36 @@ class LayerSkills(unittest.TestCase):
         self.assertIn("**Away:**", lost[0])
         drops = self.core_drops(plan, "workstream-primary")
         self.assertEqual([caps for _, caps in drops], [["asks.ask"]])
+
+    def test_orchestrator_names_the_bound_skills_in_place(self):
+        plan = self.plan(self.BOUND)
+        text = plan[self.OUT.format("orchestrator")]
+        self.assertIn("**The open asks:** through the `example-asker` skill", text)
+        self.assertIn("**Away:**", text)
+        self.assertNotIn("{{", text)
+        self.assertEqual(self.core_drops(plan, "orchestrator"), [])
+
+    def test_orchestrator_unbound_loses_only_the_two_blocks(self):
+        bound = self.plan(self.BOUND)[self.OUT.format("orchestrator")]
+        plan = self.plan({})
+        text = plan[self.OUT.format("orchestrator")]
+        self.assertNotIn("example-asker", text)
+        self.assertNotIn("**The open asks:**", text)
+        self.assertNotIn("**Away:**", text)
+        for kept in ("**Sitrep and status:**", "**Desk:**", "**Bio:**", "**Night:**"):
+            self.assertIn(kept, text)
+        lost = [line for line in bound.splitlines() if line not in text.splitlines()]
+        self.assertEqual(len(lost), 2, lost)
+        self.assertEqual(sorted(caps[0] for _, caps in self.core_drops(plan, "orchestrator")),
+                         ["asks.ask", "asks.list"])
+
+    def test_orchestrator_with_only_ask_bound_keeps_its_ask_line(self):
+        plan = self.plan({"asks.ask": {"skill": "example-asker"}})
+        text = plan[self.OUT.format("orchestrator")]
+        self.assertIn("**Away:**", text)
+        self.assertNotIn("**The open asks:**", text)
+        self.assertEqual([caps for _, caps in self.core_drops(plan, "orchestrator")],
+                         [["asks.list"]])
 
 
 if __name__ == "__main__":
