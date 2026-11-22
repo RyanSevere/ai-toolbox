@@ -45,8 +45,9 @@ If a UI is not mirrored in the remote session, do not use it.
 - In the desktop app, once the seed is written:
   1. Start the next session with the app's session tool, using the pickup prompt as its prompt and the same workspace folders. The prompt carries this session's id.
   2. The new session detaches itself first, so archiving this one does not archive it. If the app refuses because the operator moved it in the sidebar, it says so, and this session asks the operator before archiving.
-  3. When the operator confirms the pickup, the new session messages this session. If the message fails, it tells the operator this one is still open, never that it was archived.
-  4. On that message, this session checks with `get_session` that the new one is top level, then archives itself with no ask: the confirmation approves it. If it is not top level, ask the operator.
+  3. Once detached, the new session messages this session at once, without waiting for the operator to confirm the pickup. If the message fails, it tells the operator this one is still open, never that it was archived.
+  4. On that message, this session checks with `get_session` that the new one is top level, then archives itself with no ask, so the sidebar shows one session for the workstream. If it is not top level, ask the operator.
+  5. If the operator does not confirm the pickup, or the pickup fails, the new session un-archives this session by the id in its pickup prompt (`unarchive_session`), checks with `get_session` that it is no longer archived, and tells the operator which session is live. A refused or pending un-archive is reported as such, never as restored.
 - Outside the desktop app, end with the pickup prompt in chat, as the handoff skill says.
 - On the first use, check that the new session received the prompt and the folders, and report it if not.
 

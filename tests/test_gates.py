@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_gates.py
 # Created by: Ryan Severe
 # Created: 2026-11-16
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-21
 # Description: Runs each generic pre-push gate in githooks/gates/ against a
 #              throwaway repository, both ways, and the pre-push hook itself
 #              against a local bare remote. Skips where no POSIX shell is
@@ -373,6 +373,14 @@ class TestOrphans(GateCase):
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_link_line_is_not_read_as_a_root(self):
+        """A 'link: deps' line is a directive for the tests gate. Read as a root, it is stale."""
+        self.write("tests/test_thing.py")
+        self.write(".github/test-roots", "tests\nlink: deps\nrun: python -m unittest\n")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stdout)
+
     def test_vendored_core_tests_are_not_the_profiles_own(self):
         """Intent: where core/VENDORED exists, core/tests/ is the core's suite, run upstream.
         A profile with no tests of its own passes, and says so."""
@@ -680,16 +688,19 @@ class Tests(GateCase):
 
     def test_each_command_sees_the_push_range(self):
         """Intent: a suite can choose its own tests from what the push changed,
-        without the gate knowing anything about how it chooses."""
+        without the gate knowing anything about how it chooses.
+        Commands now run in a temporary tree, so the output goes outside it."""
+        out_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out_dir, ignore_errors=True)
+        out = out_dir / "range.out"
         self.write(".github/test-roots",
-                   'run: echo "$PUSH_REMOTE_SHA..$PUSH_LOCAL_SHA" > range.out\n')
+                   f'run: echo "$PUSH_REMOTE_SHA..$PUSH_LOCAL_SHA" > "{out.as_posix()}"\n')
         first = self.commit()
         self.write("b.txt")
         second = self.commit()
         result = self.run_gate(second, first)
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertEqual((self.repo / "range.out").read_text(encoding="utf-8").strip(),
-                         f"{first}..{second}")
+        self.assertEqual(out.read_text(encoding="utf-8").strip(), f"{first}..{second}")
 
     def test_each_command_reports_its_seconds_and_timing_lines(self):
         """Intent: the gate report says how long each suite took and which
@@ -948,6 +959,137 @@ class Tests(GateCase):
         self.assertIn("parallel: yes, but the CPU count could not be read - running serially",
                       result.stdout)
         self.assertEqual(self.largest_count(), 1, result.stdout)
+
+    def worktree_lines(self) -> int:
+        return len(self.git("worktree", "list").splitlines())
+
+    def test_commands_run_against_the_pushed_commit_not_the_working_tree(self):
+        """Intent: an edit saved to the working tree while a suite runs cannot change what
+        the pushed commit is reported to have done."""
+        self.write("probe.txt", "committed\n")
+        self.write(".github/test-roots", "run: grep -q committed probe.txt\n")
+        sha = self.commit()
+        self.write("probe.txt", "edited\n")
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("tree: pushed commit", result.stdout)
+
+    def test_no_pushed_commit_runs_against_the_working_tree(self):
+        """Intent: run by hand, with no SHA, the gate still tests what is on disk."""
+        self.write("probe.txt", "committed\n")
+        self.write(".github/test-roots", "run: grep -q edited probe.txt\n")
+        self.commit()
+        self.write("probe.txt", "edited\n")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("tree: working tree (no pushed commit given)", result.stdout)
+
+    def test_a_pushed_commit_that_does_not_resolve_is_refused(self):
+        self.write(".github/test-roots", "run: echo ran > ran.out\n")
+        self.commit()
+        bogus = "1234567890abcdef1234567890abcdef12345678"
+        result = self.run_gate(bogus)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("REFUSED:", result.stdout)
+        self.assertIn(bogus, result.stdout)
+        self.assertFalse((self.repo / "ran.out").exists())
+
+    def test_no_worktree_is_left_behind(self):
+        """Intent: the temporary tree is removed on success and on failure."""
+        self.write(".github/test-roots", "run: true\n")
+        sha = self.commit()
+        before = self.worktree_lines()
+        self.assertEqual(self.run_gate(sha).returncode, 0)
+        self.assertEqual(self.worktree_lines(), before, "after a passing run")
+        self.write(".github/test-roots", "run: false\n")
+        failing = self.commit()
+        self.assertEqual(self.run_gate(failing).returncode, 1)
+        self.assertEqual(self.worktree_lines(), before, "after a failing run")
+
+    @unittest.skipIf(os.name == "nt", "signals to a shell are not reliable on Windows")
+    def test_no_worktree_is_left_behind_after_an_interrupt(self):
+        """Intent: the temporary tree is removed when the gate is terminated mid-run."""
+        import signal
+        import time
+        self.write(".github/test-roots", "run: sleep 5\n")
+        sha = self.commit()
+        before = self.worktree_lines()
+        env = {**os.environ, "LC_ALL": "C",
+               "PATH": str(Path(SH).parent) + os.pathsep + os.environ.get("PATH", "")}
+        proc = subprocess.Popen([SH, (GATES / "tests.sh").as_posix(), sha], cwd=self.repo,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+        try:
+            deadline = time.monotonic() + 20
+            while self.worktree_lines() == before and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertGreater(self.worktree_lines(), before, "the gate never made its tree")
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        self.assertEqual(self.worktree_lines(), before)
+
+    def linked_suite(self, run: str, link: str = "deps") -> str:
+        """An ignored, untracked deps/ folder holding marker.txt, a declared link, and a commit."""
+        self.write(".gitignore", "deps/\n")
+        self.write("deps/marker.txt", "here\n")
+        self.write(".github/test-roots", f"link: {link}\nrun: {run}\n")
+        return self.commit()
+
+    def test_a_declared_link_is_readable_from_the_pushed_tree(self):
+        """Intent: a suite can use an untracked folder, such as installed dependencies,
+        that a clean checkout of the pushed commit does not have."""
+        sha = self.linked_suite("test -f deps/marker.txt")
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_link_is_the_working_tree_folder_not_a_copy(self):
+        """Intent: a write through the link lands in the real folder."""
+        sha = self.linked_suite("sh -c 'echo x > deps/written.txt'")
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertTrue((self.repo / "deps" / "written.txt").exists())
+
+    def test_cleanup_leaves_the_linked_folder_alone(self):
+        """Intent: removing the temporary tree must never delete through the link."""
+        sha = self.linked_suite("true")
+        self.assertEqual(self.run_gate(sha).returncode, 0)
+        self.assertEqual((self.repo / "deps" / "marker.txt").read_text(encoding="utf-8"), "here\n")
+        self.write(".github/test-roots", "link: deps\nrun: false\n")
+        failing = self.commit()
+        self.assertEqual(self.run_gate(failing).returncode, 1)
+        self.assertEqual((self.repo / "deps" / "marker.txt").read_text(encoding="utf-8"), "here\n")
+
+    def assert_link_refused(self, link: str, tracked: bool = False) -> None:
+        out_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out_dir, ignore_errors=True)
+        ran = out_dir / "ran.out"
+        self.write("src/keep.txt", "k\n")
+        if not tracked:
+            self.write(".gitignore", "deps/\n")
+        (self.repo / "deps").mkdir(exist_ok=True)
+        self.write("deps/marker.txt", "here\n")
+        self.write(".github/test-roots", f"link: {link}\nrun: echo ran > \"{ran.as_posix()}\"\n")
+        sha = self.commit()
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("REFUSED:", result.stdout)
+        self.assertIn(f"link: {link}", result.stdout)
+        self.assertFalse(ran.exists(), "no command may have run before the refusal")
+
+    def test_a_link_to_a_missing_path_is_refused(self):
+        self.assert_link_refused("nothing-here")
+
+    def test_a_link_with_an_absolute_path_is_refused(self):
+        self.assert_link_refused("/etc")
+
+    def test_a_link_with_a_dot_dot_segment_is_refused(self):
+        self.assert_link_refused("src/../deps")
+
+    def test_a_link_to_a_path_the_commit_tracks_is_refused(self):
+        self.assert_link_refused("deps", tracked=True)
 
 
 class Typecheck(GateCase):
@@ -2365,9 +2507,12 @@ class RenderedOnly(GateCase):
         bogus = "1" * 40
         self.assertEqual(self.script_verdict(bogus, base), 2)
         self.assertEqual(self.shell_verdict(bogus, base), 1)
+        # The gate now checks the pushed commit out before anything else, so a sha git
+        # cannot resolve is refused outright: still never a skip, and never a pass.
         result = self.run_gate(bogus, base)
         self.assertNotIn("skipped: every file", result.stdout)
-        self.assertIn("suite-ran", result.stdout)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("REFUSED: the pushed commit", result.stdout)
 
 
 class TestsRangeByRef(GateCase):
@@ -2380,8 +2525,12 @@ class TestsRangeByRef(GateCase):
     def setUp(self):
         super().setUp()
         self.gate_config(config_dir=".github", deploy_branch="main")
+        # Commands run in a temporary tree of the pushed commit, so the output goes outside it.
+        out_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out_dir, ignore_errors=True)
+        self.range_out = out_dir / "range.out"
         self.write(".github/test-roots",
-                   'run: echo "$PUSH_REMOTE_SHA..$PUSH_LOCAL_SHA" > range.out\n')
+                   f'run: echo "$PUSH_REMOTE_SHA..$PUSH_LOCAL_SHA" > "{self.range_out.as_posix()}"\n')
 
     def run_ref(self, local, remote, ref, *extra, unset_ref=False):
         script = (GATES / "tests.sh").as_posix()
@@ -2394,7 +2543,7 @@ class TestsRangeByRef(GateCase):
                               capture_output=True, text=True, env=env)
 
     def seen_range(self) -> str:
-        return (self.repo / "range.out").read_text(encoding="utf-8").strip()
+        return self.range_out.read_text(encoding="utf-8").strip()
 
     def range_line(self, result) -> str:
         lines = [ln for ln in result.stdout.splitlines() if ln.startswith("range:")]
@@ -2485,11 +2634,13 @@ class TestsRangeByRef(GateCase):
     def test_a_declared_command_does_not_see_the_remote_ref(self):
         """Intent: the ref only chooses the range. A declared command that runs the
         gate again in a scratch repository must not inherit a real push's ref."""
-        self.write(".github/test-roots", 'run: echo "${PUSH_REMOTE_REF-unset}" > ref.out\n')
+        ref_out = self.range_out.with_name("ref.out")
+        self.write(".github/test-roots",
+                   f'run: echo "${{PUSH_REMOTE_REF-unset}}" > "{ref_out.as_posix()}"\n')
         first, second = self.two_commits()
         result = self.run_ref(second, first, "refs/heads/feature")
         self.assertEqual(result.returncode, 0, result.stdout)
-        seen = (self.repo / "ref.out").read_text(encoding="utf-8").strip()
+        seen = ref_out.read_text(encoding="utf-8").strip()
         self.assertEqual(seen, "unset")
 
     def test_no_ref_behaves_as_before_and_prints_no_range_line(self):
