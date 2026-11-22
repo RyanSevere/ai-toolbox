@@ -209,6 +209,39 @@ exits 2. A second try (`stop_hook_active` true) is reported and never sent back 
 crashes or times out, or `AI_TOOLBOX_HOOKS=off`, it exits 0; the first three print why the reply
 was not graded. Cursor is not covered.
 
+### `title-prefix` - agent hook on `turn.end`, Claude Code only
+
+An `observer` with `tools: [claude]`, run when a turn ends (`Stop`). It reads the session's
+latest `set_session_title` call for `"self"` from the transcript, takes the status prefix (the
+title up to the first ` - `), and grades it against the reply by the rule its vocabulary gives
+that prefix:
+
+- `ask`: the reply must carry an open ask, a `## Decisions and clarifications` or
+  `## Operator steps` heading after the last reply marker.
+- `no-ask`: it must not.
+- `unchecked`: it is not graded. A title that matches no entry is not graded either.
+
+A stale prefix is sent back once: the reason goes to stderr and the hook exits 2. A second try
+(`stop_hook_active` true) is reported and never sent back again.
+
+**The vocabulary** is `prefixes.yaml`, rendered beside `hook.py`. The core ships a default of
+eight entries (`needs you`, `holding pending desk`, `pending push`, `pending <name>`,
+`complete`, `overnight <x>`, `parked until <x>`, `working`). An entry is `prefix` and `rule`, or
+`label`, `pattern` (a regular expression matched against the whole prefix, case-insensitively)
+and `rule`; the first entry that matches wins.
+
+**A profile overrides it with the `title_prefixes` key** in its profile file, a list of entries
+in that same shape. When the key is present it replaces the default whole, and sync renders it
+as the target's `prefixes.yaml`; when it is absent the core's default renders. Sync refuses a
+profile file whose list is empty or whose entry is not exactly `prefix` and `rule` or `label`,
+`pattern` and `rule`, whose rule is none of the three, or whose pattern is not a regular
+expression, naming the entry. There is no file-level override: a profile seed whose name
+matches a core hook is refused.
+
+**It never blocks on its own failure.** An unreadable payload or transcript, a missing or
+unusable `prefixes.yaml`, or `AI_TOOLBOX_HOOKS=off` exits 0; the first three print why the
+title was not graded. Cursor is not covered.
+
 ### `no-shell-file-edits` - Cursor hook, not shipped
 
 **Not rendered.** In Cursor it denied every agent `git commit` with "Blocked:

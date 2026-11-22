@@ -282,7 +282,8 @@ class BuildPlan(unittest.TestCase):
         self.assertEqual([(p.parts[-2], caps) for p, caps in bare.dropped],
                          [("design-partner", ["tracker.create", "tracker.edit", "tracker.status"])])
         self.assertEqual(sorted(p.parent.name for p, _, _ in bare.dropped_sections),
-                         ["context", "context", "handoff"])
+                         ["context", "context", "handoff", "orchestrator", "orchestrator",
+                          "workstream-primary"])
 
     def test_agents_md_says_to_hand_off_after_a_summary(self):
         """Intent: an interactive render tells the session to re-check its state and carry
@@ -2625,7 +2626,7 @@ class ExampleProfile(unittest.TestCase):
         text = (self.FOLDER / "profile.yaml").read_text(encoding="utf-8")
         shown = {key for key in sync.PROFILE_KEYS if f"\n# {key}:" in text}
         self.assertEqual(set(profile) | shown, set(sync.PROFILE_KEYS))
-        self.assertEqual(shown, {"tracked", "tools", "gate_report"})
+        self.assertEqual(shown, {"tracked", "tools", "gate_report", "title_prefixes"})
 
     def test_every_example_target_renders(self):
         folder = locked_example(self)
@@ -5535,6 +5536,85 @@ class CoreRulesCarryNoHeaderArt(unittest.TestCase):
         holders = [rule.name for rule in rules
                    if art_line in rule.read_text(encoding="utf-8")]
         self.assertEqual(holders, [])
+
+
+class LayerSkills(unittest.TestCase):
+    """The core's workstream-primary and orchestrator skills name no ask channel: each line
+    that needs one sits in a requires block, so a profile that binds asks.ask or asks.list
+    sees its own skill's name in place, and one that does not loses only that block."""
+
+    ASKER = "skills/example-asker/procedure.md"
+    ASKER_TEXT = "---\nname: example-asker\ndescription: d\n---\nbody\n"
+    BOUND = {"asks.ask": {"skill": "example-asker"}, "asks.list": {"skill": "example-asker"}}
+    OUT = ".cursor/skills/{}/SKILL.md"
+
+    def setUp(self):
+        self.profile = example_copy(self)
+        path = self.profile / "seeds" / self.ASKER
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.ASKER_TEXT, encoding="utf-8", newline="\n")
+
+    def plan(self, capabilities: dict) -> sync.Plan:
+        manifest = {**MANIFEST, "features": lock_all_on(self.profile),
+                    "capabilities": capabilities}
+        return build_plan("t", {}, DEFAULTS, SHA, manifest, profile_dir=self.profile)
+
+    def core_drops(self, plan: sync.Plan, skill: str) -> list[tuple[int, list[str]]]:
+        folder = sync.SKILLS_DIR / skill
+        return sorted((line, caps) for path, line, caps in plan.dropped_sections
+                      if Path(path).is_relative_to(folder))
+
+    def test_workstream_primary_names_the_bound_skill_in_the_away_mode_line(self):
+        plan = self.plan(self.BOUND)
+        text = plan[self.OUT.format("workstream-primary")]
+        self.assertIn("the `example-asker` skill", text)
+        self.assertNotIn("<!--", text.split("-->", 1)[-1])
+        self.assertNotIn("{{", text)
+        self.assertEqual(self.core_drops(plan, "workstream-primary"), [])
+
+    def test_workstream_primary_unbound_loses_only_the_away_mode_block(self):
+        bound = self.plan(self.BOUND)[self.OUT.format("workstream-primary")]
+        plan = self.plan({})
+        text = plan[self.OUT.format("workstream-primary")]
+        self.assertNotIn("example-asker", text)
+        self.assertNotIn("**Away:**", text)
+        self.assertIn("**Desk and bio:**", text)
+        self.assertIn("**Night:**", text)
+        lost = [line for line in bound.splitlines() if line not in text.splitlines()]
+        self.assertEqual(len(lost), 1, lost)
+        self.assertIn("**Away:**", lost[0])
+        drops = self.core_drops(plan, "workstream-primary")
+        self.assertEqual([caps for _, caps in drops], [["asks.ask"]])
+
+    def test_orchestrator_names_the_bound_skills_in_place(self):
+        plan = self.plan(self.BOUND)
+        text = plan[self.OUT.format("orchestrator")]
+        self.assertIn("**The open asks:** through the `example-asker` skill", text)
+        self.assertIn("**Away:**", text)
+        self.assertNotIn("{{", text)
+        self.assertEqual(self.core_drops(plan, "orchestrator"), [])
+
+    def test_orchestrator_unbound_loses_only_the_two_blocks(self):
+        bound = self.plan(self.BOUND)[self.OUT.format("orchestrator")]
+        plan = self.plan({})
+        text = plan[self.OUT.format("orchestrator")]
+        self.assertNotIn("example-asker", text)
+        self.assertNotIn("**The open asks:**", text)
+        self.assertNotIn("**Away:**", text)
+        for kept in ("**Sitrep and status:**", "**Desk:**", "**Bio:**", "**Night:**"):
+            self.assertIn(kept, text)
+        lost = [line for line in bound.splitlines() if line not in text.splitlines()]
+        self.assertEqual(len(lost), 2, lost)
+        self.assertEqual(sorted(caps[0] for _, caps in self.core_drops(plan, "orchestrator")),
+                         ["asks.ask", "asks.list"])
+
+    def test_orchestrator_with_only_ask_bound_keeps_its_ask_line(self):
+        plan = self.plan({"asks.ask": {"skill": "example-asker"}})
+        text = plan[self.OUT.format("orchestrator")]
+        self.assertIn("**Away:**", text)
+        self.assertNotIn("**The open asks:**", text)
+        self.assertEqual([caps for _, caps in self.core_drops(plan, "orchestrator")],
+                         [["asks.list"]])
 
 
 if __name__ == "__main__":

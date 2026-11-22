@@ -63,6 +63,18 @@ not_onboarded:
 #     - ref: "(?:refs/heads/)?scheme/[^/]+/tests"
 #       gates: [tests]
 
+# The session-title status prefixes the title-prefix hook grades, replacing the core's default
+# list whole. Each entry is `prefix` and `rule`, or `label`, `pattern` (a regular expression
+# matched against the whole prefix) and `rule`; the first entry that matches wins. A rule is
+# `ask` (the reply must carry an open ask), `no-ask` (it must not) or `unchecked`. Absent, the
+# core's default renders. Sync refuses a bad entry. Uncomment to use.
+# title_prefixes:
+#   - prefix: needs you
+#     rule: ask
+#   - label: "waiting <name>"
+#     pattern: "waiting .+"
+#     rule: no-ask
+
 # Rules rendered into every target unless it excludes them. Each id names a
 # spec-<id>.md in the core's rules/ or in this profile's seeds/rules/.
 defaults:
