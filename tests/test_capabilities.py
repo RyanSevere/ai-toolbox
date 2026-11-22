@@ -4,9 +4,10 @@
 # Path: {PROJECT_ROOT}/tests/test_capabilities.py
 # Created by: Ryan Severe
 # Created: 2026-10-13
-# Last Updated: 2026-11-09
+# Last Updated: 2026-11-21
 # Description: Tests for capabilities/tracker.yaml, the core's wireframe of ticket
-#              management. It holds concepts, operations, guarantees and setup
+#              management, and capabilities/asks.yaml, its wireframe of asking the
+#              operator away from the session. Each holds concepts, operations, guarantees and setup
 #              questions, and names no tracker, transport or estate value. A
 #              wireframe that quietly names a product has to be edited to support
 #              the next one. Stdlib and PyYAML only.
@@ -197,6 +198,107 @@ class NamesNothingSpecific(unittest.TestCase):
         for word, pattern in FORBIDDEN.items():
             with self.subTest(word=word):
                 self.assertIsNone(re.search(pattern, text), f"{word!r} appears in {FILE.name}")
+
+
+ASKS_FILE = ROOT / "capabilities" / "asks.yaml"
+ASKS_CONCEPTS = ("ask", "verdict", "open-ask")
+ASKS_OPERATIONS = ("ask", "list")
+ASKS_GUARANTEES = ("verdict-from-channel", "read-back", "unknown-not-empty")
+ASKS_QUESTIONS = ("channel", "connection", "verdicts", "operations")
+# Anything specific to one channel, one transport, or this estate.
+ASKS_FORBIDDEN = {
+    "slack": r"(?i)(?<![\w-])slack(?![\w-])",
+    "ntfy": r"(?i)(?<![\w-])ntfy(?![\w-])",
+    "pushover": r"(?i)(?<![\w-])pushover(?![\w-])",
+    "telegram": r"(?i)(?<![\w-])telegram(?![\w-])",
+    "discord": r"(?i)(?<![\w-])discord(?![\w-])",
+    "github": FORBIDDEN["github"],
+    "gh": FORBIDDEN["gh"],
+    "mcp": FORBIDDEN["mcp"],
+    "opqueue": r"(?i)opqueue",
+    "operator queue": r"(?i)operator[ -]queue",
+}
+
+
+def load_asks() -> dict:
+    return yaml.safe_load(ASKS_FILE.read_text(encoding="utf-8"))
+
+
+class AsksWireframe(unittest.TestCase):
+    """The core describes asking the operator without describing a channel."""
+
+    def test_the_file_exists(self):
+        self.assertTrue(ASKS_FILE.is_file(), f"{ASKS_FILE} is missing")
+
+    def test_the_four_sections_exist(self):
+        data = load_asks()
+        for section in SECTIONS:
+            with self.subTest(section=section):
+                self.assertTrue(data.get(section), f"section {section!r} is missing or empty")
+
+    def test_every_listed_concept_is_defined_with_a_description(self):
+        concepts = load_asks()["concepts"]
+        self.assertEqual(set(concepts), set(ASKS_CONCEPTS))
+        for name, entry in concepts.items():
+            with self.subTest(concept=name):
+                self.assertTrue(str((entry or {}).get("description") or "").strip())
+
+    def test_the_two_operations_are_asks_capabilities(self):
+        """Intent: asks.ask puts a question and returns the verdict, asks.list shows the
+        open asks, and a profile whose channel lacks one loses only what needs it."""
+        operations = load_asks()["operations"]
+        self.assertEqual(set(operations), set(ASKS_OPERATIONS))
+        for name, entry in operations.items():
+            with self.subTest(operation=name):
+                self.assertEqual(entry.get("capability"), f"asks.{name}")
+                self.assertTrue(str(entry.get("description") or "").strip())
+
+    def test_every_guarantee_an_operation_names_is_defined(self):
+        data = load_asks()
+        self.assertEqual(set(data["guarantees"]), set(ASKS_GUARANTEES))
+        for name, entry in data["operations"].items():
+            for guarantee in entry.get("guarantees") or []:
+                with self.subTest(operation=name, guarantee=guarantee):
+                    self.assertIn(guarantee, data["guarantees"])
+
+    def test_the_verdict_comes_from_the_channel_and_a_failed_list_is_not_empty(self):
+        operations = load_asks()["operations"]
+        self.assertIn("verdict-from-channel", operations["ask"]["guarantees"])
+        self.assertIn("unknown-not-empty", operations["list"]["guarantees"])
+
+    def test_every_question_is_present_once_and_carries_its_fields(self):
+        setup = load_asks()["setup"]
+        self.assertEqual(sorted(q.get("id") for q in setup), sorted(ASKS_QUESTIONS))
+        for question in setup:
+            for key in QUESTION_KEYS:
+                with self.subTest(question=question.get("id"), key=key):
+                    self.assertTrue(question.get(key), f"{key!r} missing or empty")
+
+    def test_every_question_feeds_a_concept_or_an_operation(self):
+        data = load_asks()
+        known = set(data["concepts"]) | set(data["operations"])
+        for question in data["setup"]:
+            feeds = question["feeds"]
+            for target in [feeds] if isinstance(feeds, str) else feeds:
+                with self.subTest(question=question["id"], feeds=target):
+                    self.assertIn(target, known)
+
+    def test_one_question_declares_the_channel(self):
+        declaring = [q["id"] for q in load_asks()["setup"] if q.get("declares")]
+        self.assertEqual(declaring, ["channel"])
+
+    def test_the_file_names_no_channel_transport_or_estate_value(self):
+        text = ASKS_FILE.read_text(encoding="utf-8")
+        for word, pattern in ASKS_FORBIDDEN.items():
+            with self.subTest(word=word):
+                self.assertIsNone(re.search(pattern, text), f"{word!r} appears in {ASKS_FILE.name}")
+
+    def test_sync_reads_both_wireframes(self):
+        import sys
+        sys.path.insert(0, str(ROOT))
+        import sync
+        self.assertLessEqual({"asks.ask", "asks.list"}, sync.known_capabilities())
+        self.assertIn("asks", sync.setup_questions())
 
 
 if __name__ == "__main__":

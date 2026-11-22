@@ -1,0 +1,111 @@
+################################################################################
+# File: asks.yaml
+# Path: {PROJECT_ROOT}/capabilities/asks.yaml
+# Created by: Ryan Severe
+# Created: 2026-11-21
+# Last Updated: 2026-11-21
+# Description: The core's wireframe of asking the operator while they are away
+#              from the session: concepts, the two operations a profile can
+#              bind, the guarantees they make, and the setup questions. It
+#              names no product, transport or estate value.
+################################################################################
+# ===========================================================================
+#
+#
+#            "~,
+#                *m,
+#                   *9m;
+#                       *%pg
+#                          "YRWu
+#                              *9$&w
+#                                  *R$&w
+#   ;j]@@W;                   *w,      79&&w;
+#   :|*%MT"                     7&&w,      ?78BWw
+# . ,|*       -p     ~            *R$$$gw,     '*MU@m,
+#            =W/?*%NMWgw             *T&$F ,@w;     "*4[%m,
+#              7R$$$$$$$$g          yg$$Gg$@@Hh!j ,w     "*w|j=,
+#       ..     ]K@ww[T$Fff            >*MB&&@@Hh ]hk{!!~^     "*v'
+#          '|;, *M@@&&$P                 $$&@HHH\  ` ;w,,   ,~""
+#            "|jj]]%@F"                  ]$@@H, ;*M%P)a$$C  c
+#           . :|j[M"                     ]@@HHr TfR4&$NE*,/~<'
+#             `!||j]@@@A`                ]@@Hh~ *TT"" "* ^ r  '~
+#                *ojKM"                  l@Hh~  "*|"'   /        `
+#                                        @HHkC ,;!"
+#                                       ]HHhr/|!"'
+#                                       #Hhr!||"
+#                             ,@r       hkr!||'
+#                                      [k{|!"
+#                                     (r!!"        r
+#                                     !!"        r
+#                                      ";      /
+#                                             '
+#                                            '
+# ===========================================================================
+
+# Asking the operator away from the session, described without describing a channel.
+#
+# This is a wireframe: concepts every channel for asking has, the operations a profile can
+# bind, the guarantees those operations make, and the questions the setup process asks to
+# fit it to one profile. It carries no implementation, no transport and no product name -
+# tests/test_capabilities.py refuses any. Anything not universal to every channel is an
+# answer to a setup question, never a concept here.
+#
+# One source for two readers: a profile reads it as the template for its own channel, and
+# capability binding validates a profile's bindings against the names under `operations`.
+
+# What every channel for asking the operator has, named and never typed to one channel.
+concepts:
+  ask:
+    description: A question, review or plan put to the operator away from the session, so it reaches them wherever they are and the session does not wait in one place for the answer.
+  verdict:
+    description: The channel's judgement of the operator's reply to an ask - approved, declined, or not understood. The channel decides it, never the session that asked.
+  open-ask:
+    description: An ask with no verdict yet, or whose latest reply the channel has not judged.
+
+# Each operation is one capability a profile binds, so a profile whose channel lacks an
+# operation loses only what needs it.
+operations:
+  ask:
+    capability: asks.ask
+    description: Put a question to the operator asynchronously, and get the verdict back when they reply.
+    guarantees: [verdict-from-channel, read-back]
+  list:
+    capability: asks.list
+    description: Show the open asks.
+    guarantees: [unknown-not-empty]
+
+# Promises that come from the core's design principles, not from any one implementation.
+guarantees:
+  verdict-from-channel:
+    description: The verdict is the channel's reading of the operator's own reply. The asking session never judges a reply itself, and acts on an approval only when the verdict reads as one on a fresh read just before acting.
+  read-back:
+    description: An ask is put only when it is read back from the channel and found complete. An accepted request and a delivered one are different events.
+  unknown-not-empty:
+    description: A failed lookup reports failure. It never returns an empty list that reads as no open asks.
+
+# Asked by the setup process; the answers belong to the profile and are stored there,
+# under answers: as asks.<id>. Each `example` is written for an invented channel.
+# `declares: true` marks the one answer that names the channel: answered with nothing
+# bound, render reports the channel unbuilt.
+setup:
+  - id: channel
+    declares: true
+    ask: Which channel carries an ask to the operator when they are away from the session? Any channel works.
+    why: Every other answer depends on it. Nothing is built from the answer until a skill is bound to it, so naming a channel only records it.
+    feeds: [ask]
+    example: "ExampleChannel, a hosted messaging service the operator reads on their phone."
+  - id: connection
+    ask: How is the channel reached, and how is access authorised?
+    why: A binding needs a transport, and a credential is never stored in the core.
+    feeds: [ask, list]
+    example: "Through its command-line client, with a token read from the environment."
+  - id: verdicts
+    ask: Which replies count as an approval, and which as a decline?
+    why: The channel judges the reply, so what it accepts has to be written down for the sessions that act on it.
+    feeds: [verdict]
+    example: "A reply of exactly 'approved' is an approval. Anything one typo away is not understood and is asked again."
+  - id: operations
+    ask: "Which operations will this profile bind? The operations are ask and list. Name the ones you will bind."
+    why: An unbound operation is reported as unavailable, never silently skipped.
+    feeds: [ask, list]
+    example: "Both."
