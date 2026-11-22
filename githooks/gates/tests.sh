@@ -142,12 +142,26 @@ remove_link() {
 # exit path, and only ever removes a tree this script created. Links come out first.
 remove_tree() {
   if [ -n "$tree_parent" ] && [ -n "$links" ]; then
+    left=""
     while IFS= read -r made_link; do
-      [ -z "$made_link" ] || remove_link "$made_link"
+      [ -n "$made_link" ] || continue
+      remove_link "$made_link"
+      if [ -e "$made_link" ] || [ -L "$made_link" ]; then
+        left="$left $made_link"
+      fi
     done <<EOF
 $links
 EOF
     links=""
+    # A link still in place means a recursive delete of the tree would reach through it
+    # into the folder it points at. Leave the tree behind rather than risk that.
+    if [ -n "$left" ]; then
+      echo "WARNING: could not remove the link(s)$left, so the temporary tree $tree is left in place."
+      echo "Remove the links by hand, then run 'git worktree prune'."
+      tree="."
+      tree_parent=""
+      return 0
+    fi
   fi
   [ -z "$tree_parent" ] || git worktree remove --force "$tree" >/dev/null 2>&1 || true
   [ -z "$tree_parent" ] || git worktree prune >/dev/null 2>&1 || true
@@ -209,6 +223,8 @@ if [ -n "$tree_parent" ]; then
   link_root="$(git rev-parse --show-toplevel)"
   while IFS= read -r raw_link || [ -n "$raw_link" ]; do
     raw_link="$(printf '%s' "$raw_link" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    # With no 'link:' lines the here-document below still yields one empty line.
+    [ -n "$raw_link" ] || continue
     link_path="$(printf '%s' "$raw_link" | sed 's/^link:[[:space:]]*//')"
     link_path="${link_path%/}"
     [ -n "$link_path" ] || refuse_link "'$raw_link' (empty path)"
