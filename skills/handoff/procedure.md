@@ -144,14 +144,14 @@ in the seed: the seed is spent at pickup, and the prompt is only the way in.
 ```
 [Load <role skill> before anything else.]
 Read the response-shape rule and run its checker before your first reply, and load the handoff skill.
-[Previous session id: <id>. Detach from it first. Once I confirm, message it that the pickup is done, then check that it shows as archived before you call the pickup finished, and tell me if it does not.]
+[Previous session id: <id>. Detach from it first, then message it at once so it archives itself, and check that it shows as archived. If I don't confirm the pickup, or it fails, un-archive it and tell me which session is live.]
 Pick up the <workstream> workstream in <repository>, on branch <branch>. Read <seed path>
 in full and follow the handoff skill's "Picking up a seed" steps, in this order: detach,
-do what its "First, before acting" section says, re-run every Live state command and say
-where the fresh output differs from the pasted one, restate the workstream's whole scope
-and objective, re-ask anything under "Waiting on the operator", confirm the next step -
-<first item under Next, in order> - with me before acting, mark the seed picked up once I
-confirm, message the old session that the pickup is done, and check it is archived.
+release the previous session if one is named, do what its "First, before acting" section
+says, re-run every Live state command and say where the fresh output differs from the
+pasted one, restate the workstream's whole scope and objective, re-ask anything under
+"Waiting on the operator", confirm the next step - <first item under Next, in order> -
+with me before acting, and mark the seed picked up once I confirm.
 [This rotation was ordered by <policy>, so it is pre-approved if the Live state matches
 and nothing is waiting on me.]
 ```
@@ -201,10 +201,15 @@ Where the tool can start a session itself, its own rule says how; the prompt is 
    seed's first line `Picked up <date and time>, by <tool or service>.` - an edit, not a delete. A seed
    carrying that line is spent: a later session reads it as history, never as a
    workstream to take. It goes with the directory's cleanup. Leave `Not yours` alone.
-8. Where the prompt names a previous session, message it that the pickup is done, check
-   it shows as archived, and tell the operator if it does not. A session is not
-   reported as archived until the check shows it. If the check cannot read the old
-   session, say so to the operator; never report it archived.
+8. Where the prompt names a previous session, message it right after detaching, without
+   waiting for the confirmation, so it archives itself and only one session shows for
+   the workstream. Check it shows as archived, and tell the operator if it does not. A
+   session is not reported as archived until the check shows it. If the check cannot
+   read the old session, say so to the operator; never report it archived.
+9. If the operator does not confirm the pickup, or the pickup fails, un-archive the
+   previous session by its id (the tool's own rule names the call), check that it is no
+   longer archived, and tell the operator which session is live. A refused or pending
+   un-archive is reported as such, never as restored.
 
 ## Closing a workstream
 
@@ -233,5 +238,6 @@ evidence, not on a summary.
   removed with the workstream; the finding goes with it.
 - **A seed with no pickup prompt.** The operator has to write the way in by hand, and
   a hand-written prompt drops the steps that make the pickup safe.
-- **A pickup that stops at the confirmation.** The old session stays open and the
-  operator archives it by hand.
+- **A pickup that holds the old session until the confirmation.** Two sessions show
+  for one workstream until the operator answers. With several rotations at once, the
+  operator can't tell which is live, and a second successor can start on the same seed.

@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/githooks/gates/test-orphans.sh
 # Created by: Ryan Severe
 # Created: 2026-09-23
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-21
 # Description: Refuses a test file that no declared test root covers, and a
 #              declaration that covers nothing. Ported from
 #              workflows/test-orphans.yml, whose bash arrays are newline lists
@@ -87,7 +87,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   line="${line%/}"
   [ -z "$line" ] && continue
   case "$line" in
-    run:*|parallel:*) continue ;;  # directives for the tests gate, not roots
+    run:*|parallel:*|link:*) continue ;;  # directives for the tests gate, not roots
     !*) excludes="$excludes${line#!}
 " ;;
     *) roots="$roots$line

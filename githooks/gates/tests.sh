@@ -4,10 +4,12 @@
 # Path: {PROJECT_ROOT}/githooks/gates/tests.sh
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-21
 # Description: Runs each test command a repository declares with a 'run:' line
 #              in test-roots, in its gate-config config-dir, and refuses the
-#              push if any fails. A
+#              push if any fails. Given a pushed commit, the commands run in a
+#              temporary worktree of that commit, removed on every exit; a
+#              'link:' line links an untracked folder into it. A
 #              repository that deliberately has no tests says 'none:' there
 #              and passes; one that says neither fails. A
 #              'parallel:' line runs the commands concurrently, at most N at
@@ -112,11 +114,88 @@ fi
 unset PUSH_REMOTE_REF
 export PUSH_LOCAL_SHA PUSH_REMOTE_SHA
 
-if [ ! -f "$decl" ]; then
+# Which tree the commands run in. A push can take twenty minutes, and an edit saved to
+# the working tree in that time would be what got tested, then reported against the
+# pushed commit. So a pushed commit is checked out into a temporary worktree and every
+# command runs there. Run by hand, with no commit given, the working tree is the tree.
+tree="."
+tree_parent=""
+links=""
+
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*) on_windows=1 ;;
+  *) on_windows=0 ;;
+esac
+
+# Removes one link this script made, and never what it points at. A junction is removed
+# with rmdir, a symlink with a plain rm: neither recurses, and a recursive delete through
+# a junction would wipe the folder it points at.
+remove_link() {
+  if [ "$on_windows" -eq 1 ]; then
+    cmd //c rmdir "$(cygpath -w "$1")" >/dev/null 2>&1 || true
+  else
+    rm "$1" 2>/dev/null || true
+  fi
+}
+
+# Safe to call with no temporary tree made: it then touches nothing. It runs on every
+# exit path, and only ever removes a tree this script created. Links come out first.
+remove_tree() {
+  if [ -n "$tree_parent" ] && [ -n "$links" ]; then
+    left=""
+    while IFS= read -r made_link; do
+      [ -n "$made_link" ] || continue
+      remove_link "$made_link"
+      if [ -e "$made_link" ] || [ -L "$made_link" ]; then
+        left="$left $made_link"
+      fi
+    done <<EOF
+$links
+EOF
+    links=""
+    # A link still in place means a recursive delete of the tree would reach through it
+    # into the folder it points at. Leave the tree behind rather than risk that.
+    if [ -n "$left" ]; then
+      echo "WARNING: could not remove the link(s)$left, so the temporary tree $tree is left in place."
+      echo "Remove the links by hand, then run 'git worktree prune'."
+      tree="."
+      tree_parent=""
+      return 0
+    fi
+  fi
+  [ -z "$tree_parent" ] || git worktree remove --force "$tree" >/dev/null 2>&1 || true
+  [ -z "$tree_parent" ] || git worktree prune >/dev/null 2>&1 || true
+  [ -z "$tree_parent" ] || rm -rf "$tree_parent"
+  tree="."
+  tree_parent=""
+}
+trap remove_tree EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [ -n "$PUSH_LOCAL_SHA" ]; then
+  if ! git rev-parse --verify --quiet "$PUSH_LOCAL_SHA^{commit}" >/dev/null 2>&1; then
+    echo "REFUSED: the pushed commit $PUSH_LOCAL_SHA does not resolve to a commit in this repository,"
+    echo "so there is no tree to run the tests against."
+    exit 1
+  fi
+  tree_parent="$(mktemp -d)"
+  tree="$tree_parent/tree"
+  if ! git worktree add --detach --quiet "$tree" "$PUSH_LOCAL_SHA" >/dev/null 2>&1; then
+    remove_tree
+    echo "REFUSED: could not check out $PUSH_LOCAL_SHA into a temporary worktree to run the tests in."
+    exit 1
+  fi
+  echo "tree: pushed commit $(printf '%.12s' "$PUSH_LOCAL_SHA") (temporary worktree)"
+else
+  echo "tree: working tree (no pushed commit given)"
+fi
+
+if [ ! -f "$tree/$decl" ]; then
   # shellcheck source=/dev/null
   . "$(dirname "$0")/../lib/vendored_core.sh"
-  if [ -z "$(own_test_files "$pattern")" ]; then
-    if has_vendored_core; then
+  if [ -z "$(cd "$tree" && own_test_files "$pattern")" ]; then
+    if (cd "$tree" && has_vendored_core); then
       echo "No test files of its own and no $decl: core/tests/ is the vendored core's, run upstream. Nothing to run."
     else
       echo "No test files and no $decl. Nothing to run."
@@ -128,10 +207,57 @@ if [ ! -f "$decl" ]; then
   exit 1
 fi
 
-commands="$(sed -n 's/^[[:space:]]*run:[[:space:]]*//p' "$decl" | sed 's/[[:space:]]*$//' | grep . || true)"
+decl_file="$tree/$decl"
+
+# 'link: <path>' names an untracked folder, relative to the repository root, that a suite
+# needs and a clean checkout lacks. It is linked, never copied, into the temporary tree
+# before any command runs. With no temporary tree the folders are already in place.
+refuse_link() {
+  echo "REFUSED: $decl has a 'link:' line the gate cannot use: $1"
+  echo "A link names an untracked folder in the working tree, relative to the repository root:"
+  echo "no absolute path, no '..', and nothing the pushed commit tracks."
+  exit 1
+}
+
+if [ -n "$tree_parent" ]; then
+  link_root="$(git rev-parse --show-toplevel)"
+  while IFS= read -r raw_link || [ -n "$raw_link" ]; do
+    raw_link="$(printf '%s' "$raw_link" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    # With no 'link:' lines the here-document below still yields one empty line.
+    [ -n "$raw_link" ] || continue
+    link_path="$(printf '%s' "$raw_link" | sed 's/^link:[[:space:]]*//')"
+    link_path="${link_path%/}"
+    [ -n "$link_path" ] || refuse_link "'$raw_link' (empty path)"
+    case "$link_path" in
+      /*|[A-Za-z]:*|*\\*) refuse_link "'$raw_link' (not relative to the repository root)" ;;
+    esac
+    case "/$link_path/" in
+      */../*) refuse_link "'$raw_link' (contains '..')" ;;
+    esac
+    [ -d "$link_root/$link_path" ] || refuse_link "'$raw_link' (not a folder in the working tree)"
+    if git cat-file -e "$PUSH_LOCAL_SHA:$link_path" 2>/dev/null; then
+      refuse_link "'$raw_link' (tracked in the pushed commit)"
+    fi
+    [ ! -e "$tree/$link_path" ] || refuse_link "'$raw_link' (already present in the checkout)"
+    mkdir -p "$(dirname "$tree/$link_path")"
+    if [ "$on_windows" -eq 1 ]; then
+      # '//J' because the shell turns a lone '/J' into a path before cmd sees it.
+      cmd //c mklink //J "$(cygpath -w "$tree/$link_path")" "$(cygpath -w "$link_root/$link_path")" >/dev/null 2>&1 \
+        || refuse_link "'$raw_link' (the junction could not be made)"
+    else
+      ln -s "$link_root/$link_path" "$tree/$link_path" \
+        || refuse_link "'$raw_link' (the symlink could not be made)"
+    fi
+    links="$links$tree/$link_path
+"
+  done <<EOF
+$(grep -E '^[[:space:]]*link:' "$decl_file" || true)
+EOF
+fi
+commands="$(sed -n 's/^[[:space:]]*run:[[:space:]]*//p' "$decl_file" | sed 's/[[:space:]]*$//' | grep . || true)"
 
 if [ -z "$commands" ]; then
-  if grep -qiE '^[[:space:]]*#?[[:space:]]*none:' "$decl"; then
+  if grep -qiE '^[[:space:]]*#?[[:space:]]*none:' "$decl_file"; then
     echo "$decl declares no tests deliberately. Nothing to run."
     exit 0
   fi
@@ -162,7 +288,7 @@ cpu_count() {
 yes_ceiling=16
 
 cap=1
-parallel_lines="$(grep -iE '^[[:space:]]*parallel:' "$decl" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)"
+parallel_lines="$(grep -iE '^[[:space:]]*parallel:' "$decl_file" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)"
 if [ -n "$parallel_lines" ]; then
   if [ "$(printf '%s\n' "$parallel_lines" | grep -c .)" -gt 1 ]; then
     refuse_parallel "more than one: $(printf '%s' "$parallel_lines" | tr '\n' '|')"
@@ -221,7 +347,7 @@ report() {
 # every failure it ever had.
 run_one() {
   started="$(date +%s)"
-  sh -c "$2" < /dev/null > "$logs/$1.log" 2>&1
+  (cd "$tree" && sh -c "$2") < /dev/null > "$logs/$1.log" 2>&1
   echo "$?" > "$logs/$1.rc"
   echo "$(( $(date +%s) - started ))" > "$logs/$1.secs"
 }

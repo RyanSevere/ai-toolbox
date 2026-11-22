@@ -211,6 +211,25 @@ python .githooks/lib/run_shard.py --tests <dir> --measure
 writes `<dir>/shard_weights.json`. A class that is missing from the map runs on
 every push until the map is rebuilt.
 
+### Untracked folders a suite needs
+
+The tests gate runs a push's commands in a temporary checkout of the pushed
+commit, so an edit saved to the working tree mid-run cannot change the result.
+A clean checkout has no untracked files, so a suite that needs one, such as a
+`node_modules` folder, declares it with a `link:` line in `.github/test-roots`:
+
+```
+run: npm test --prefix api
+link: api/node_modules
+```
+
+The path is relative to the repository root and names an untracked folder in
+the working tree. Before any command runs, the gate links it into the temporary
+checkout, as a directory junction on Windows under Git Bash and a symlink
+elsewhere; nothing is copied, and removing the checkout leaves the folder
+alone. A path that is missing, absolute, contains `..` or is tracked in the
+pushed commit is refused before anything runs.
+
 ## Contributing
 
 Work happens on `dev`. A release is a change to the `VERSION` file in a pull
