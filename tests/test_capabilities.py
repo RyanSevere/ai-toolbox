@@ -205,7 +205,7 @@ ASKS_CONCEPTS = ("ask", "verdict", "open-ask")
 ASKS_OPERATIONS = ("ask", "list")
 ASKS_GUARANTEES = ("verdict-from-channel", "read-back", "unknown-not-empty")
 ASKS_QUESTIONS = ("channel", "connection", "verdicts", "operations")
-# Anything specific to one channel, one transport, or this estate.
+# Anything specific to one channel, one transport, or one profile's own tooling.
 ASKS_FORBIDDEN = {
     "slack": r"(?i)(?<![\w-])slack(?![\w-])",
     "ntfy": r"(?i)(?<![\w-])ntfy(?![\w-])",
