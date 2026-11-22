@@ -2507,9 +2507,12 @@ class RenderedOnly(GateCase):
         bogus = "1" * 40
         self.assertEqual(self.script_verdict(bogus, base), 2)
         self.assertEqual(self.shell_verdict(bogus, base), 1)
+        # The gate now checks the pushed commit out before anything else, so a sha git
+        # cannot resolve is refused outright: still never a skip, and never a pass.
         result = self.run_gate(bogus, base)
         self.assertNotIn("skipped: every file", result.stdout)
-        self.assertIn("suite-ran", result.stdout)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("REFUSED: the pushed commit", result.stdout)
 
 
 class TestsRangeByRef(GateCase):
@@ -2522,8 +2525,12 @@ class TestsRangeByRef(GateCase):
     def setUp(self):
         super().setUp()
         self.gate_config(config_dir=".github", deploy_branch="main")
+        # Commands run in a temporary tree of the pushed commit, so the output goes outside it.
+        out_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out_dir, ignore_errors=True)
+        self.range_out = out_dir / "range.out"
         self.write(".github/test-roots",
-                   'run: echo "$PUSH_REMOTE_SHA..$PUSH_LOCAL_SHA" > range.out\n')
+                   f'run: echo "$PUSH_REMOTE_SHA..$PUSH_LOCAL_SHA" > "{self.range_out.as_posix()}"\n')
 
     def run_ref(self, local, remote, ref, *extra, unset_ref=False):
         script = (GATES / "tests.sh").as_posix()
@@ -2536,7 +2543,7 @@ class TestsRangeByRef(GateCase):
                               capture_output=True, text=True, env=env)
 
     def seen_range(self) -> str:
-        return (self.repo / "range.out").read_text(encoding="utf-8").strip()
+        return self.range_out.read_text(encoding="utf-8").strip()
 
     def range_line(self, result) -> str:
         lines = [ln for ln in result.stdout.splitlines() if ln.startswith("range:")]
@@ -2627,11 +2634,13 @@ class TestsRangeByRef(GateCase):
     def test_a_declared_command_does_not_see_the_remote_ref(self):
         """Intent: the ref only chooses the range. A declared command that runs the
         gate again in a scratch repository must not inherit a real push's ref."""
-        self.write(".github/test-roots", 'run: echo "${PUSH_REMOTE_REF-unset}" > ref.out\n')
+        ref_out = self.range_out.with_name("ref.out")
+        self.write(".github/test-roots",
+                   f'run: echo "${{PUSH_REMOTE_REF-unset}}" > "{ref_out.as_posix()}"\n')
         first, second = self.two_commits()
         result = self.run_ref(second, first, "refs/heads/feature")
         self.assertEqual(result.returncode, 0, result.stdout)
-        seen = (self.repo / "ref.out").read_text(encoding="utf-8").strip()
+        seen = ref_out.read_text(encoding="utf-8").strip()
         self.assertEqual(seen, "unset")
 
     def test_no_ref_behaves_as_before_and_prints_no_range_line(self):
