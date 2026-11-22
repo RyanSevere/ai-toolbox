@@ -2625,7 +2625,7 @@ class ExampleProfile(unittest.TestCase):
         text = (self.FOLDER / "profile.yaml").read_text(encoding="utf-8")
         shown = {key for key in sync.PROFILE_KEYS if f"\n# {key}:" in text}
         self.assertEqual(set(profile) | shown, set(sync.PROFILE_KEYS))
-        self.assertEqual(shown, {"tracked", "tools", "gate_report"})
+        self.assertEqual(shown, {"tracked", "tools", "gate_report", "title_prefixes"})
 
     def test_every_example_target_renders(self):
         folder = locked_example(self)
