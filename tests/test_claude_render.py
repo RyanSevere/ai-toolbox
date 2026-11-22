@@ -4,11 +4,12 @@
 # Path: {PROJECT_ROOT}/tests/test_claude_render.py
 # Created by: Ryan Severe
 # Created: 2026-11-13
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-21
 # Description: Tests for Claude Code as a render target - rules, skills and agents -
 #              and for the tool table Copilot, Cursor and Claude Code share. Covers
 #              rule scope rendering, the skill root, agent frontmatter, a fake
-#              fourth tool, drift on a rendered file and the local settings ignore.
+#              fourth tool, drift on a rendered file, the local settings ignore and
+#              the profile's title_prefixes override of the title-prefix vocabulary.
 ################################################################################
 # ===========================================================================
 #
@@ -54,6 +55,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -560,6 +563,88 @@ class ToolSelection(unittest.TestCase):
     def test_the_example_profile_documents_the_key(self):
         text = (EXAMPLE / "profile.yaml").read_text(encoding="utf-8")
         self.assertIn("\n# tools: [claude]", text)
+
+
+class TitlePrefixes(unittest.TestCase):
+    """A profile's title_prefixes list replaces the title-prefix hook's default vocabulary
+    whole, is rendered as the target's prefixes.yaml beside hook.py, and is validated first."""
+
+    RENDERED = ".claude/hooks/title-prefix/prefixes.yaml"
+    DEFAULT = sync.ROOT / "hooks" / "title-prefix" / "prefixes.yaml"
+    OWN = [{"prefix": "blocked", "rule": "ask"},
+           {"label": "waiting <x>", "pattern": "waiting .+", "rule": "no-ask"},
+           {"prefix": "idle", "rule": "unchecked"}]
+
+    def plan(self, **extra) -> sync.Plan:
+        return sync.build_plan("t", {"estate": True, "hooks": True}, DEFAULTS, SHA,
+                               {**MANIFEST, **extra}, profile_dir=EXAMPLE)
+
+    def entries(self, plan: sync.Plan) -> list[dict]:
+        return yaml.safe_load(plan[self.RENDERED])["prefixes"]
+
+    def test_no_key_renders_the_cores_default_of_eight(self):
+        entries = self.entries(self.plan())
+        self.assertEqual(len(entries), 8)
+        shipped = yaml.safe_load(self.DEFAULT.read_text(encoding="utf-8"))["prefixes"]
+        self.assertEqual(entries, shipped)
+
+    def test_a_key_renders_exactly_its_entries(self):
+        self.assertEqual(self.entries(self.plan(title_prefixes=self.OWN)), self.OWN)
+
+    def test_the_rendered_vocabulary_is_one_the_hook_loads(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "title_prefix_hook", sync.ROOT / "hooks" / "title-prefix" / "hook.py")
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "prefixes.yaml"
+            path.write_text(self.plan(title_prefixes=self.OWN)[self.RENDERED], encoding="utf-8")
+            self.assertEqual(hook.load_entries(path), self.OWN)
+
+    def test_the_key_changes_nothing_else_rendered(self):
+        plain, own = self.plan(), self.plan(title_prefixes=self.OWN)
+        self.assertEqual({k: v for k, v in plain.items() if k != self.RENDERED},
+                         {k: v for k, v in own.items() if k != self.RENDERED})
+
+    def test_a_malformed_key_refuses_the_render_naming_the_entry(self):
+        bad = {
+            "not a list": ("prefixes", "title_prefixes"),
+            "empty list": ([], "title_prefixes"),
+            "entry not a mapping": (["needs you"], "title_prefixes[0]"),
+            "no rule": ([{"prefix": "a", "rule": "ask"}, {"prefix": "b"}], "title_prefixes[1]"),
+            "unknown rule": ([{"prefix": "a", "rule": "block"}], "title_prefixes[0]"),
+            "prefix and pattern": ([{"prefix": "a", "pattern": "a", "label": "a", "rule": "ask"}],
+                                   "title_prefixes[0]"),
+            "pattern without label": ([{"pattern": "a.+", "rule": "ask"}], "title_prefixes[0]"),
+            "label without pattern": ([{"label": "a", "rule": "ask"}], "title_prefixes[0]"),
+            "unknown key": ([{"prefix": "a", "rule": "ask", "note": "x"}], "title_prefixes[0]"),
+            "empty prefix": ([{"prefix": " ", "rule": "ask"}], "title_prefixes[0]"),
+            "bad pattern": ([{"label": "a", "pattern": "(", "rule": "ask"}], "title_prefixes[0]"),
+        }
+        for name, (value, where) in bad.items():
+            with self.subTest(case=name):
+                with self.assertRaises(sync.SyncError) as caught:
+                    self.plan(title_prefixes=value)
+                self.assertIn(where, str(caught.exception))
+
+    def test_the_loader_refuses_a_malformed_key_naming_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "profile.yaml").write_text(
+                "source: {}\ntitle_prefixes:\n  - prefix: a\n    rule: nope\n", encoding="utf-8")
+            with self.assertRaises(sync.SyncError) as caught:
+                sync.load_profile(Path(tmp))
+        self.assertIn("profile.yaml", str(caught.exception))
+        self.assertIn("title_prefixes[0]", str(caught.exception))
+
+    def test_a_target_without_hooks_renders_no_vocabulary(self):
+        plan = sync.build_plan("t", {"estate": True}, DEFAULTS, SHA,
+                               {**MANIFEST, "title_prefixes": self.OWN}, profile_dir=EXAMPLE)
+        self.assertNotIn(self.RENDERED, plan)
+
+    def test_the_example_profile_documents_the_key(self):
+        text = (EXAMPLE / "profile.yaml").read_text(encoding="utf-8")
+        self.assertIn("\n# title_prefixes:", text)
 
 
 if __name__ == "__main__":

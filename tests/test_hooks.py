@@ -4,15 +4,16 @@
 # Path: {PROJECT_ROOT}/tests/test_hooks.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-19
+# Last Updated: 2026-11-21
 # Description: Tests for the editor safety hooks, hooks/no-secret-defaults,
 #              hooks/no-shell-file-edits, hooks/no-destructive-shell and
 #              hooks/no-generated-edits, hooks/session-start,
-#              hooks/write-observer, hooks/response-check, and the
+#              hooks/write-observer, hooks/response-check,
+#              hooks/title-prefix, and the
 #              shared runtime library hooks/lib/hookio.py. Per hook: a violation it must
 #              catch, a near-miss it must allow, and malformed input it must
 #              not crash on. A guard that silently stops matching looks the
-#              same as one with nothing to catch. Stdlib only.
+#              same as one with nothing to catch. Stdlib and PyYAML only.
 ################################################################################
 # ===========================================================================
 #
@@ -60,6 +61,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import yaml
 
 HOOKS = Path(__file__).resolve().parent.parent / "hooks"
 EXERCISES = ["hooks/**"]  # the hooks' config files are data coverage cannot see
@@ -1455,6 +1458,178 @@ class ResponseCheck(unittest.TestCase):
         broken.write_text("raise SystemExit(7)\n", encoding="utf-8")
         code, _ = self.run_hook({"last_assistant_message": self.MALFORMED}, checker=broken)
         self.assertEqual(code, 0)
+
+
+TITLE_PREFIX = HOOKS / "title-prefix"
+
+
+class TitlePrefix(unittest.TestCase):
+    """Claude Code's Stop hook grades the session title's status prefix against the reply,
+    sends a stale one back once, and never blocks on its own failure."""
+
+    MARKER = "=== REPLY STARTS HERE ==="
+    NO_ASK = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Recommended next\n\nNothing.\n"
+    WITH_ASK = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Decisions and clarifications\n\nWhich?\n"
+    WITH_STEPS = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Operator steps\n\n1. Run it.\n"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.hook = load("title_prefix", TITLE_PREFIX / "hook.py")
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        # A machine with the hooks switched off must not skip these checks.
+        patch = mock.patch.dict(os.environ)
+        patch.start()
+        self.addCleanup(patch.stop)
+        os.environ.pop("AI_TOOLBOX_HOOKS", None)
+
+    def transcript(self, *calls: tuple[str, str]) -> Path:
+        """A JSONL transcript holding one set_session_title call per (session_id, title)."""
+        lines = [json.dumps({"type": "user", "message": {"content": "hi"}})]
+        for session_id, title in calls:
+            block = {"type": "tool_use", "name": "mcp__ccd_session_mgmt__set_session_title",
+                     "input": {"session_id": session_id, "title": title}}
+            lines.append(json.dumps({"type": "assistant", "message": {"content": [block]}}))
+        path = self.tmp / "t.jsonl"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def run_hook(self, payload: dict, env: dict | None = None,
+                 prefixes: Path | None = None) -> tuple[int, str]:
+        err = io.StringIO()
+        patches = [mock.patch.object(sys, "stdin", stdin_of(json.dumps(payload).encode("utf-8"))),
+                   mock.patch.object(sys, "stderr", err),
+                   mock.patch.dict(os.environ, env or {}, clear=False)]
+        if prefixes is not None:
+            patches.append(mock.patch.object(self.hook, "PREFIXES", prefixes))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        return self.hook.main(), err.getvalue()
+
+    def graded(self, title: str, reply: str, **extra) -> tuple[int, str]:
+        payload = {"transcript_path": str(self.transcript(("self", title))),
+                   "last_assistant_message": reply, "stop_hook_active": False, **extra}
+        return self.run_hook(payload)
+
+    def test_the_spec_renders_for_claude_code_only(self):
+        spec = yaml.safe_load((TITLE_PREFIX / "hook.yaml").read_text(encoding="utf-8"))
+        self.assertEqual((spec["event"], spec["tools"]), ("turn.end", ["claude"]))
+        self.assertEqual(spec["run"][:2], ["{python}", "{hooks}/title-prefix/hook.py"])
+
+    def test_the_default_vocabulary_holds_eight_entries(self):
+        entries = self.hook.load_entries(TITLE_PREFIX / "prefixes.yaml")
+        self.assertEqual(len(entries), 8)
+        self.assertEqual({e["rule"] for e in entries}, {"ask", "no-ask", "unchecked"})
+
+    def test_ask_rule_with_no_ask_is_sent_back_naming_the_prefix(self):
+        code, err = self.graded("needs you - session", self.NO_ASK)
+        self.assertEqual(code, 2)
+        self.assertIn("needs you", err)
+
+    def test_no_ask_rule_with_an_ask_is_sent_back(self):
+        for reply in (self.WITH_ASK, self.WITH_STEPS):
+            with self.subTest(reply=reply[:40]):
+                code, err = self.graded("pending push - session", reply)
+                self.assertEqual(code, 2)
+                self.assertIn("pending push", err)
+
+    def test_a_pattern_entry_with_an_ask_is_sent_back(self):
+        code, _ = self.graded("pending fix-it - session", self.WITH_ASK)
+        self.assertEqual(code, 2)
+
+    def test_matching_prefixes_pass(self):
+        for title, reply in (("needs you - x", self.WITH_ASK),
+                             ("needs you - x", self.WITH_STEPS),
+                             ("complete - x", self.NO_ASK),
+                             ("overnight local test xyz - x", self.NO_ASK),
+                             ("pending push - x", self.NO_ASK)):
+            with self.subTest(title=title):
+                self.assertEqual(self.graded(title, reply)[0], 0)
+
+    def test_complete_and_overnight_with_an_ask_are_sent_back(self):
+        for title, named in (("complete - x", "complete"),
+                             ("overnight soak test - x", "overnight")):
+            for reply in (self.WITH_ASK, self.WITH_STEPS):
+                with self.subTest(title=title, reply=reply[:40]):
+                    code, err = self.graded(title, reply)
+                    self.assertEqual(code, 2)
+                    self.assertIn(named, err)
+
+    def test_overnight_needs_a_named_thing(self):
+        entries = self.hook.load_entries(TITLE_PREFIX / "prefixes.yaml")
+        self.assertIsNone(self.hook.match(entries, "overnight"))
+        self.assertEqual(self.hook.match(entries, "overnight soak test")["rule"], "no-ask")
+
+    def test_unchecked_rule_passes_with_or_without_an_ask(self):
+        for title in ("holding pending desk - x", "parked until Friday - x", "working - x"):
+            for reply in (self.NO_ASK, self.WITH_ASK):
+                with self.subTest(title=title):
+                    self.assertEqual(self.graded(title, reply)[0], 0)
+
+    def test_an_unknown_prefix_passes(self):
+        self.assertEqual(self.graded("something else - x", self.NO_ASK)[0], 0)
+
+    def test_an_ask_before_the_last_marker_does_not_count(self):
+        reply = f"{self.WITH_ASK}\n{self.NO_ASK}"
+        self.assertEqual(self.graded("needs you - x", reply)[0], 2)
+
+    def test_the_later_title_call_is_graded(self):
+        path = self.transcript(("self", "needs you - x"), ("self", "complete - x"))
+        code, _ = self.run_hook({"transcript_path": str(path), "stop_hook_active": False,
+                                 "last_assistant_message": self.NO_ASK})
+        self.assertEqual(code, 0)
+        path = self.transcript(("self", "complete - x"), ("self", "needs you - x"))
+        code, _ = self.run_hook({"transcript_path": str(path), "stop_hook_active": False,
+                                 "last_assistant_message": self.NO_ASK})
+        self.assertEqual(code, 2)
+
+    def test_another_sessions_title_is_ignored(self):
+        path = self.transcript(("abc-123", "needs you - x"))
+        code, err = self.run_hook({"transcript_path": str(path), "stop_hook_active": False,
+                                   "last_assistant_message": self.NO_ASK})
+        self.assertEqual((code, err), (0, ""))
+
+    def test_no_title_call_passes_silently(self):
+        path = self.transcript()
+        code, err = self.run_hook({"transcript_path": str(path), "stop_hook_active": False,
+                                   "last_assistant_message": self.NO_ASK})
+        self.assertEqual((code, err), (0, ""))
+
+    def test_an_unreadable_transcript_never_blocks(self):
+        code, err = self.run_hook({"transcript_path": str(self.tmp / "missing.jsonl"),
+                                   "stop_hook_active": False,
+                                   "last_assistant_message": self.NO_ASK})
+        self.assertEqual(code, 0)
+        self.assertTrue(err.strip(), "the reason goes to stderr")
+
+    def test_missing_prefixes_never_blocks(self):
+        payload = {"transcript_path": str(self.transcript(("self", "needs you - x"))),
+                   "last_assistant_message": self.NO_ASK, "stop_hook_active": False}
+        code, err = self.run_hook(payload, prefixes=self.tmp / "absent.yaml")
+        self.assertEqual(code, 0)
+        self.assertIn("prefixes", err)
+
+    def test_unparsable_prefixes_never_blocks(self):
+        bad = self.tmp / "prefixes.yaml"
+        bad.write_text("prefixes: [unclosed\n", encoding="utf-8")
+        payload = {"transcript_path": str(self.transcript(("self", "needs you - x"))),
+                   "last_assistant_message": self.NO_ASK, "stop_hook_active": False}
+        code, err = self.run_hook(payload, prefixes=bad)
+        self.assertEqual(code, 0)
+        self.assertIn("prefixes", err)
+
+    def test_a_second_try_reports_and_passes(self):
+        code, err = self.graded("needs you - x", self.NO_ASK, stop_hook_active=True)
+        self.assertEqual(code, 0)
+        self.assertIn("needs you", err)
+
+    def test_the_off_switch_skips_the_check(self):
+        payload = {"transcript_path": str(self.transcript(("self", "needs you - x"))),
+                   "last_assistant_message": self.NO_ASK}
+        self.assertEqual(self.run_hook(payload, env={"AI_TOOLBOX_HOOKS": "off"}), (0, ""))
 
 
 class HookInput(unittest.TestCase):
