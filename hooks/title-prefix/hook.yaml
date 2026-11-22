@@ -1,0 +1,51 @@
+################################################################################
+# File: hook.yaml
+# Path: {PROJECT_ROOT}/hooks/title-prefix/hook.yaml
+# Created by: Ryan Severe
+# Created: 2026-11-21
+# Last Updated: 2026-11-21
+# Description: Source for the title-prefix agent hook: Claude Code's Stop hook,
+#              which grades the session title's status prefix against the reply
+#              and sends a stale one back once. Claude Code only.
+################################################################################
+# ===========================================================================
+#
+#
+#            "~,
+#                *m,
+#                   *9m;
+#                       *%pg
+#                          "YRWu
+#                              *9$&w
+#                                  *R$&w
+#   ;j]@@W;                   *w,      79&&w;
+#   :|*%MT"                     7&&w,      ?78BWw
+# . ,|*       -p     ~            *R$$$gw,     '*MU@m,
+#            =W/?*%NMWgw             *T&$F ,@w;     "*4[%m,
+#              7R$$$$$$$$g          yg$$Gg$@@Hh!j ,w     "*w|j=,
+#       ..     ]K@ww[T$Fff            >*MB&&@@Hh ]hk{!!~^     "*v'
+#          '|;, *M@@&&$P                 $$&@HHH\  ` ;w,,   ,~""
+#            "|jj]]%@F"                  ]$@@H, ;*M%P)a$$C  c
+#           . :|j[M"                     ]@@HHr TfR4&$NE*,/~<'
+#             `!||j]@@@A`                ]@@Hh~ *TT"" "* ^ r  '~
+#                *ojKM"                  l@Hh~  "*|"'   /        `
+#                                        @HHkC ,;!"
+#                                       ]HHhr/|!"'
+#                                       #Hhr!||"
+#                             ,@r       hkr!||'
+#                                      [k{|!"
+#                                     (r!!"        r
+#                                     !!"        r
+#                                      ";      /
+#                                             '
+#                                            '
+# ===========================================================================
+
+# A session title's status prefix is graded against the reply every turn. An observer: the
+# hook's own failure never blocks. The vocabulary is prefixes.yaml, rendered beside hook.py;
+# a profile replaces it whole with a title_prefixes list in its profile file.
+event: turn.end
+kind: observer
+tools: [claude]
+run: ["{python}", "{hooks}/title-prefix/hook.py"]
+timeout: 30

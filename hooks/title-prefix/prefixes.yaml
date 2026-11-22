@@ -1,0 +1,76 @@
+################################################################################
+# File: prefixes.yaml
+# Path: {PROJECT_ROOT}/hooks/title-prefix/prefixes.yaml
+# Created by: Ryan Severe
+# Created: 2026-11-21
+# Last Updated: 2026-11-21
+# Description: The core's default session-title status prefixes and the rule
+#              each one is graded by. hook.py reads the rendered copy beside
+#              it. A profile replaces this list whole with a title_prefixes
+#              key in its profile file.
+################################################################################
+# ===========================================================================
+#
+#
+#            "~,
+#                *m,
+#                   *9m;
+#                       *%pg
+#                          "YRWu
+#                              *9$&w
+#                                  *R$&w
+#   ;j]@@W;                   *w,      79&&w;
+#   :|*%MT"                     7&&w,      ?78BWw
+# . ,|*       -p     ~            *R$$$gw,     '*MU@m,
+#            =W/?*%NMWgw             *T&$F ,@w;     "*4[%m,
+#              7R$$$$$$$$g          yg$$Gg$@@Hh!j ,w     "*w|j=,
+#       ..     ]K@ww[T$Fff            >*MB&&@@Hh ]hk{!!~^     "*v'
+#          '|;, *M@@&&$P                 $$&@HHH\  ` ;w,,   ,~""
+#            "|jj]]%@F"                  ]$@@H, ;*M%P)a$$C  c
+#           . :|j[M"                     ]@@HHr TfR4&$NE*,/~<'
+#             `!||j]@@@A`                ]@@Hh~ *TT"" "* ^ r  '~
+#                *ojKM"                  l@Hh~  "*|"'   /        `
+#                                        @HHkC ,;!"
+#                                       ]HHhr/|!"'
+#                                       #Hhr!||"
+#                             ,@r       hkr!||'
+#                                      [k{|!"
+#                                     (r!!"        r
+#                                     !!"        r
+#                                      ";      /
+#                                             '
+#                                            '
+# ===========================================================================
+
+# A title is "<prefix> - <session name>". The first entry that matches the prefix wins, so
+# "pending push" must precede "pending <name>". An entry names its prefix literally
+# (prefix:) or as a regular expression matched against the whole prefix (label: names it
+# for a reader, pattern: is the expression).
+# Rules: ask = the reply must carry an open ask (a "## Decisions and clarifications" or
+# "## Operator steps" heading after the reply marker); no-ask = it must not; unchecked = not
+# graded. A title that matches no entry is not graded.
+prefixes:
+  - prefix: needs you
+    rule: ask
+  - prefix: holding pending desk
+    rule: unchecked
+  - prefix: pending push
+    rule: no-ask
+  - label: "pending <name>"
+    pattern: "pending .+"
+    rule: no-ask
+  # The workstream's objective is done, nothing is pending, ready for cleanup and archive.
+  - prefix: complete
+    rule: no-ask
+  # Something unattended, named by <x>, runs overnight and the session resumes on it in
+  # the morning. An ask held for the morning is "holding pending desk", never this.
+  - label: "overnight <x>"
+    pattern: "overnight .+"
+    rule: no-ask
+  - label: "parked until <x>"
+    pattern: "parked until .+"
+    rule: unchecked
+  # Set by a primary as its first call of every turn and replaced before the reply, so a
+  # title that still reads "working" after the turn ended means the turn was cut off.
+  - prefix: working
+    rule: unchecked

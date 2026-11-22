@@ -101,6 +101,9 @@ PROFILE_KEYS = {
     # which the report check accepts a skipped required gate (report-skip= lines), and the
     # core gates CI runs again from the vendored release (report-rerun= lines).
     "gate_report": dict,
+    # The title-prefix hook's vocabulary, replacing the core's default whole. Each entry is
+    # {prefix, rule} or {label, pattern, rule}, the shape of hooks/title-prefix/prefixes.yaml.
+    "title_prefixes": list,
 }
 # Keys whose list elements must each be a non-empty string.
 STRING_LIST_KEYS = ("personal", "leak_extra")
@@ -384,6 +387,7 @@ def load_profile(folder: Path) -> dict:
     selected_tools(data, str(path))
     gate_report_skips(data, str(path))
     gate_report_rerun(data, str(path))
+    title_prefixes(data, str(path))
     return data
 
 
@@ -887,12 +891,17 @@ CLAUDE_PROJECT_HOOKS = "${CLAUDE_PROJECT_DIR}/" + CLAUDE_HOOKS
 
 
 def render_hook_assets(plan: Plan, hook_dir: Path, sha: str, skip: Path | None = None,
-                       root: str = CURSOR_HOOKS) -> None:
+                       root: str = CURSOR_HOOKS, prefixes: str | None = None) -> None:
+    """Each file of a hook folder, rendered beside it. `prefixes`, when given, is the content
+    of the title-prefix hook's prefixes.yaml in place of the core's default file."""
     for asset in sorted(p for p in hook_dir.rglob("*") if p.is_file()):
         rel = asset.relative_to(hook_dir)
         if asset == skip or GENERATED_DIRS.intersection(rel.parts):
             continue
-        plan[f"{root}/{hook_dir.name}/{rel.as_posix()}"] = render_asset(asset, sha)
+        content = (prefixes if prefixes is not None
+                   and f"{hook_dir.name}/{rel.as_posix()}" == TITLE_PREFIXES_FILE
+                   else render_asset(asset, sha))
+        plan[f"{root}/{hook_dir.name}/{rel.as_posix()}"] = content
 
 
 def hook_sources(profile_dir: Path, tool: str) -> tuple[list[Path], list[tuple]]:
@@ -921,8 +930,8 @@ def fill_owner(run: list[str], owner: str | None, where: str) -> list[str]:
     return run
 
 
-def render_cursor_hooks(sha: str, owner: str | None,
-                        profile_dir: Path) -> dict[str, str]:
+def render_cursor_hooks(sha: str, owner: str | None, profile_dir: Path,
+                        prefixes: str | None = None) -> dict[str, str]:
     """Every hooks/<name>/ with a hook.yaml, merged into one .cursor/hooks.json.
 
     The source is the tool-neutral schema (hooks/README.md); this is Cursor's adapter.
@@ -953,7 +962,7 @@ def render_cursor_hooks(sha: str, owner: str | None,
             entry["timeout"] = spec["timeout"]
         entry["failClosed"] = HOOK_FAILS_CLOSED[spec["kind"]]
         events.setdefault(native, []).append(entry)
-        render_hook_assets(plan, hook_dir, sha, skip=source)
+        render_hook_assets(plan, hook_dir, sha, skip=source, prefixes=prefixes)
     if events:
         for hook_dir in hook_dirs:
             if hook_dir.name == HOOK_LIB:
@@ -993,7 +1002,7 @@ def claude_hook_command(run: list[str], where: str, owner: str | None) -> str:
 
 
 def render_claude_settings(sha: str, owner: str | None, profile_dir: Path,
-                           hooks_on: bool) -> dict[str, str]:
+                           hooks_on: bool, prefixes: str | None = None) -> dict[str, str]:
     """The one committed .claude/settings.json: hook entries in Claude Code's shape, and the
     permission rules from the profile's seeds/permissions.yaml. Written only when it has
     one of them. Scripts and the library go under .claude/hooks/."""
@@ -1015,7 +1024,8 @@ def render_claude_settings(sha: str, owner: str | None, profile_dir: Path,
                 group = {"matcher": matcher, "hooks": []} if matcher else {"hooks": []}
                 groups.append(group)
             group["hooks"].append(handler)
-            render_hook_assets(plan, hook_dir, sha, skip=source, root=CLAUDE_HOOKS)
+            render_hook_assets(plan, hook_dir, sha, skip=source, root=CLAUDE_HOOKS,
+                               prefixes=prefixes)
         if events:
             for hook_dir in hook_dirs:
                 if hook_dir.name == HOOK_LIB:
@@ -1359,6 +1369,55 @@ def selected_tools(manifest: dict, where: str = PROFILE_NAME) -> tuple[Tool, ...
     if repeated:
         raise SyncError(f"{where}: tools: lists {repeated} more than once. Known: {known}")
     return tuple(t for t in TOOLS if t.name in names)
+
+
+# The rules a title-prefix entry may carry: hooks/title-prefix/hook.py grades by these.
+TITLE_PREFIX_RULES = ("ask", "no-ask", "unchecked")
+TITLE_PREFIX_SHAPES = ({"prefix", "rule"}, {"label", "pattern", "rule"})
+TITLE_PREFIXES_FILE = "title-prefix/prefixes.yaml"
+
+
+def title_prefixes(manifest: dict, where: str = PROFILE_NAME) -> list[dict] | None:
+    """The profile's title_prefixes: list, validated, or None when it has none.
+
+    Present, it replaces the core's default vocabulary whole. Each entry is exactly
+    {prefix, rule} or {label, pattern, rule}, every value a non-empty string, the rule one the
+    hook grades by and the pattern a regular expression. A bad entry refuses naming its
+    position: the hook reads the rendered file at turn end and, on a bad one, grades nothing.
+    """
+    if "title_prefixes" not in manifest or manifest["title_prefixes"] is None:
+        return None
+    entries = manifest["title_prefixes"]
+    if not isinstance(entries, list) or not entries:
+        raise SyncError(f"{where}: title_prefixes: must be a non-empty list of entries")
+    for index, entry in enumerate(entries):
+        name = f"{where}: title_prefixes[{index}]"
+        if not isinstance(entry, dict) or set(entry) not in TITLE_PREFIX_SHAPES:
+            raise SyncError(f"{name} must be a mapping of exactly prefix: and rule:, or "
+                            "label:, pattern: and rule:")
+        for key, value in entry.items():
+            if not isinstance(value, str) or not value.strip():
+                raise SyncError(f"{name}: {key} must be a non-empty string")
+        if entry["rule"] not in TITLE_PREFIX_RULES:
+            raise SyncError(f"{name}: rule {entry['rule']!r} is not one of "
+                            f"{', '.join(TITLE_PREFIX_RULES)}")
+        if "pattern" in entry:
+            try:
+                re.compile(entry["pattern"])
+            except re.error as exc:
+                raise SyncError(f"{name}: pattern {entry['pattern']!r} is not a regular "
+                                f"expression: {exc}") from exc
+    return entries
+
+
+def title_prefixes_file(manifest: dict, sha: str | None) -> str | None:
+    """The prefixes.yaml a profile's title_prefixes: renders, or None when it has none and
+    the core's default renders instead."""
+    entries = title_prefixes(manifest)
+    if entries is None:
+        return None
+    body = yaml.safe_dump({"prefixes": entries}, sort_keys=False, allow_unicode=True)
+    return f"# {stamp(sha)[5:-4].strip()}\n{body}"
 
 
 def repo_list(manifest: dict) -> dict:
@@ -2250,10 +2309,12 @@ def build_plan(target: str, cfg: dict, defaults: dict, sha: str | None, manifest
     # adapter renders only when its tool is chosen. Claude Code's file also carries the
     # profile's permission rules, which render whether or not hooks are on.
     owner = (manifest.get("source") or {}).get("owner")
+    prefixes = title_prefixes_file(manifest, sha)
     if cfg.get("hooks", False) and "cursor" in chosen and HOOKS_DIR.exists():
-        plan.update(render_cursor_hooks(sha, owner, profile_dir))
+        plan.update(render_cursor_hooks(sha, owner, profile_dir, prefixes))
     if "claude" in chosen:
-        plan.update(render_claude_settings(sha, owner, profile_dir, cfg.get("hooks", False)))
+        plan.update(render_claude_settings(sha, owner, profile_dir, cfg.get("hooks", False),
+                                           prefixes))
 
     for entry in merged_seeds(SCRIPTS_DIR, profile_dir, "scripts",
                               lambda f: sorted(p for p in f.iterdir()
