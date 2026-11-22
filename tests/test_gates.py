@@ -373,6 +373,14 @@ class TestOrphans(GateCase):
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_link_line_is_not_read_as_a_root(self):
+        """A 'link: deps' line is a directive for the tests gate. Read as a root, it is stale."""
+        self.write("tests/test_thing.py")
+        self.write(".github/test-roots", "tests\nlink: deps\nrun: python -m unittest\n")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stdout)
+
     def test_vendored_core_tests_are_not_the_profiles_own(self):
         """Intent: where core/VENDORED exists, core/tests/ is the core's suite, run upstream.
         A profile with no tests of its own passes, and says so."""
@@ -1022,6 +1030,66 @@ class Tests(GateCase):
                 proc.kill()
                 proc.wait()
         self.assertEqual(self.worktree_lines(), before)
+
+    def linked_suite(self, run: str, link: str = "deps") -> str:
+        """An ignored, untracked deps/ folder holding marker.txt, a declared link, and a commit."""
+        self.write(".gitignore", "deps/\n")
+        self.write("deps/marker.txt", "here\n")
+        self.write(".github/test-roots", f"link: {link}\nrun: {run}\n")
+        return self.commit()
+
+    def test_a_declared_link_is_readable_from_the_pushed_tree(self):
+        """Intent: a suite can use an untracked folder, such as installed dependencies,
+        that a clean checkout of the pushed commit does not have."""
+        sha = self.linked_suite("test -f deps/marker.txt")
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_link_is_the_working_tree_folder_not_a_copy(self):
+        """Intent: a write through the link lands in the real folder."""
+        sha = self.linked_suite("sh -c 'echo x > deps/written.txt'")
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertTrue((self.repo / "deps" / "written.txt").exists())
+
+    def test_cleanup_leaves_the_linked_folder_alone(self):
+        """Intent: removing the temporary tree must never delete through the link."""
+        sha = self.linked_suite("true")
+        self.assertEqual(self.run_gate(sha).returncode, 0)
+        self.assertEqual((self.repo / "deps" / "marker.txt").read_text(encoding="utf-8"), "here\n")
+        self.write(".github/test-roots", "link: deps\nrun: false\n")
+        failing = self.commit()
+        self.assertEqual(self.run_gate(failing).returncode, 1)
+        self.assertEqual((self.repo / "deps" / "marker.txt").read_text(encoding="utf-8"), "here\n")
+
+    def assert_link_refused(self, link: str, tracked: bool = False) -> None:
+        out_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out_dir, ignore_errors=True)
+        ran = out_dir / "ran.out"
+        self.write("src/keep.txt", "k\n")
+        if not tracked:
+            self.write(".gitignore", "deps/\n")
+        (self.repo / "deps").mkdir(exist_ok=True)
+        self.write("deps/marker.txt", "here\n")
+        self.write(".github/test-roots", f"link: {link}\nrun: echo ran > \"{ran.as_posix()}\"\n")
+        sha = self.commit()
+        result = self.run_gate(sha)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("REFUSED:", result.stdout)
+        self.assertIn(f"link: {link}", result.stdout)
+        self.assertFalse(ran.exists(), "no command may have run before the refusal")
+
+    def test_a_link_to_a_missing_path_is_refused(self):
+        self.assert_link_refused("nothing-here")
+
+    def test_a_link_with_an_absolute_path_is_refused(self):
+        self.assert_link_refused("/etc")
+
+    def test_a_link_with_a_dot_dot_segment_is_refused(self):
+        self.assert_link_refused("src/../deps")
+
+    def test_a_link_to_a_path_the_commit_tracks_is_refused(self):
+        self.assert_link_refused("deps", tracked=True)
 
 
 class Typecheck(GateCase):
