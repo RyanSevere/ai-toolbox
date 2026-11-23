@@ -238,6 +238,9 @@ not a real decision.
   check the other workstreams' exchanges, and check whether a pending rollout fixes
   it. Claude Code only: ask the orchestrator by message whether another chat already
   has it; elsewhere, read the other exchanges.
+  <!-- requires: tracker.query -->
+  Run the duplicate search through {{tracker.query}}.
+  <!-- end -->
 - **Ask the fact.** When the "Would change my answer" condition is something the
   operator knows, ask that ("Are these docs finished?") instead of an a/b.
 - **Every question is a numbered DC in the Decisions section,** never a Q in prose.

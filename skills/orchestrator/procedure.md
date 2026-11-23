@@ -72,6 +72,9 @@ that is about to be replaced. Steps:
    own threshold (Who rotates, below) so its own row flags at 250k. If there is no digest,
    or it cannot run, it builds the same list from the live sources above and says the
    digest was not read.
+   <!-- requires: sessions.digest -->
+   The digest is {{sessions.digest}}, run with the orchestrator's own threshold.
+   <!-- end -->
 3. The successor reports the morning status: the sitrep, the open asks, and the rotation
    list.
 4. The successor messages each session on the rotation list to rotate at its next clean
