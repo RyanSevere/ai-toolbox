@@ -346,7 +346,7 @@ class PushBase(LintBaseline):
         self.git("rm", "-rfq", "--cached", ".")
         self.write("e.py")
         self.write("f.py")
-        self.git("add", "e.py", "f.py")
+        self.git("add", ".githooks", "e.py", "f.py")
         self.git("commit", "-q", "-m", "unrelated history")
         lone = self.git("rev-parse", "HEAD")
         code, out, seen = self.run_main(lone, ZEROS, "refs/heads/lone")
