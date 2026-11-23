@@ -56,6 +56,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -2897,6 +2898,72 @@ def git_at(repo: Path, *args: str, timeout: float = GIT_TIMEOUT) -> str:
     return result.stdout
 
 
+TREE_KILL_TIMEOUT = 30
+
+
+def _end_process_tree(proc: subprocess.Popen) -> None:
+    """End proc and everything it started. Raises SyncError where the tree
+    could not be ended, so a survivor is reported rather than ignored."""
+    if sys.platform == "win32":
+        try:
+            killed = subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                                    capture_output=True, text=True, timeout=TREE_KILL_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            proc.kill()
+            raise SyncError(f"the push timed out and taskkill did not finish: {exc}; "
+                            "the process tree may still be running") from exc
+        # taskkill reports an already-exited process as an error; that is fine.
+        if killed.returncode != 0 and proc.poll() is None:
+            proc.kill()
+            raise SyncError(f"the push timed out and taskkill exited {killed.returncode}: "
+                            f"{killed.stderr.strip()}; the process tree may still be running")
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            proc.kill()
+            raise SyncError(f"the push timed out and its process group could not be ended: "
+                            f"{exc}; the process tree may still be running") from exc
+    proc.wait()
+
+
+def push_with_timeout(repo: Path, timeout: float) -> bool:
+    """git push in a target, in its own process group. True when it exited within
+    the timeout; SyncError with git's stderr on a non-zero exit. On a timeout the
+    whole process tree is ended, not only git, and the result is False."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32"
+             else {"start_new_session": True})
+    proc = subprocess.Popen(("git", "push", "--quiet"), cwd=repo, env=env, text=True,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, **group)
+    try:
+        _, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _end_process_tree(proc)
+        return False
+    if proc.returncode != 0:
+        raise SyncError(f"git push --quiet failed: {(stderr or '').strip()}")
+    return True
+
+
+def _timed_out_push_verdict(repo: Path, timeout: float) -> str:
+    """After a push timeout, read the remote rather than assuming the push failed."""
+    head = git_at(repo, "rev-parse", "HEAD").strip()
+    short = head[:7]
+    prefix = f"push timed out after {timeout:.0f}s; process tree ended"
+    try:
+        branch = git_at(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+        remote = git_at(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()
+    except SyncError as exc:
+        raise SyncError(f"{prefix}; the remote could not be read, so the outcome is "
+                        f"unknown: {exc}") from exc
+    if remote and remote[0] == head:
+        return f"pushed ({prefix}; remote is at {short})"
+    raise SyncError(f"{prefix}; remote is not at {short} (not landed)")
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -3052,10 +3119,11 @@ def hidden_plan_paths(repo: Path, plan: dict[str, str]) -> list[str]:
     return [p for p in result.stdout.decode("utf-8").split("\0") if p]
 
 
-def push_target(repo: Path) -> str:
+def push_target(repo: Path, timeout: float = PUSH_TIMEOUT) -> str:
     if git_at(repo, "rev-list", "--count", "@{u}..HEAD").strip() == "0":
         return "nothing to push"
-    git_at(repo, "push", "--quiet", timeout=PUSH_TIMEOUT)
+    if not push_with_timeout(repo, timeout):
+        return _timed_out_push_verdict(repo, timeout)
     # The push exit code is not the outcome; the remote holding the commit is.
     unpushed = git_at(repo, "rev-list", "--count", "@{u}..HEAD").strip()
     if unpushed != "0":
