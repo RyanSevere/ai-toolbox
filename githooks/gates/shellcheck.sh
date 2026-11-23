@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/githooks/gates/shellcheck.sh
 # Created by: Ryan Severe
 # Created: 2026-09-28
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-23
 # Description: Refuses a push that adds a ShellCheck warning or error the repo's
 #              baseline does not already hold. Covers .sh files and any file with
 #              an sh or bash shebang, so extensionless scripts are checked too.
@@ -55,7 +55,7 @@ fi
 # python3 first would find the Windows Store stub, which exists and does not run.
 for py in python python3; do
   if command -v "$py" >/dev/null 2>&1 && "$py" -c "import sys" >/dev/null 2>&1; then
-    exec "$py" "$lib" --tool shellcheck --sha "${1:-}" --base "${2:-}"
+    exec "$py" "$lib" --tool shellcheck --sha "${1:-}" --base "${2:-}" --remote "${3:-origin}"
   fi
 done
 echo "REFUSED: no working python, so the scripts cannot be checked."
