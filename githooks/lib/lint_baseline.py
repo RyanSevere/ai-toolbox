@@ -139,7 +139,8 @@ def deploy_branch(sha: str) -> str:
     for line in text.splitlines():
         if line.startswith("deploy-branch="):
             value = line[len("deploy-branch="):].strip()
-            if re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", value) and ".." not in value                     and not value.startswith("-"):
+            if (re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", value) and ".." not in value
+                    and not value.startswith("-")):
                 return value
     raise LintError(f"{GATE_CONFIG} at {sha[:12]} names no usable deploy-branch, so there is no "
                     "telling what a new branch is compared with. Re-render this repo from its "
