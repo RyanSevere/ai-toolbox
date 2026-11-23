@@ -595,10 +595,10 @@ def render_workflow(body: str, sha: str) -> str:
     return f"# {stamp(sha)[5:-4].strip()}\n{body}"
 
 
-# Suffixes whose stamp is a '#' comment line. Markdown takes the HTML-comment stamp;
-# anything else is copied verbatim, because a stamp injected into JSON or a template
-# breaks the file it marks.
-STAMPABLE_ASSETS = (".py", ".sh", ".ps1")
+# Suffixes whose stamp is a '#' comment line (YAML included, so a rendered hook data
+# file is marked too). Markdown takes the HTML-comment stamp; anything else is copied
+# verbatim, because a stamp injected into JSON or a template breaks the file it marks.
+STAMPABLE_ASSETS = (".py", ".sh", ".ps1", ".yaml")
 
 # Anything a tool writes beside a skill rather than a person. Running a skill
 # script once leaves bytecode here, and without this every render in the estate
