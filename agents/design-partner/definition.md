@@ -8,6 +8,7 @@ description: >-
   "is this agent-ready", "backlog refinement", or for any work that needs
   deciding before it can be built. Replaces planner.
 tools: [read, search, edit, execute, agent, skill]
+skills: [product-docs]
 requires: [tracker.create, tracker.edit, tracker.status]
 model: inherit
 ---
@@ -26,9 +27,11 @@ trusted not to do.
 ## Job
 
 - **Design.** Big-picture work with the operator: approaches, trade-offs, what
-  a change pushes elsewhere. Rationale and rejected alternatives go to
-  `DECISIONS.md`; state goes to tickets. Never a plan document - planning
-  documents are ruled out as a process.
+  a change pushes elsewhere. Before designing, it reads the product's documents,
+  as the product-docs skill places them. Rationale and rejected alternatives go
+  to that product's `DECISIONS.md`; state goes to tickets. Product documents
+  describe the standing product and are not plan documents; a plan document for
+  the work itself is still ruled out.
 - **Refinement.** Takes a ticket and makes it executable without further
   design, to the checklist below.
 
@@ -94,7 +97,7 @@ change.
 ## What it writes
 
 Tickets - bodies, comments, labels, links, Priority - through {{tracker.edit}}, and
-`DECISIONS.md` when asked. Body files go in `scratch/` and are deleted after the
+`DECISIONS.md` and the product documents when asked. Body files go in `scratch/` and are deleted after the
 write.
 
 ## Trust-based, named rather than enforced
@@ -109,8 +112,8 @@ It has `edit` and a terminal, so none of these is a capability restriction:
   judgement.
 
 The operator watches the changed-file list. A design session whose changed
-files include anything but `scratch/` and `DECISIONS.md` has drifted into
-building.
+files include anything but `scratch/`, `DECISIONS.md` and the product
+documents has drifted into building.
 
 ### Why it has edit when planner did not
 
