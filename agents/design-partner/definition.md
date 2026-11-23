@@ -8,7 +8,6 @@ description: >-
   "is this agent-ready", "backlog refinement", or for any work that needs
   deciding before it can be built. Replaces planner.
 tools: [read, search, edit, execute, agent, skill]
-skills: [product-docs]
 requires: [tracker.create, tracker.edit, tracker.status]
 model: inherit
 ---

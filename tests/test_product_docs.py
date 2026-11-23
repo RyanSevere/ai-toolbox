@@ -455,11 +455,12 @@ class Refusals(Repo):
 
 
 class DesignPartner(unittest.TestCase):
-    def test_it_declares_the_product_docs_skill(self):
-        """Intent: build brief step 4, `product-docs` is in the design-partner's
-        frontmatter `skills:` list."""
+    def test_it_does_not_list_the_interactive_skill_as_a_factory_skill(self):
+        """Intent: an agent's `skills:` names factory skills only, for headless roles
+        (sync.seed_skills). product-docs is interactive, so design-partner reaches it by
+        name in its Job section, and listing it under `skills:` refuses the render."""
         meta = frontmatter(read(DESIGN_PARTNER))
-        self.assertIn("product-docs", meta.get("skills") or [])
+        self.assertNotIn("product-docs", meta.get("skills") or [])
 
     def test_it_reads_the_product_documents_and_writes_rationale_to_decisions(self):
         """Intent: ticket 172 Done when, "design-partner names the product's documents: it
