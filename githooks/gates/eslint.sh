@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/githooks/gates/eslint.sh
 # Created by: Ryan Severe
 # Created: 2026-09-28
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-23
 # Description: Refuses a push that adds an eslint finding the repo's baseline
 #              does not already hold, in any package with a committed eslint
 #              config. Runs the package's own eslint on the committed text. A
@@ -54,7 +54,7 @@ fi
 # python3 first would find the Windows Store stub, which exists and does not run.
 for py in python python3; do
   if command -v "$py" >/dev/null 2>&1 && "$py" -c "import sys" >/dev/null 2>&1; then
-    exec "$py" "$lib" --tool eslint --sha "${1:-}" --base "${2:-}"
+    exec "$py" "$lib" --tool eslint --sha "${1:-}" --base "${2:-}" --remote "${3:-origin}"
   fi
 done
 echo "REFUSED: no working python, so eslint cannot run."
