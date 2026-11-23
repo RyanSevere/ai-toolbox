@@ -283,7 +283,7 @@ class BuildPlan(unittest.TestCase):
                          [("design-partner", ["tracker.create", "tracker.edit", "tracker.status"])])
         self.assertEqual(sorted(p.parent.name for p, _, _ in bare.dropped_sections),
                          ["context", "context", "handoff", "orchestrator", "orchestrator",
-                          "workstream-primary"])
+                          "orchestrator", "workstream-primary", "workstream-primary"])
 
     def test_agents_md_says_to_hand_off_after_a_summary(self):
         """Intent: an interactive render tells the session to re-check its state and carry
