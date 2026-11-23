@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/githooks/lib/lint_baseline.py
 # Created by: Ryan Severe
 # Created: 2026-09-28
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-23
 # Description: Runs a linter - ShellCheck, ruff or eslint - on the files a push
 #              changes and fails only on findings its committed baseline does
 #              not already hold, so existing debt does not block every push but
@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -129,6 +130,21 @@ def baseline_dir(sha: str) -> str:
                 return f"{value}/lint-baseline"
     raise LintError(f"{GATE_CONFIG} at {sha[:12]} names no config-dir, so there is no telling "
                     "where the baseline lives. Re-render this repo from its profile")
+
+
+def deploy_branch(sha: str) -> str:
+    """The deploy branch, read from the commit's gate-config as baseline_dir reads config-dir.
+    A missing key refuses: guessing a branch would narrow a push against the wrong one."""
+    text = (blob(sha, GATE_CONFIG) or b"").decode("utf-8", errors="replace")
+    for line in text.splitlines():
+        if line.startswith("deploy-branch="):
+            value = line[len("deploy-branch="):].strip()
+            if (re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", value) and ".." not in value
+                    and not value.startswith("-")):
+                return value
+    raise LintError(f"{GATE_CONFIG} at {sha[:12]} names no usable deploy-branch, so there is no "
+                    "telling what a new branch is compared with. Re-render this repo from its "
+                    "profile")
 
 
 def tracked(sha: str) -> list[str]:
@@ -370,11 +386,47 @@ def resolve(rev: str) -> str | None:
     return out if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40,64}", out) else None
 
 
+def choose_base(sha: str, base_arg: str, remote: str) -> tuple[str | None, str]:
+    """The base a push is linted against, and the range line saying so. Chosen as the tests
+    gate chooses its range: the remote sha for the deploy branch and for an existing branch,
+    the merge-base with the remote's deploy branch for a new one, nothing when there is none."""
+    pushed = os.environ.get("PUSH_REMOTE_REF", "")
+    given = resolve(base_arg)
+    if not pushed:
+        if given:
+            return given, "range: as pushed (no pushed ref given)"
+        return None, "range: none (no pushed ref and no usable base; every file is linted)"
+    deploy = deploy_branch(sha)
+    if pushed == f"refs/heads/{deploy}":
+        if given:
+            return given, "range: as pushed (deploy branch)"
+        return None, "range: none (deploy branch with no usable base; every file is linted)"
+    if given:
+        return given, "range: as pushed (existing branch)"
+    try:
+        result = subprocess.run(["git", "merge-base", sha, f"refs/remotes/{remote}/{deploy}"],
+                                capture_output=True, timeout=TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        result = None
+    out = result.stdout.decode().strip() if result is not None and result.returncode == 0 else ""
+    if re.fullmatch(r"[0-9a-f]{40,64}", out):
+        return out, f"range: merge-base with {remote}/{deploy} (new branch)"
+    return None, (f"range: none (new branch with no merge-base with {remote}/{deploy}; "
+                  "every file is linted)")
+
+
+def push_base(sha: str, base_arg: str, remote: str) -> str | None:
+    """The commit a push is linted against, or None to lint every file."""
+    return choose_base(sha, base_arg, remote)[0]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lint changed files against a committed baseline.")
     parser.add_argument("--tool", required=True, choices=sorted(TOOLS))
     parser.add_argument("--sha", required=True, help="the commit being pushed")
     parser.add_argument("--base", default="", help="the commit already on the remote")
+    parser.add_argument("--remote", default="origin",
+                        help="the remote being pushed to, for a new branch's merge-base")
     parser.add_argument("--write", action="store_true",
                         help="write <config-dir>/lint-baseline/<tool>.json from every file "
                              "at --sha. "
@@ -386,8 +438,12 @@ def main(argv: list[str] | None = None) -> int:
         sha = resolve(args.sha)
         if sha is None:
             raise LintError(f"--sha {args.sha!r} is not a commit here")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", args.remote):
+            raise LintError(f"--remote {args.remote!r} is not a remote name")
         owns = owned(sha, selector)
-        base = None if args.write else resolve(args.base)
+        base, range_line = (None, "") if args.write else choose_base(sha, args.base, args.remote)
+        if range_line:
+            print(range_line)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             files = []

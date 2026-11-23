@@ -4,10 +4,11 @@
 # Path: {PROJECT_ROOT}/tests/test_capabilities.py
 # Created by: Ryan Severe
 # Created: 2026-10-13
-# Last Updated: 2026-11-21
+# Last Updated: 2026-11-23
 # Description: Tests for capabilities/tracker.yaml, the core's wireframe of ticket
 #              management, and capabilities/asks.yaml, its wireframe of asking the
-#              operator away from the session. Each holds concepts, operations, guarantees and setup
+#              operator away from the session, and capabilities/sessions.yaml, its
+#              wireframe of listing the managed sessions. Each holds concepts, operations, guarantees and setup
 #              questions, and names no tracker, transport or estate value. A
 #              wireframe that quietly names a product has to be edited to support
 #              the next one. Stdlib and PyYAML only.
@@ -299,6 +300,106 @@ class AsksWireframe(unittest.TestCase):
         import sync
         self.assertLessEqual({"asks.ask", "asks.list"}, sync.known_capabilities())
         self.assertIn("asks", sync.setup_questions())
+
+
+SESSIONS_FILE = ROOT / "capabilities" / "sessions.yaml"
+SESSIONS_CONCEPTS = ("session", "digest", "rotation-flag")
+SESSIONS_OPERATIONS = ("digest",)
+SESSIONS_GUARANTEES = ("unknown-not-empty", "read-back")
+SESSIONS_QUESTIONS = ("source", "threshold", "operations")
+
+
+def load_sessions() -> dict:
+    return yaml.safe_load(SESSIONS_FILE.read_text(encoding="utf-8"))
+
+
+class SessionsWireframe(unittest.TestCase):
+    """Intent: ticket 180. The core describes listing the managed sessions without
+    describing a product."""
+
+    def test_the_file_exists(self):
+        """Intent: ticket 180, the wireframe file is part of the core."""
+        self.assertTrue(SESSIONS_FILE.is_file(), f"{SESSIONS_FILE} is missing")
+
+    def test_the_four_sections_exist(self):
+        """Intent: ticket 180, it has concepts, operations, guarantees and setup."""
+        data = load_sessions()
+        for section in SECTIONS:
+            with self.subTest(section=section):
+                self.assertTrue(data.get(section), f"section {section!r} is missing or empty")
+
+    def test_every_listed_concept_is_defined_with_a_description(self):
+        """Intent: ticket 180, session, digest and rotation-flag are each described."""
+        concepts = load_sessions()["concepts"]
+        self.assertEqual(set(concepts), set(SESSIONS_CONCEPTS))
+        for name, entry in concepts.items():
+            with self.subTest(concept=name):
+                self.assertTrue(str((entry or {}).get("description") or "").strip())
+
+    def test_the_one_operation_is_the_sessions_digest_capability(self):
+        """Intent: ticket 180. sessions.digest lists every managed session with its state,
+        and a profile that does not bind it loses only what needs it."""
+        operations = load_sessions()["operations"]
+        self.assertEqual(set(operations), set(SESSIONS_OPERATIONS))
+        entry = operations["digest"]
+        self.assertEqual(entry.get("capability"), "sessions.digest")
+        self.assertTrue(str(entry.get("description") or "").strip())
+
+    def test_both_guarantees_are_defined_and_the_digest_gives_the_two(self):
+        """Intent: ticket 180, the digest gives unknown-not-empty and read-back, both defined."""
+        data = load_sessions()
+        self.assertEqual(set(data["guarantees"]), set(SESSIONS_GUARANTEES))
+        for name, entry in data["guarantees"].items():
+            with self.subTest(guarantee=name):
+                self.assertTrue(str((entry or {}).get("description") or entry or "").strip())
+        guarantees = data["operations"]["digest"]["guarantees"]
+        for guarantee in guarantees:
+            self.assertIn(guarantee, data["guarantees"])
+        self.assertEqual(set(guarantees), set(SESSIONS_GUARANTEES))
+
+    def test_an_unreadable_session_or_list_is_not_an_empty_digest(self):
+        """Intent: ticket 180. An unreadable session is listed as unknown, and a failed
+        read of the list reports failure, never an empty digest."""
+        self.assertIn("unknown-not-empty", load_sessions()["operations"]["digest"]["guarantees"])
+
+    def test_every_question_is_present_once_and_carries_its_fields(self):
+        """Intent: ticket 180, source, threshold and operations are asked, each with ask, why, feeds and example."""
+        setup = load_sessions()["setup"]
+        self.assertEqual(sorted(q.get("id") for q in setup), sorted(SESSIONS_QUESTIONS))
+        for question in setup:
+            for key in QUESTION_KEYS:
+                with self.subTest(question=question.get("id"), key=key):
+                    self.assertTrue(question.get(key), f"{key!r} missing or empty")
+
+    def test_every_question_feeds_a_concept_or_an_operation(self):
+        """Intent: ticket 180, each setup answer feeds something the wireframe defines."""
+        data = load_sessions()
+        known = set(data["concepts"]) | set(data["operations"])
+        for question in data["setup"]:
+            feeds = question["feeds"]
+            for target in [feeds] if isinstance(feeds, str) else feeds:
+                with self.subTest(question=question["id"], feeds=target):
+                    self.assertIn(target, known)
+
+    def test_one_question_declares_the_source(self):
+        """Intent: ticket 180, only the source question declares."""
+        declaring = [q["id"] for q in load_sessions()["setup"] if q.get("declares")]
+        self.assertEqual(declaring, ["source"])
+
+    def test_the_file_names_no_product_transport_or_estate_value(self):
+        """Intent: ticket 180, the wireframe names no product, transport or estate value."""
+        text = SESSIONS_FILE.read_text(encoding="utf-8")
+        for word, pattern in ASKS_FORBIDDEN.items():
+            with self.subTest(word=word):
+                self.assertIsNone(re.search(pattern, text),
+                                  f"{word!r} appears in {SESSIONS_FILE.name}")
+
+    def test_sync_knows_the_sessions_digest_capability(self):
+        """Intent: ticket 180, sync reads the new wireframe, so profiles can bind sessions.digest."""
+        import sys
+        sys.path.insert(0, str(ROOT))
+        import sync
+        self.assertIn("sessions.digest", sync.known_capabilities())
 
 
 if __name__ == "__main__":

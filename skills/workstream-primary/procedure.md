@@ -77,6 +77,11 @@ STATUS: needs operator: <none or what>; workers running: <n, which tickets>; bac
 With nothing running it reads `workers running: 0`. Do not leave a field out and do
 not write a count you did not read from the live state.
 
+**STATUS, not a message, for information.** Anything another session only needs to
+know goes on this line, where the orchestrator's digest reads it. Send a message only
+when the receiving session has to act on it. Every message opens a turn in the
+receiver, which re-reads its whole context.
+
 ## Title prefix
 
 The session's title carries one prefix, then ` - ` and the session's name. The
@@ -137,11 +142,14 @@ unanswered item and reposts them in the most recent response as fresh items.
 ## Rotation
 
 Rotate under the `handoff` skill's triggers ("When the conversation has been
-summarised"), at its clean stopping point. This skill adds two:
+summarised"), at its clean stopping point. This skill adds two triggers and one hold:
 
 - **Context fill at 500k.** The orchestrator's digest flags it.
 - **A parked session rotates when it unparks,** before it starts work, whatever its
   age. While parked it does not rotate.
+- **No rotation while Remote Control is on.** A trigger that fires in bio or away mode
+  writes the seed, but no successor starts until desk mode. The app does not allow a
+  session start then.
 
 The pickup prompt is the `handoff` skill's template, filled in as that skill says,
 and names this skill on its role-skill line.
@@ -230,6 +238,9 @@ not a real decision.
   check the other workstreams' exchanges, and check whether a pending rollout fixes
   it. Claude Code only: ask the orchestrator by message whether another chat already
   has it; elsewhere, read the other exchanges.
+  <!-- requires: tracker.query -->
+  Run the duplicate search through {{tracker.query}}.
+  <!-- end -->
 - **Ask the fact.** When the "Would change my answer" condition is something the
   operator knows, ask that ("Are these docs finished?") instead of an a/b.
 - **Every question is a numbered DC in the Decisions section,** never a Q in prose.
@@ -259,7 +270,7 @@ primary asks in each:
 Rules:
 
 - Not told a mode, treat it as desk, and say so in the first reply.
-- Claude Code only: the orchestrator sets Remote Control. Do not set it yourself.
+- Claude Code only: Remote Control is the operator's to switch. Never set it.
 - The mode changes while an ask is in flight. Desk or bio to away: re-ask it through
   the away channel. Night to desk or bio: post every held ask as a fresh DC (the
   re-post rule above). Night to away: send every held ask through the away channel.
