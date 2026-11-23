@@ -77,22 +77,28 @@ that is about to be replaced. Steps:
 4. The successor messages each session on the rotation list to rotate at its next clean
    stopping point, under the `handoff` skill. Say that the rotation is policy-ordered,
    so the pickup is pre-approved as the `handoff` skill's pickup steps say. The pickup
-   still restates the whole scope first.
+   still restates the whole scope first. A session told by message to rotate cannot
+   start its successor, because the app refuses a session start on a turn that a peer
+   message opened. It writes its seed and proposes the successor as a card, and the
+   operator starts it. The status lists each waiting card.
 
-**Already fresh.** An orchestrator picked up within the last hour, from a seed that
-says the morning status is pending, skips the self-rotation and runs steps 2 to 4
+**Already fresh.** An orchestrator whose pickup was confirmed from a seed that says
+the morning status is pending, with no day-opening message handled since, skips the self-rotation and runs steps 2 to 4
 itself. It clears the pending line in its next seed, so a later pickup does not run
 the status twice. If the operator says "morning" twice, the second message goes to the
 successor, which runs the status once.
 
 **Who rotates.** A primary rotates on the triggers in the `workstream-primary` skill's
 Rotation section, which points at the `handoff` skill's and adds the profile's.
-The orchestrator adds three of its own:
+The orchestrator adds four of its own:
 
 - **Its own threshold is 250k context fill,** not the primaries' 500k. Every message
   from another session opens an orchestrator turn that re-reads its whole context, so
   its cost per turn grows with its fill. It rotates at the next clean stopping point
   once its fill reaches 250k, whatever the time of day.
+- **No rotation while Remote Control is on,** in bio and away. A due rotation is
+  carried in the status and ordered when the mode returns to desk. The orchestrator
+  holds its own rotation the same way.
 - **On the morning message it rotates first,** always (step 1 above).
 - **On the morning message, an active session older than about 24 hours rotates,**
   whatever its fill. A parked session is archived, not active: it follows the Rotation
@@ -122,8 +128,8 @@ process rather than something remembered each night. Steps:
    `overnight` session resumes in the morning. Parked sessions are archived; for any
    trigger the orchestrator holds that can fire overnight, it keeps watching
    (Handed-over triggers, below).
-4. Read each managed session's Remote Control state, and turn it off where it is on
-   (Remote Control, below).
+4. Read each managed session's Remote Control state and record it. Remote Control is
+   the operator's to switch (Remote Control, below).
 5. Write the mode into the orchestrator's seed, with the time and the sessions told.
 
 A session that could not be told, or whose Remote Control could not be read, is listed
@@ -205,21 +211,13 @@ It sets the mode the workstreams ask in, as the operator tells it. Four modes:
 The mode is stated to each primary by message, and again whenever it changes. The
 later operator word wins when two mode messages cross. No mode set yet means desk.
 
-**Remote Control.** While the operator is at the desk, everyone has it off; when they
-say they are going away from it, everyone turns it on.
+**Remote Control.** The operator switches it. Each mode above states the setting the
+operator normally uses.
 
-- Claude Code only: the orchestrator sets Remote Control itself for every managed
-  session, itself included, with `set_remote_control`, alongside the mode message. A
-  session started or picked up later is set to the current mode once it has run a
-  turn. Elsewhere: Remote Control doesn't exist, so the mode message is all there is.
-- A session `set_remote_control` reports "unavailable" for is listed in the status
-  as not set, never as set.
-
-**Auto mode.** Under auto mode the first `set_remote_control` call per session may be
-refused once because a hook adds a `session` label. Re-issue it once with exactly the
-hook's input. Other calls put an approval card in front of the operator. Which path a
-call takes can't be predicted, so either can happen; do not promise it runs without a
-prompt. A second refusal is reported to the operator, never retried.
+- Claude Code only: the orchestrator never calls `set_remote_control`. It reads each
+  managed session's state from `list_sessions` and reports it in the status. A
+  session whose state cannot be read is listed as unknown, never as off.
+- Elsewhere: Remote Control doesn't exist, so the mode message is all there is.
 
 **The mode is kept in the orchestrator's seed,** and a pickup applies it to itself
 first.
