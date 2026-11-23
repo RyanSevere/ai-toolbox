@@ -1,0 +1,99 @@
+################################################################################
+# File: sessions.yaml
+# Path: {PROJECT_ROOT}/capabilities/sessions.yaml
+# Created by: Ryan Severe
+# Created: 2026-11-23
+# Last Updated: 2026-11-23
+# Description: The core's wireframe of listing the managed sessions: concepts,
+#              the one operation a profile can bind, the guarantees it makes,
+#              and the setup questions. It names no product, transport or
+#              estate value.
+################################################################################
+# ===========================================================================
+#
+#
+#            "~,
+#                *m,
+#                   *9m;
+#                       *%pg
+#                          "YRWu
+#                              *9$&w
+#                                  *R$&w
+#   ;j]@@W;                   *w,      79&&w;
+#   :|*%MT"                     7&&w,      ?78BWw
+# . ,|*       -p     ~            *R$$$gw,     '*MU@m,
+#            =W/?*%NMWgw             *T&$F ,@w;     "*4[%m,
+#              7R$$$$$$$$g          yg$$Gg$@@Hh!j ,w     "*w|j=,
+#       ..     ]K@ww[T$Fff            >*MB&&@@Hh ]hk{!!~^     "*v'
+#          '|;, *M@@&&$P                 $$&@HHH\  ` ;w,,   ,~""
+#            "|jj]]%@F"                  ]$@@H, ;*M%P)a$$C  c
+#           . :|j[M"                     ]@@HHr TfR4&$NE*,/~<'
+#             `!||j]@@@A`                ]@@Hh~ *TT"" "* ^ r  '~
+#                *ojKM"                  l@Hh~  "*|"'   /        `
+#                                        @HHkC ,;!"
+#                                       ]HHhr/|!"'
+#                                       #Hhr!||"
+#                             ,@r       hkr!||'
+#                                      [k{|!"
+#                                     (r!!"        r
+#                                     !!"        r
+#                                      ";      /
+#                                             '
+#                                            '
+# ===========================================================================
+
+# Listing the managed sessions, described without describing a store.
+#
+# This is a wireframe: concepts every way of listing sessions has, the operation a profile
+# can bind, the guarantees that operation makes, and the questions the setup process asks to
+# fit it to one profile. It carries no implementation, no transport and no product name -
+# tests/test_capabilities.py refuses any. Anything not universal to every session store is
+# an answer to a setup question, never a concept here.
+#
+# One source for two readers: a profile reads it as the template for its own digest, and
+# capability binding validates a profile's bindings against the names under `operations`.
+
+# What every way of listing sessions has, named and never typed to one store.
+concepts:
+  session:
+    description: One working chat or agent run the orchestrator manages.
+  digest:
+    description: A list of the managed sessions with each one's state, read at the time of asking.
+  rotation-flag:
+    description: A digest row marked because the session meets a rotation trigger, such as its context fill passing the threshold the caller gave.
+
+# The one operation a profile binds, so a profile that lacks it loses only what needs it.
+operations:
+  digest:
+    capability: sessions.digest
+    description: List every managed session with its state, flagging the ones the caller's threshold marks for rotation.
+    guarantees: [unknown-not-empty, read-back]
+
+# Promises that come from the core's design principles, not from any one implementation.
+guarantees:
+  unknown-not-empty:
+    description: A session whose state cannot be read is listed as unknown. A failed read of the list reports failure, never an empty digest.
+  read-back:
+    description: Every row is read from the live session store when the digest runs, never from a list kept earlier.
+
+# Asked by the setup process; the answers belong to the profile and are stored there,
+# under answers: as sessions.<id>. Each `example` is written for an invented store.
+# `declares: true` marks the one answer that names the source: answered with nothing
+# bound, render reports the digest unbuilt.
+setup:
+  - id: source
+    declares: true
+    ask: Which tool or store lists the managed sessions? Any source works.
+    why: Every other answer depends on it. Nothing is built from the answer until a skill is bound to it, so naming a source only records it.
+    feeds: [session, digest]
+    example: "ExampleStore, a local index of agent runs that its command-line client can list."
+  - id: threshold
+    ask: What context fill marks a session for rotation, and how does the caller pass its own?
+    why: The flag is the caller's judgement, so the digest takes the threshold from the caller rather than holding one of its own.
+    feeds: [rotation-flag, digest]
+    example: "A session whose context is over 250k tokens is flagged. The caller passes the figure as an argument, and the default applies when it passes none."
+  - id: operations
+    ask: "Which operations will this profile bind? The one operation is digest."
+    why: An unbound operation is reported as unavailable, never silently skipped.
+    feeds: [digest]
+    example: "Digest."
