@@ -5545,7 +5545,10 @@ class LayerSkills(unittest.TestCase):
 
     ASKER = "skills/example-asker/procedure.md"
     ASKER_TEXT = "---\nname: example-asker\ndescription: d\n---\nbody\n"
-    BOUND = {"asks.ask": {"skill": "example-asker"}, "asks.list": {"skill": "example-asker"}}
+    ASKS_BOUND = {"asks.ask": {"skill": "example-asker"},
+                  "asks.list": {"skill": "example-asker"}}
+    BOUND = {**ASKS_BOUND, "tracker.query": {"skill": "example-asker"},
+             "sessions.digest": {"skill": "example-asker"}}
     OUT = ".cursor/skills/{}/SKILL.md"
 
     def setUp(self):
@@ -5564,6 +5567,12 @@ class LayerSkills(unittest.TestCase):
         return sorted((line, caps) for path, line, caps in plan.dropped_sections
                       if Path(path).is_relative_to(folder))
 
+    def asks_drops(self, plan: sync.Plan, skill: str) -> list[tuple[int, list[str]]]:
+        """The drops of the asks capabilities alone, so a test about the ask lines does not
+        change with the other capabilities the same skill gains."""
+        return [(line, caps) for line, caps in self.core_drops(plan, skill)
+                if all(cap.startswith("asks.") for cap in caps)]
+
     def test_workstream_primary_names_the_bound_skill_in_the_away_mode_line(self):
         plan = self.plan(self.BOUND)
         text = plan[self.OUT.format("workstream-primary")]
@@ -5573,7 +5582,7 @@ class LayerSkills(unittest.TestCase):
         self.assertEqual(self.core_drops(plan, "workstream-primary"), [])
 
     def test_workstream_primary_unbound_loses_only_the_away_mode_block(self):
-        bound = self.plan(self.BOUND)[self.OUT.format("workstream-primary")]
+        bound = self.plan(self.ASKS_BOUND)[self.OUT.format("workstream-primary")]
         plan = self.plan({})
         text = plan[self.OUT.format("workstream-primary")]
         self.assertNotIn("example-asker", text)
@@ -5583,7 +5592,7 @@ class LayerSkills(unittest.TestCase):
         lost = [line for line in bound.splitlines() if line not in text.splitlines()]
         self.assertEqual(len(lost), 1, lost)
         self.assertIn("**Away:**", lost[0])
-        drops = self.core_drops(plan, "workstream-primary")
+        drops = self.asks_drops(plan, "workstream-primary")
         self.assertEqual([caps for _, caps in drops], [["asks.ask"]])
 
     def test_orchestrator_names_the_bound_skills_in_place(self):
@@ -5595,7 +5604,7 @@ class LayerSkills(unittest.TestCase):
         self.assertEqual(self.core_drops(plan, "orchestrator"), [])
 
     def test_orchestrator_unbound_loses_only_the_two_blocks(self):
-        bound = self.plan(self.BOUND)[self.OUT.format("orchestrator")]
+        bound = self.plan(self.ASKS_BOUND)[self.OUT.format("orchestrator")]
         plan = self.plan({})
         text = plan[self.OUT.format("orchestrator")]
         self.assertNotIn("example-asker", text)
@@ -5605,7 +5614,7 @@ class LayerSkills(unittest.TestCase):
             self.assertIn(kept, text)
         lost = [line for line in bound.splitlines() if line not in text.splitlines()]
         self.assertEqual(len(lost), 2, lost)
-        self.assertEqual(sorted(caps[0] for _, caps in self.core_drops(plan, "orchestrator")),
+        self.assertEqual(sorted(caps[0] for _, caps in self.asks_drops(plan, "orchestrator")),
                          ["asks.ask", "asks.list"])
 
     def test_orchestrator_with_only_ask_bound_keeps_its_ask_line(self):
@@ -5613,8 +5622,68 @@ class LayerSkills(unittest.TestCase):
         text = plan[self.OUT.format("orchestrator")]
         self.assertIn("**Away:**", text)
         self.assertNotIn("**The open asks:**", text)
-        self.assertEqual([caps for _, caps in self.core_drops(plan, "orchestrator")],
+        self.assertEqual([caps for _, caps in self.asks_drops(plan, "orchestrator")],
                          [["asks.list"]])
+
+    def test_workstream_primary_names_the_bound_skill_on_the_duplicate_search_line(self):
+        """Intent: ticket 180. A profile that binds tracker.query sees its own skill's name
+        where the workstream-primary skill says how to run the duplicate search."""
+        plan = self.plan(self.BOUND)
+        text = plan[self.OUT.format("workstream-primary")]
+        lines = [line for line in text.splitlines() if "duplicate search" in line]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("the `example-asker` skill", lines[0])
+        self.assertNotIn("{{", text)
+        self.assertEqual(self.core_drops(plan, "workstream-primary"), [])
+
+    def test_workstream_primary_without_tracker_query_keeps_the_duplicate_search_sentence(self):
+        """Intent: ticket 180. The sentence that tells the agent to search for a duplicate
+        stays when tracker.query is unbound. Only the block that names the bound skill is
+        dropped, and the drop is reported."""
+        bound = self.plan({"tracker.query": {"skill": "example-asker"}})
+        bound_text = bound[self.OUT.format("workstream-primary")]
+        plan = self.plan({})
+        text = plan[self.OUT.format("workstream-primary")]
+        self.assertIn("search the tracker for a duplicate", " ".join(text.split()))
+        self.assertNotIn("duplicate search", text)
+        self.assertNotIn("example-asker", text)
+        lost = [line for line in bound_text.splitlines() if line not in text.splitlines()]
+        self.assertTrue(lost)
+        for line in lost:
+            self.assertIn("example-asker", line)
+        drops = [caps for _, caps in self.core_drops(plan, "workstream-primary")
+                 if "tracker.query" in caps]
+        self.assertEqual(drops, [["tracker.query"]])
+
+    def test_orchestrator_names_the_bound_skill_in_the_morning_status_step(self):
+        """Intent: ticket 180. A profile that binds sessions.digest sees its own skill's name
+        where the orchestrator's morning status runs the digest."""
+        plan = self.plan(self.BOUND)
+        text = plan[self.OUT.format("orchestrator")]
+        named = [line for line in text.splitlines()
+                 if "digest" in line and "the `example-asker` skill" in line]
+        self.assertTrue(named, "no digest line names the bound skill")
+        self.assertIn("If there is no digest", " ".join(text.split()))
+        self.assertNotIn("{{", text)
+        self.assertEqual(self.core_drops(plan, "orchestrator"), [])
+
+    def test_orchestrator_without_sessions_digest_keeps_the_fallback_step(self):
+        """Intent: ticket 180. The morning status keeps its fallback, "If there is no
+        digest", when sessions.digest is unbound. Only the block that names the bound skill
+        is dropped, and the drop is reported."""
+        bound = self.plan({"sessions.digest": {"skill": "example-asker"}})
+        bound_text = bound[self.OUT.format("orchestrator")]
+        plan = self.plan({})
+        text = plan[self.OUT.format("orchestrator")]
+        self.assertIn("If there is no digest", " ".join(text.split()))
+        self.assertNotIn("example-asker", text)
+        lost = [line for line in bound_text.splitlines() if line not in text.splitlines()]
+        self.assertTrue(lost)
+        for line in lost:
+            self.assertIn("digest", line)
+        drops = [caps for _, caps in self.core_drops(plan, "orchestrator")
+                 if "sessions.digest" in caps]
+        self.assertEqual(drops, [["sessions.digest"]])
 
 
 if __name__ == "__main__":
