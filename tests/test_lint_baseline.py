@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_lint_baseline.py
 # Created by: Ryan Severe
 # Created: 2026-11-16
-# Last Updated: 2026-11-16
+# Last Updated: 2026-11-23
 # Description: Runs githooks/lib/lint_baseline.py against throwaway git repositories:
 #              files the repository does not own - the vendored core, and anything
 #              carrying the render stamp - are never linted, and a finding in an
@@ -244,6 +244,167 @@ class Batched(LintBaseline):
         shows = [c for c in calls if "show" in c and any("app/" in a for a in c)]
         self.assertEqual(len(batches), 1, calls)
         self.assertEqual(shows, [], calls)
+
+
+ZEROS = "0" * 40
+
+
+class PushBase(LintBaseline):
+    """Which base a push is linted against. Each test builds a repository with a bare remote,
+    a deploy branch (main) and a feature branch, and runs main with the tool's runner patched
+    to record the paths it is handed."""
+
+    def setUp(self):
+        super().setUp()
+        sys.path.insert(0, str(LIB.parent))
+        self.addCleanup(sys.path.remove, str(LIB.parent))
+        import lint_baseline
+        self.lib = lint_baseline
+        cwd = os.getcwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, cwd)
+        self.remote = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.remote, ignore_errors=True)
+        subprocess.run(["git", "init", "-q", "--bare", str(self.remote)], check=True)
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.git("remote", "add", "origin", str(self.remote))
+
+    def commit(self, rel: str, text: str = "VALUE = 1\n") -> str:
+        self.write(rel, text)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", f"add {rel}")
+        return self.git("rev-parse", "HEAD")
+
+    def world(self, deploy_branch: bool = True) -> dict[str, str]:
+        """main has a.py (pushed), feature branches from it with b.py (not pushed), then main
+        moves on with c.py (pushed). The merge-base of feature and origin/main is a.py's commit."""
+        config = "config-dir=.gates\n" + ("deploy-branch=main\n" if deploy_branch else "")
+        self.write(".githooks/gate-config", config)
+        first = self.commit("a.py")
+        self.git("push", "-q", "origin", "main")
+        self.git("checkout", "-q", "-b", "feature")
+        feature = self.commit("b.py")
+        self.git("checkout", "-q", "main")
+        second = self.commit("c.py")
+        self.git("push", "-q", "origin", "main")
+        return {"first": first, "feature": feature, "second": second}
+
+    def run_main(self, sha: str, base: str, ref: str | None, *extra: str):
+        """(exit code, printed text, the lists of paths the runner was handed)."""
+        seen: list[list[str]] = []
+
+        def runner(root, files, at):
+            seen.append(sorted(files))
+            return []
+
+        selector = self.lib.TOOLS["ruff"][0]
+        env = {} if ref is None else {"PUSH_REMOTE_REF": ref}
+        with unittest.mock.patch.dict(self.lib.TOOLS, {"ruff": (selector, runner)}), \
+                unittest.mock.patch.dict(os.environ, env), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            if ref is None:
+                os.environ.pop("PUSH_REMOTE_REF", None)
+            code = self.lib.main(["--tool", "ruff", "--sha", sha, "--base", base,
+                                  "--remote", "origin", *extra])
+        return code, out.getvalue(), seen
+
+    def test_new_branch_uses_the_merge_base(self):
+        """Intent: ticket 189, Done when 1: a new branch is linted only for what changed since
+        the merge-base with the remote deploy branch, and the range line says so."""
+        w = self.world()
+        code, out, seen = self.run_main(w["feature"], ZEROS, "refs/heads/feature")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(seen, [["b.py"]], out)
+        self.assertIn("range: merge-base with origin/main (new branch)", out)
+
+    def test_deploy_branch_keeps_the_remote_sha(self):
+        """Intent: ticket 189, Done when 2: a push to the deploy branch is linted against the
+        remote sha it was given, as before."""
+        w = self.world()
+        code, out, seen = self.run_main(w["second"], w["first"], "refs/heads/main")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(seen, [["c.py"]], out)
+
+    def test_existing_branch_keeps_the_remote_sha(self):
+        """Intent: ticket 189, Done when 2: a push to a branch that already exists is linted
+        against its remote sha, not the merge-base (which would add b.py)."""
+        w = self.world()
+        self.git("checkout", "-q", "feature")
+        self.git("push", "-q", "origin", "feature")
+        newest = self.commit("d.py")
+        code, out, seen = self.run_main(newest, w["feature"], "refs/heads/feature")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(seen, [["d.py"]], out)
+        self.assertIn("range: as pushed (existing branch)", out)
+
+    def test_no_merge_base_lints_everything(self):
+        """Intent: ticket 189, Done when 3: a new branch with no merge-base with the deploy
+        branch, or a deploy branch the remote does not have, lints every tracked file and
+        says so on the range line."""
+        self.world()
+        self.git("checkout", "-q", "--orphan", "lone")
+        self.git("rm", "-rfq", "--cached", ".")
+        self.write("e.py")
+        self.write("f.py")
+        self.git("add", "e.py", "f.py")
+        self.git("commit", "-q", "-m", "unrelated history")
+        lone = self.git("rev-parse", "HEAD")
+        code, out, seen = self.run_main(lone, ZEROS, "refs/heads/lone")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(seen, [["e.py", "f.py"]], out)
+        self.assertIn("range: none (", out)
+        # A remote with no tracking refs gives git merge-base nothing to compare with.
+        self.git("checkout", "-q", "feature")
+        seen_none = []
+        with unittest.mock.patch.dict(os.environ, {"PUSH_REMOTE_REF": "refs/heads/feature"}), \
+                contextlib.redirect_stdout(io.StringIO()) as out2:
+            selector = self.lib.TOOLS["ruff"][0]
+            with unittest.mock.patch.dict(self.lib.TOOLS, {"ruff": (
+                    selector, lambda r, files, at: seen_none.append(sorted(files)) or [])}):
+                code2 = self.lib.main(["--tool", "ruff", "--sha", "feature", "--base", ZEROS,
+                                       "--remote", "nowhere"])
+        self.assertEqual(code2, 0, out2.getvalue())
+        self.assertEqual(seen_none, [["a.py", "b.py"]], out2.getvalue())
+        self.assertIn("range: none (", out2.getvalue())
+
+    def test_without_a_pushed_ref_the_base_is_as_given(self):
+        """Intent: ticket 189, Done when 4: with PUSH_REMOTE_REF unset (the gate run by hand)
+        the base is the --base given, and an all-zero base lints every file, as today."""
+        w = self.world()
+        code, out, seen = self.run_main(w["second"], w["first"], None)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(seen, [["c.py"]], out)
+        code, out, seen = self.run_main(w["feature"], ZEROS, None)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(seen, [["a.py", "b.py"]], out)
+
+    def test_missing_deploy_branch_refuses(self):
+        """Intent: ticket 189, Done when 5: a gate-config with no deploy-branch refuses while
+        PUSH_REMOTE_REF is set, and never guesses a branch."""
+        w = self.world(deploy_branch=False)
+        code, out, seen = self.run_main(w["feature"], ZEROS, "refs/heads/feature")
+        self.assertEqual(code, 1, out)
+        self.assertIn("REFUSED:", out)
+        self.assertIn("deploy-branch", out)
+        self.assertEqual(seen, [])
+
+    def test_an_invalid_remote_refuses(self):
+        """Intent: ticket 189, Done when 5: a --remote that fails ^[A-Za-z0-9._-]{1,100}$
+        refuses before it reaches git, and nothing is linted."""
+        w = self.world()
+        for bad in ("up stream", "origin;rm", "../origin", "a" * 101, ""):
+            with self.subTest(remote=bad):
+                seen: list[list[str]] = []
+                selector = self.lib.TOOLS["ruff"][0]
+                with unittest.mock.patch.dict(self.lib.TOOLS, {"ruff": (
+                        selector, lambda r, files, at: seen.append(files) or [])}), \
+                        unittest.mock.patch.dict(os.environ, {"PUSH_REMOTE_REF": "refs/heads/feature"}), \
+                        contextlib.redirect_stdout(io.StringIO()) as out:
+                    code = self.lib.main(["--tool", "ruff", "--sha", w["feature"],
+                                          "--base", ZEROS, "--remote", bad])
+                self.assertEqual(code, 1, out.getvalue())
+                self.assertIn("REFUSED:", out.getvalue())
+                self.assertEqual(seen, [])
 
 
 if __name__ == "__main__":
