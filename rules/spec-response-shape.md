@@ -368,6 +368,11 @@ It continues the previous reply's ID counters, per prefix: if that reply ended a
 operator replies with something other than steering. Without this, two replies in a row
 reuse `DC1`, and "DC1" no longer names one item.
 
+Operator input inside the turn ends the continuation: a message the operator types
+while the turn runs, or an answer to a question card. A reply after it carries no
+continuation line and restarts its counters at 1. A subagent's hand-back or a task
+notification queued while the turn runs is not operator input.
+
 On Claude Code the checker finds such a turn from the record's `origin`. Three
 openers cover records that have no `origin` key, and they are a fallback used only
 when `origin` is absent: the transcript's first user prompt (a session another

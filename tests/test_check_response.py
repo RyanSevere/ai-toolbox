@@ -1717,9 +1717,14 @@ def k_result(text: str = "ok") -> str:
                            {"type": "tool_result", "tool_use_id": "t-1", "content": text}]}})
 
 
-def k_attachment(kind: str = "queued_command") -> str:
+def k_attachment(kind: str = "queued_command", origin: str | None = None) -> str:
+    """An attachment record. A queued_command carries origin.kind when it has one:
+    "human" for a typed message, "peer" or "task-notification" for a queued report."""
+    attachment: dict[str, object] = {"type": kind, "prompt": "a message sent mid-turn"}
+    if origin:
+        attachment["origin"] = {"kind": origin}
     return json.dumps({"type": "attachment", "uuid": "a-1", "isSidechain": False,
-                       "attachment": {"type": kind, "prompt": "a message sent mid-turn"}})
+                       "attachment": attachment})
 
 
 def k_meta() -> str:
@@ -2096,6 +2101,89 @@ class ContinuationReplies(TranscriptCase):
             k_user("one"), k_final(CONDENSED_CLEAN), k_user("two"), k_final(CONDENSED_CLEAN),
             k_user("three")))
         self.assertEqual(shape.continuation_findings(turns, 1), [])
+
+    def found_inside(self, previous: str, current: str, *inside: str) -> list[str]:
+        """Continuation findings for a hand-back turn that holds the given records."""
+        turns = claude.turns(self.transcript(
+            k_user("one"), k_final(previous), k_peer("a report"), *inside,
+            k_final(current), k_user("three")))
+        self.assertEqual([t.kind for t in turns],
+                         [shape.OPERATOR, shape.NOTIFICATION, shape.OPERATOR])
+        return shape.continuation_findings(turns, 1)
+
+    def test_a_typed_message_inside_a_hand_back_turn_ends_the_continuation(self):
+        """Intent: ticket 194 Done when 1 - a hand-back turn holding a typed mid-turn operator
+        message, whose reply restarts at DC1 with no continuation line, has no continuation
+        finding. Origin kind "human" is the typed-message kind (claude.OPENERS)."""
+        found = self.found_inside(CONDENSED_CLEAN, CONDENSED_CLEAN,
+                                  k_text("Working."), k_tool(), k_result(),
+                                  k_attachment("queued_command", origin="human"))
+        self.assertEqual(found, [])
+
+    def test_a_typed_message_as_the_last_record_before_the_reply_ends_it_too(self):
+        """Intent: ticket 194 Edge cases (boundary values) - operator input as the very last
+        record of the turn still ends the continuation. Origin kind "human" is the
+        typed-message kind (claude.OPENERS)."""
+        found = self.found_inside(CONDENSED_CLEAN, CONDENSED_CLEAN,
+                                  k_attachment("queued_command", origin="human"))
+        self.assertEqual(found, [])
+
+    def test_queued_reports_inside_a_hand_back_turn_are_not_operator_input(self):
+        """Intent: ticket 194 Done when 2 and Edge cases (duplicates and ordering) - a hand-back
+        or task notification queued mid-turn arrives as a queued_command with origin kind
+        "peer" or "task-notification". It is not operator input, so the turn is still
+        checked."""
+        found = self.found_inside(CONDENSED_CLEAN, CONDENSED_CLEAN,
+                                  k_text("Working."), k_tool(), k_result(),
+                                  k_attachment("queued_command", origin="peer"),
+                                  k_attachment("queued_command", origin="task-notification"))
+        self.assertEqual(len(found), 5, found)
+
+    def test_a_question_card_answer_inside_a_hand_back_turn_ends_the_continuation(self):
+        """Intent: ticket 194 Done when 4 - a hand-back turn holding a question-card answer (an
+        AskUserQuestion tool result), whose reply restarts at DC1 with no continuation line,
+        has no continuation finding."""
+        ask = k_block({"type": "tool_use", "id": "q-1", "name": "AskUserQuestion",
+                       "input": {"questions": [{"question": "Which one?"}]}}, "tool_use")
+        answer = json.dumps({
+            "type": "user", "uuid": "q-r1", "isSidechain": False,
+            "toolUseResult": {"questions": [{"question": "Which one?"}],
+                              "answers": {"Which one?": "first"}},
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "q-1", "content": "first"}]}})
+        found = self.found_inside(CONDENSED_CLEAN, CONDENSED_CLEAN, ask, answer)
+        self.assertEqual(found, [])
+
+    def test_a_hand_back_turn_with_tool_work_and_no_operator_input_is_still_checked(self):
+        """Intent: ticket 194 Done when 2 - a notification turn with no operator message keeps
+        the continuation check. A peer hand-back inside it is not operator input."""
+        found = self.found_inside(CONDENSED_CLEAN, CONDENSED_CLEAN,
+                                  k_text("Working."), k_tool(), k_result(),
+                                  k_peer("a second report"), k_meta())
+        self.assertEqual(len(found), 5, found)
+        self.assertIn(f"continuation: header lacks the line '{self.LINE}'", found)
+
+    def test_a_bold_reference_at_a_paragraph_start_is_not_an_item(self):
+        """Intent: ticket 194 Done when 3 - a previous reply whose Summary opens
+        '**DC1 (a) is waiting**' and has no DC item does not make DC1 an issued ID, so the
+        continuation reply's DC1 is not flagged."""
+        previous = (CONDENSED_CLEAN.replace("- DC1 Pick the next ticket", "- Pick the next ticket")
+                    .replace("The live state matches",
+                             "**DC1 (a) is waiting** on you. The live state matches", 1))
+        self.assertEqual(shape.item_numbers(previous).count(("DC", 1)), 0)
+        current = self.CONTINUED.replace("DC2", "DC1")
+        self.assertEqual(self.found(previous, current), [])
+
+    def test_a_real_item_line_still_counts_as_an_item(self):
+        """Intent: ticket 194 Decided - item_numbers counts item lines, never a reference. A
+        '- DC1 ...' item line is still counted, so reusing DC1 is still a finding, even when
+        the Summary also opens with a bold reference to it."""
+        previous = CONDENSED_CLEAN.replace(
+            "The live state matches", "**DC1 (a) is waiting** on you. The live state matches", 1)
+        self.assertIn(("DC", 1), shape.item_numbers(previous))
+        found = self.found(previous, self.CONTINUED.replace("DC2", "DC1"))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("DC1 reuses an ID", found[0])
 
     def test_the_look_back_reports_it_for_the_previous_reply(self):
         path = self.transcript(k_user("one"), k_final(CONDENSED_CLEAN), k_peer("a report"),
