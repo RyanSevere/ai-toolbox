@@ -5573,55 +5573,92 @@ class LayerSkills(unittest.TestCase):
         return [(line, caps) for line, caps in self.core_drops(plan, skill)
                 if all(cap.startswith("asks.") for cap in caps)]
 
-    def test_workstream_primary_names_the_bound_skill_in_the_away_mode_line(self):
+    @staticmethod
+    def fallback_lines(text: str) -> list[str]:
+        """The lines of a render's Modes section that carry the async-channel fallback
+        sentence. The mode-change rule below it may name the same two cases, so the search
+        stops where the Modes list ends."""
+        modes = text.split("## Modes", 1)[1]
+        modes = modes.split("Rules:", 1)[0].split("**Remote Control.**", 1)[0]
+        return [line for line in modes.splitlines() if "non-interactive" in line]
+
+    def test_workstream_primary_names_the_bound_skill_in_the_fallback_sentences(self):
+        """Intent: ticket 201 Decided - a profile that binds asks.ask sees its own skill's
+        name in the fallback sentences of the local remote and away entries."""
         plan = self.plan(self.BOUND)
         text = plan[self.OUT.format("workstream-primary")]
-        self.assertIn("the `example-asker` skill", text)
+        fallbacks = self.fallback_lines(text)
+        self.assertEqual(len(fallbacks), 2, fallbacks)
+        for line in fallbacks:
+            self.assertIn("the `example-asker` skill", line)
+        self.assertIn("**Away:**", text)
         self.assertNotIn("<!--", text.split("-->", 1)[-1])
         self.assertNotIn("{{", text)
         self.assertEqual(self.core_drops(plan, "workstream-primary"), [])
 
-    def test_workstream_primary_unbound_loses_only_the_away_mode_block(self):
+    def test_workstream_primary_unbound_keeps_the_away_entry_and_loses_only_the_fallbacks(self):
+        """Intent: ticket 201 Decided - with asks.ask unbound the away entry stays and only
+        the two fallback sentences, local remote's and away's, are lost."""
         bound = self.plan(self.ASKS_BOUND)[self.OUT.format("workstream-primary")]
         plan = self.plan({})
         text = plan[self.OUT.format("workstream-primary")]
         self.assertNotIn("example-asker", text)
-        self.assertNotIn("**Away:**", text)
+        self.assertIn("**Away:**", text)
         self.assertIn("**Desk and bio:**", text)
         self.assertIn("**Night:**", text)
+        self.assertEqual(self.fallback_lines(text), [])
         lost = [line for line in bound.splitlines() if line not in text.splitlines()]
-        self.assertEqual(len(lost), 1, lost)
-        self.assertIn("**Away:**", lost[0])
+        self.assertEqual(len(lost), 2, lost)
+        for line in lost:
+            self.assertIn("non-interactive", line)
+        self.assertNotIn("{{", text)
         drops = self.asks_drops(plan, "workstream-primary")
-        self.assertEqual([caps for _, caps in drops], [["asks.ask"]])
+        self.assertEqual([caps for _, caps in drops], [["asks.ask"], ["asks.ask"]])
 
     def test_orchestrator_names_the_bound_skills_in_place(self):
+        """Intent: ticket 201 Decided - a profile that binds the asks capabilities sees its
+        skill named in the open-asks line and in both fallback sentences."""
         plan = self.plan(self.BOUND)
         text = plan[self.OUT.format("orchestrator")]
         self.assertIn("**The open asks:** through the `example-asker` skill", text)
         self.assertIn("**Away:**", text)
+        fallbacks = self.fallback_lines(text)
+        self.assertEqual(len(fallbacks), 2, fallbacks)
+        for line in fallbacks:
+            self.assertIn("the `example-asker` skill", line)
         self.assertNotIn("{{", text)
         self.assertEqual(self.core_drops(plan, "orchestrator"), [])
 
-    def test_orchestrator_unbound_loses_only_the_two_blocks(self):
+    def test_orchestrator_unbound_keeps_the_away_entry_and_loses_only_three_lines(self):
+        """Intent: ticket 201 Decided - with the asks capabilities unbound the away entry
+        stays; the lines lost are the two fallback sentences and the open-asks line."""
         bound = self.plan(self.ASKS_BOUND)[self.OUT.format("orchestrator")]
         plan = self.plan({})
         text = plan[self.OUT.format("orchestrator")]
         self.assertNotIn("example-asker", text)
         self.assertNotIn("**The open asks:**", text)
-        self.assertNotIn("**Away:**", text)
+        self.assertIn("**Away:**", text)
         for kept in ("**Sitrep and status:**", "**Desk:**", "**Bio:**", "**Night:**"):
             self.assertIn(kept, text)
+        self.assertEqual(self.fallback_lines(text), [])
         lost = [line for line in bound.splitlines() if line not in text.splitlines()]
-        self.assertEqual(len(lost), 2, lost)
+        self.assertEqual(len(lost), 3, lost)
+        self.assertEqual(len([line for line in lost if "non-interactive" in line]), 2, lost)
+        self.assertEqual(len([line for line in lost if "**The open asks:**" in line]), 1, lost)
         self.assertEqual(sorted(caps[0] for _, caps in self.asks_drops(plan, "orchestrator")),
-                         ["asks.ask", "asks.list"])
+                         ["asks.ask", "asks.ask", "asks.list"])
 
     def test_orchestrator_with_only_ask_bound_keeps_its_ask_line(self):
+        """Intent: ticket 201 Decided - binding asks.ask alone keeps the away entry and
+        both fallback sentences, and loses only the open-asks line to asks.list."""
         plan = self.plan({"asks.ask": {"skill": "example-asker"}})
         text = plan[self.OUT.format("orchestrator")]
         self.assertIn("**Away:**", text)
         self.assertNotIn("**The open asks:**", text)
+        fallbacks = self.fallback_lines(text)
+        self.assertEqual(len(fallbacks), 2, fallbacks)
+        for line in fallbacks:
+            self.assertIn("the `example-asker` skill", line)
         self.assertEqual([caps for _, caps in self.asks_drops(plan, "orchestrator")],
                          [["asks.list"]])
 
