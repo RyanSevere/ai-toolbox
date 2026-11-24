@@ -4,12 +4,13 @@
 # Path: {PROJECT_ROOT}/tests/select_tests.py
 # Created by: Ryan Severe
 # Created: 2026-10-01
-# Last Updated: 2026-11-21
+# Last Updated: 2026-11-24
 # Description: Chooses which test classes a push runs. A class
 #              runs when its own file, a dependency coverage measured for it,
 #              or a path it declares in EXERCISES changed, or when the map has
 #              never seen it. An unknown change set, or a change to the
-#              selection machinery itself, runs everything. Also builds the
+#              selection machinery itself, or to a path outside the suite's
+#              root, runs everything. Also builds the
 #              map: every class under coverage, child processes included.
 ################################################################################
 # ===========================================================================
@@ -63,19 +64,48 @@ TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 DEPMAP = TESTS / "depmap.json"
 
+def toplevel(cwd: Path, env: dict[str, str] | None = None) -> Path | None:
+    """The repository top level that contains cwd, or None when git cannot say."""
+    try:
+        done = subprocess.run(("git", "rev-parse", "--show-toplevel"), cwd=cwd, env=env,
+                              capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    line = done.stdout.strip()
+    if done.returncode != 0 or not line:
+        return None
+    return Path(line).resolve()
+
+
+def relative_to_root(path: Path, top: Path, root: Path) -> str:
+    """A repository-top-level path, as a posix path relative to root. A path outside root
+    comes back with a leading ../ and is told apart by `outside`."""
+    return PurePath(os.path.relpath(top / path, root)).as_posix()
+
+
+def outside(path: str) -> bool:
+    """True for a changed path that lies outside the root, as changed_files reports it."""
+    return path == ".." or path.startswith("../")
+
+
 def always_all() -> frozenset[str]:
     """A change to any of these alters what is selected, so the old map cannot be trusted to
-    judge it. Relative to ROOT, which a profile's suite moves above the core."""
+    judge it. Relative to ROOT, which a profile's suite moves above the core. The test-roots
+    file is repository-relative, so under a nested root it is named from there too."""
     here = Path(__file__).resolve().parent
     files = (here / "select_tests.py", here / "run_shard.py", DEPMAP)
-    return frozenset({PurePath(os.path.relpath(f, ROOT)).as_posix() for f in files}
-                     | {".github/test-roots"})
+    names = {PurePath(os.path.relpath(f, ROOT)).as_posix() for f in files} | {".github/test-roots"}
+    top = toplevel(ROOT)
+    if top is not None:
+        names.add(relative_to_root(Path(".github/test-roots"), top, ROOT.resolve()))
+    return frozenset(names)
 
 
 def select(names: list[str], changed: set[str] | None, depmap: dict[str, list[str]],
            declared: dict[str, list[str]]) -> set[str]:
-    """The classes this change set could affect. None means the change set is unknown."""
-    if changed is None or changed & always_all():
+    """The classes this change set could affect. None means the change set is unknown, and a
+    path outside the root cannot be judged by a map made relative to it: both run everything."""
+    if changed is None or any(outside(path) for path in changed) or changed & always_all():
         return set(names)
     chosen = set()
     for name in names:
@@ -122,7 +152,8 @@ def repo_relative(path: str, root: Path, tracked: set[str]) -> str | None:
 
 def changed_files(local: str, remote: str, cwd: Path = ROOT,
                   env: dict[str, str] | None = None) -> set[str] | None:
-    """Files the push range touches, or None when there is no range to judge."""
+    """Files the push range touches, relative to cwd (the root), or None when there is no range
+    to judge. A file outside the root is kept, with a leading ../, so it is never dropped."""
     if not local or not remote or not remote.strip("0"):
         return None
 
@@ -132,12 +163,16 @@ def changed_files(local: str, remote: str, cwd: Path = ROOT,
 
     if git("cat-file", "-e", f"{remote}^{{commit}}").returncode != 0:
         return None
-    # Relative to cwd, as git ls-files and the map are: the core's tests sit in core/tests
-    # inside a profile, and a repo-root path would match nothing in their map.
-    diff = git("diff", "--name-only", "--relative", remote, local)
+    top = toplevel(cwd, env)
+    if top is None:
+        return None
+    # Without --relative, which would drop every path outside cwd: a change the suite cannot
+    # see is a change it must not skip. Paths are then made relative to cwd, as the map is.
+    diff = git("diff", "--name-only", remote, local)
     if diff.returncode != 0:
         return None
-    return {line for line in diff.stdout.splitlines() if line}
+    root = Path(cwd).resolve()
+    return {relative_to_root(Path(line), top, root) for line in diff.stdout.splitlines() if line}
 
 
 def declared(found: dict[str, list[unittest.TestCase]]) -> dict[str, list[str]]:

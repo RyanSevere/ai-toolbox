@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/run_shard.py
 # Created by: Ryan Severe
 # Created: 2026-09-28
-# Last Updated: 2026-11-07
+# Last Updated: 2026-11-24
 # Description: Runs one shard of the test suite: every test class under tests/,
 #              assigned longest-first to the lightest shard by the times in
 #              shard_weights.json, and this process runs shard K. Each class
@@ -58,11 +58,14 @@ import statistics
 import sys
 import time
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePath
 
 TESTS = Path(__file__).resolve().parent
 WEIGHTS = TESTS / "shard_weights.json"
 SPEC = re.compile(r"(\d+)/(\d+)")
+USAGE = ("usage: run_shard.py [--tests DIR [--root DIR]] K/N, with 1 <= K <= N  |  --measure  |  "
+         "--map\n  --root DIR: the repository folder the map, EXERCISES patterns and changed "
+         "paths are relative to; default is the tests folder's parent")
 
 
 def classes(suite: unittest.TestSuite) -> dict[str, list[unittest.TestCase]]:
@@ -117,17 +120,33 @@ def measure(found: dict[str, list[unittest.TestCase]]) -> int:
     return 1 if failed else 0
 
 
-def use(folder: Path) -> None:
+def use(folder: Path, root: Path | None = None) -> None:
     """Point the runner and the selector at one test folder: its weights, its map, and
-    paths relative to its parent. A profile runs its own tests/ with the core's runner."""
+    paths relative to root, which is the folder's parent unless the caller names one. A
+    profile runs its own tests/ with the core's runner."""
     global TESTS, WEIGHTS
     TESTS = folder.resolve()
     WEIGHTS = TESTS / "shard_weights.json"
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import select_tests
     select_tests.TESTS = TESTS
-    select_tests.ROOT = TESTS.parent
+    select_tests.ROOT = root.resolve() if root is not None else TESTS.parent
     select_tests.DEPMAP = TESTS / "depmap.json"
+
+
+def check_root(value: str, folder: Path | None) -> Path | str:
+    """The --root folder, or the reason it cannot be used. It must exist and sit in the same
+    repository as the tests folder; a bad value is refused, never replaced by the default."""
+    root = Path(value).resolve()
+    if not root.is_dir():
+        return f"--root {value}: not an existing folder"
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import select_tests
+    top = select_tests.toplevel(root)
+    home = select_tests.toplevel(folder if folder is not None else TESTS)
+    if top is None or top != home:
+        return f"--root {value}: not inside the repository the tests belong to"
+    return root
 
 
 class _Pinned(importlib.abc.MetaPathFinder):
@@ -151,9 +170,23 @@ def pin(folder: Path) -> None:
 
 
 def main(argv: list[str]) -> int:
+    folder = None
     if argv[:1] == ["--tests"] and len(argv) >= 2:
-        use(Path(argv[1]))
+        folder = Path(argv[1])
         argv = argv[2:]
+    root: Path | None = None
+    if argv[:1] == ["--root"]:
+        if len(argv) < 2:
+            print(f"--root needs a folder.\n{USAGE}", file=sys.stderr)
+            return 2
+        checked = check_root(argv[1], folder)
+        if isinstance(checked, str):
+            print(f"{checked}\n{USAGE}", file=sys.stderr)
+            return 2
+        root = checked
+        argv = argv[2:]
+    if folder is not None or root is not None:
+        use(folder if folder is not None else TESTS, root)
         pin(TESTS)
     if argv == ["--measure"]:
         sys.path.insert(0, str(TESTS))
@@ -164,8 +197,7 @@ def main(argv: list[str]) -> int:
         return select_tests.build_map(classes(unittest.defaultTestLoader.discover(str(TESTS))))
     match = SPEC.fullmatch(argv[0]) if len(argv) == 1 else None
     if not match or not 1 <= int(match[1]) <= int(match[2]):
-        print("usage: run_shard.py [--tests DIR] K/N, with 1 <= K <= N  |  --measure  |  "
-              "--map", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 2
     index, total = int(match[1]), int(match[2])
 
@@ -181,7 +213,9 @@ def main(argv: list[str]) -> int:
     if index == 1:  # every shard computes the same selection; report it once
         forced = sorted(changed & select_tests.always_all()) if changed else []
         unmapped = [name for name in found if name not in depmap]
-        print(selected_line(len(chosen), len(found), changed, forced, unmapped))
+        top = select_tests.toplevel(select_tests.ROOT)
+        where = PurePath(os.path.relpath(select_tests.ROOT, top)).as_posix() if top else "the root"
+        print(selected_line(len(chosen), len(found), changed, forced, unmapped, where))
     mine = assign(sorted(chosen), total, load_weights())[index - 1]
     print(f"shard {index}/{total}: {len(mine)} class(es)")
 
@@ -211,11 +245,16 @@ def slowest(times: dict[str, float]) -> list[str]:
 
 
 def selected_line(chosen: int, total: int, changed: set[str] | None,
-                  forced: list[str] | None = None, unmapped: list[str] | None = None) -> str:
+                  forced: list[str] | None = None, unmapped: list[str] | None = None,
+                  root: str = ".") -> str:
     """The selector's decision, for the gate report: how many ran, on what basis, and which
-    classes ran only because the map has never seen them - a stale map shows here."""
+    classes ran only because the map has never seen them - a stale map shows here. A change
+    outside the root, named by its repository-relative folder, runs everything."""
+    outside = [path for path in changed or () if path == ".." or path.startswith("../")]
     if changed is None:
         why = "no push range, so all"
+    elif outside:
+        why = f"{len(outside)} change(s) outside {root}, so all"
     elif forced:
         why = f"selection machinery changed ({', '.join(sorted(forced))}), so all"
     else:
