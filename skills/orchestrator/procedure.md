@@ -11,7 +11,7 @@ description: >-
   when a session is picked up with the orchestrator role. Also use when a
   workstream primary is about to ask about an incidental finding and another chat
   may already have it.
-argument-hint: what to report on - sitrep, status, a rotation call, or a duplicate check - or the mode to set, desk, bio, away or night
+argument-hint: what to report on - sitrep, status, a rotation call, or a duplicate check - or the mode to set, desk, bio, local remote, away or night
 ---
 
 # The orchestrator
@@ -99,7 +99,7 @@ The orchestrator adds four of its own:
   from another session opens an orchestrator turn that re-reads its whole context, so
   its cost per turn grows with its fill. It rotates at the next clean stopping point
   once its fill reaches 250k, whatever the time of day.
-- **No rotation while Remote Control is on,** in bio and away. A due rotation is
+- **No rotation while Remote Control is on,** in bio, local remote and away. A due rotation is
   carried in the status and ordered when the mode returns to desk. The orchestrator
   holds its own rotation the same way.
 - **On the morning message it rotates first,** always (step 1 above).
@@ -195,13 +195,17 @@ section. Otherwise a scheduled task watches it, and the orchestrator holds nothi
 
 ## Modes
 
-It sets the mode the workstreams ask in, as the operator tells it. Four modes:
+It sets the mode the workstreams ask in, as the operator tells it. Five modes:
 
 - **Desk:** the operator is in front of the chats. Primaries ask in their own chat.
   Remote Control is off.
 - **Bio:** the operator is briefly away from the desk and reads and replies through
   Remote Control, so everyone has it on. Primaries keep asking in their own chat.
   Remote Control is on.
+- **Local remote:** the operator is near the desk but reads the chats only through
+  cards, and can come to the desk briefly. Primaries ask on cards, never through the
+  async channel, and a card whose answer needs the operator at the desk says so.
+  Remote Control is on for the workstreams the operator switches it on for.
 <!-- requires: asks.ask -->
 - **Away:** the operator answers from their phone. Primaries ask through {{asks.ask}}. Remote Control is on.
 <!-- end -->

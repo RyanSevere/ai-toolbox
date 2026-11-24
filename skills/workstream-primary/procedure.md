@@ -147,7 +147,7 @@ summarised"), at its clean stopping point. This skill adds two triggers and one 
 - **Context fill at 500k.** The orchestrator's digest flags it.
 - **A parked session rotates when it unparks,** before it starts work, whatever its
   age. While parked it does not rotate.
-- **No rotation while Remote Control is on.** A trigger that fires in bio or away mode
+- **No rotation while Remote Control is on.** A trigger that fires in bio, local remote or away mode
   writes the seed, but no successor starts until desk mode. The app does not allow a
   session start then.
 
@@ -245,6 +245,9 @@ not a real decision.
   operator knows, ask that ("Are these docs finished?") instead of an a/b.
 - **Every question is a numbered DC in the Decisions section,** never a Q in prose.
   Its form and numbering are `.github/rules/response-shape.md`'s.
+- **Cards in local remote.** In local remote mode (Modes, below) every ask goes on a
+  card: the merge card, the scroll-back card, or a question card. The DCs themselves
+  still go in the reply.
 - **Do not split a ticket for convenience.** Splitting for its own sake is not a good
   enough reason.
 - **A first turn after a pickup re-checks the seed's premises** against the code or
@@ -259,6 +262,14 @@ and states it again whenever it changes. That section defines the modes. How a
 primary asks in each:
 
 - **Desk and bio:** ask in your own chat.
+- **Local remote:** the operator reads cards only.
+  - A merge: one card to approve it, raised only once every check is green.
+  - An important question, meaning anything that changes design, scope or a gate:
+    the full reply with its DCs, then ONE card telling the operator to scroll back
+    one turn and answer that reply.
+  - A simple question: a question card on its own.
+  - Never the async channel.
+  - A card whose answer needs the operator at the desk says so.
 <!-- requires: asks.ask -->
 - **Away:** every DC goes through {{asks.ask}}.
 <!-- end -->
@@ -273,5 +284,5 @@ Rules:
 - Claude Code only: Remote Control is the operator's to switch. Never set it.
 - The mode changes while an ask is in flight. Desk or bio to away: re-ask it through
   the away channel. Night to desk or bio: post every held ask as a fresh DC (the
-  re-post rule above). Night to away: send every held ask through the away channel.
+  re-post rule above). Night to away: send every held ask through the away channel. To or from local remote: re-raise every ask in flight in the new mode's form, a card in local remote, a DC in your own chat at desk or bio, and the away channel in away.
 - Two mode messages cross: the later operator word wins.
