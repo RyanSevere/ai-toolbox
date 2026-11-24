@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_select_tests.py
 # Created by: Ryan Severe
 # Created: 2026-10-01
-# Last Updated: 2026-11-21
+# Last Updated: 2026-11-24
 # Description: Pins how the pre-push test selector decides what a push runs.
 #              Unknown change sets and changes to the selection
 #              machinery run everything; otherwise a class runs when its own
@@ -48,6 +48,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -232,6 +233,156 @@ class ChangedFiles(unittest.TestCase):
 
     def test_a_remote_commit_this_clone_lacks_has_no_range(self):
         self.assertIsNone(self.changed(self.second, "1" * 40))
+
+
+SHARD = Path(select_tests.__file__).resolve().parent / "run_shard.py"
+CASE = "import unittest\n\n\nclass {name}(unittest.TestCase):\n    def test_it(self):\n        pass\n"
+
+
+class NestedRoot(unittest.TestCase):
+    """A suite two levels below the repository top level: scripts/tests, whose default root
+    is scripts/. Synthetic folders throughout; each commit is one scenario's push range."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.repo = Path(cls._tmp.name)
+        cls.env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        cls.tests = cls.repo / "scripts" / "tests"
+        cls.write("scripts/lib.py", "x = 1\n")
+        cls.write("scripts/tests/test_a.py", CASE.format(name="Alpha"))
+        cls.write("scripts/tests/test_b.py",
+                  'EXERCISES = ["stacks/app/exercised.sh"]\n\n' + CASE.format(name="Beta"))
+        cls.write("stacks/app/ctl.sh", "echo ctl\n")
+        cls.write("stacks/app/two.sh", "echo two\n")
+        cls.write("stacks/app/exercised.sh", "echo exercised\n")
+        cls.write(".github/test-roots", "scripts/tests\n")
+        cls.git("init", "--quiet", "-b", "main")
+        cls.git("config", "user.name", "t")
+        cls.git("config", "user.email", "t@example.invalid")
+        cls.git("config", "commit.gpgsign", "false")
+        cls.git("add", "-A")
+        cls.git("commit", "--quiet", "-m", "base")
+        cls.ranges: dict[str, tuple[str, str]] = {}
+        cls.commit("mixed", "stacks/app/ctl.sh", "scripts/tests/test_a.py")
+        cls.commit("inside", "scripts/lib.py", "scripts/tests/test_a.py")
+        cls.commit("outside", "stacks/app/ctl.sh")
+        cls.commit("two_outside", "stacks/app/ctl.sh", "stacks/app/two.sh")
+        cls.commit("exercised", "stacks/app/exercised.sh")
+        cls.commit("roots", ".github/test-roots")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    @classmethod
+    def git(cls, *args: str) -> str:
+        return subprocess.run(("git", *args), cwd=cls.repo, env=cls.env, check=True,
+                              capture_output=True, text=True, timeout=60).stdout.strip()
+
+    @classmethod
+    def write(cls, rel: str, text: str, append: bool = False) -> None:
+        path = cls.repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a" if append else "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+
+    @classmethod
+    def commit(cls, label: str, *paths: str) -> None:
+        before = cls.git("rev-parse", "HEAD")
+        for rel in paths:
+            cls.write(rel, f"# {label}\n", append=True)
+        cls.git("add", "-A")
+        cls.git("commit", "--quiet", "-m", label)
+        cls.ranges[label] = (before, cls.git("rev-parse", "HEAD"))
+
+    def set_map(self, mapping: dict[str, list[str]]) -> None:
+        (self.tests / "depmap.json").write_text(json.dumps(mapping), encoding="utf-8")
+
+    def shard(self, label: str, *args: str) -> subprocess.CompletedProcess[str]:
+        remote, local = self.ranges[label]
+        env = {**self.env, "PUSH_LOCAL_SHA": local, "PUSH_REMOTE_SHA": remote}
+        return subprocess.run((sys.executable, "-B", str(SHARD), "--tests", str(self.tests),
+                               *args, "1/1"), cwd=self.repo, env=env, capture_output=True,
+                              text=True, timeout=120)
+
+    def changed(self, label: str):
+        remote, local = self.ranges[label]
+        return select_tests.changed_files(local, remote, cwd=self.repo / "scripts", env=self.env)
+
+    def test_a_change_outside_a_nested_root_is_reported_not_dropped(self):
+        """Intent: Done when - "`changed_files` from a nested root reports a change outside it
+        instead of dropping it". The return shape is the coder's; the outside path must appear
+        in it, and the inside path with it, relative to the root."""
+        shown = repr(self.changed("mixed"))
+        self.assertIn("stacks/app/ctl.sh", shown)
+        self.assertIn("tests/test_a.py", shown)
+
+    def test_a_change_inside_a_nested_root_is_made_relative_to_it(self):
+        """Characterisation: passes before the fix. A range wholly inside the root reports
+        its paths relative to the root and names nothing outside it."""
+        shown = repr(self.changed("inside"))
+        self.assertIn("lib.py", shown)
+        self.assertNotIn("scripts/lib.py", shown)
+        self.assertNotIn("stacks", shown)
+
+    def test_a_change_outside_a_nested_root_runs_every_class(self):
+        """Intent: Done when - "A push range touching a file outside a nested root runs every
+        class, and the `selected:` line says so"."""
+        self.set_map({"test_a.Alpha": ["lib.py"], "test_b.Beta": ["other.py"]})
+        done = self.shard("outside")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("selected: 2 of 2 class(es) - 1 change(s) outside scripts, so all",
+                      done.stdout)
+
+    def test_every_outside_path_is_counted_once(self):
+        """Intent: Edge cases - "several outside paths are counted once each in the
+        `selected:` line"."""
+        self.set_map({"test_a.Alpha": ["lib.py"], "test_b.Beta": ["other.py"]})
+        done = self.shard("two_outside")
+        self.assertIn("selected: 2 of 2 class(es) - 2 change(s) outside scripts, so all",
+                      done.stdout)
+
+    def test_a_change_only_inside_the_root_still_selects_by_the_map(self):
+        """Characterisation: passes before the fix. Boundary values - "a change only inside
+        the root selects as now"."""
+        self.set_map({"test_a.Alpha": ["lib.py"], "test_b.Beta": ["other.py"]})
+        done = self.shard("inside")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("selected: 1 of 2 class(es) - 2 changed file(s)", done.stdout)
+        self.assertIn("test_a.Alpha", done.stdout)
+        self.assertNotIn("test_b.Beta", done.stdout)
+
+    def test_root_dot_selects_the_class_whose_map_names_an_outside_file(self):
+        """Intent: Done when - "With `--root .`, a change to a file outside the tests
+        folder's parent selects the class whose map or `EXERCISES` names it" (the map half)."""
+        self.set_map({"test_a.Alpha": ["stacks/app/ctl.sh"], "test_b.Beta": ["other.py"]})
+        done = self.shard("outside", "--root", ".")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("selected: 1 of 2 class(es)", done.stdout)
+        self.assertIn("test_a.Alpha", done.stdout)
+        self.assertNotIn("test_b.Beta", done.stdout)
+
+    def test_root_dot_selects_the_class_whose_exercises_names_an_outside_file(self):
+        """Intent: Done when - "With `--root .`, a change to a file outside the tests
+        folder's parent selects the class whose map or `EXERCISES` names it" (the EXERCISES
+        half)."""
+        self.set_map({"test_a.Alpha": ["lib.py"], "test_b.Beta": ["other.py"]})
+        done = self.shard("exercised", "--root", ".")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("selected: 1 of 2 class(es)", done.stdout)
+        self.assertIn("test_b.Beta", done.stdout)
+        self.assertNotIn("test_a.Alpha", done.stdout)
+
+    def test_a_change_to_the_test_roots_file_runs_every_class_under_any_root(self):
+        """Intent: Done when - "A change to `.github/test-roots` runs every class under any
+        root"."""
+        self.set_map({"test_a.Alpha": ["lib.py"], "test_b.Beta": ["other.py"]})
+        for args in ((), ("--root", ".")):
+            with self.subTest(args=args):
+                done = self.shard("roots", *args)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertIn("selected: 2 of 2 class(es)", done.stdout)
 
 
 if __name__ == "__main__":

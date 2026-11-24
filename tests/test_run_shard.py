@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_run_shard.py
 # Created by: Ryan Severe
 # Created: 2026-09-28
-# Last Updated: 2026-11-08
+# Last Updated: 2026-11-24
 # Description: Proves the sharded suite runs every test class exactly once: the
 #              shards partition the classes. A class no shard runs would look
 #              like coverage and run nowhere. Each profile proves its own
@@ -159,6 +159,75 @@ class SelectedLine(unittest.TestCase):
         self.assertIn("m.C09", line)
         self.assertNotIn("m.C10", line)
         self.assertTrue(line.endswith("and 20 more"), line)
+
+
+class RootOption(unittest.TestCase):
+    """`--root DIR` follows `--tests DIR`: the repository-relative folder the map, EXERCISES
+    patterns and changed paths are relative to."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        import subprocess
+        import tempfile
+
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.repo = Path(cls._tmp.name) / "repo"
+        cls.outside = Path(cls._tmp.name) / "elsewhere"
+        cls.outside.mkdir()
+        cls.tests = cls.repo / "scripts" / "tests"
+        cls.tests.mkdir(parents=True)
+        (cls.tests / "test_a.py").write_text(
+            "import unittest\n\n\nclass Alpha(unittest.TestCase):\n"
+            "    def test_it(self):\n        pass\n", encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        for args in (("init", "--quiet", "-b", "main"), ("add", "-A"),
+                     ("-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                      "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "base")):
+            subprocess.run(("git", *args), cwd=cls.repo, env=env, check=True,
+                           capture_output=True, timeout=60)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def run_it(self, *args: str):
+        import subprocess
+
+        shard = Path(run_shard.__file__).resolve()
+        return subprocess.run((sys.executable, "-B", str(shard), "--tests", str(self.tests), *args),
+                              cwd=self.repo, capture_output=True, text=True, timeout=120)
+
+    def test_root_is_parsed_after_tests_and_the_suite_runs(self):
+        """Intent: Decided - "`run_shard.py` takes `--root DIR` right after `--tests DIR`"."""
+        done = self.run_it("--root", ".", "1/1")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("shard 1/1: 1 class(es)", done.stdout)
+
+    def test_root_with_no_value_is_a_usage_error(self):
+        """Intent: Edge cases - "`--root` with no value is a usage error, exit 2"; the usage
+        line names the option."""
+        done = self.run_it("--root")
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("--root", done.stderr)
+
+    def test_a_root_that_does_not_exist_is_a_usage_error_not_a_fallback(self):
+        """Intent: Edge cases - "a `--root` that does not exist ... is a usage error, exit 2,
+        never a silent fallback to the default"."""
+        done = self.run_it("--root", "no/such/folder", "1/1")
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("--root", done.stderr)
+        self.assertNotIn("selected:", done.stdout)
+
+    def test_a_root_outside_the_repository_is_a_usage_error(self):
+        """Intent: Edge cases - "a `--root` that ... is outside the repository is a usage
+        error, exit 2"."""
+        for outside in ("..", str(self.outside)):
+            with self.subTest(root=outside):
+                done = self.run_it("--root", outside, "1/1")
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn("--root", done.stderr)
+                self.assertNotIn("selected:", done.stdout)
 
 
 class ProfileModuleShadowing(unittest.TestCase):
