@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/claude.py
 # Created by: Ryan Severe
 # Created: 2026-11-13
-# Last Updated: 2026-11-14
+# Last Updated: 2026-11-24
 # Description: The Claude Code adapter for the response checker.
 #              Finds the session's transcript from CLAUDE_CODE_SESSION_ID and
 #              turns its one-line-per-content-block records into Turns. A turn
@@ -185,6 +185,23 @@ def originless_prompt(record: dict) -> bool:
             and not any(b.get("type") == "tool_result" for b in blocks(record)))
 
 
+def operator_input(record: dict) -> bool:
+    """Whether a record inside a turn is the operator speaking: a message typed while the
+    turn runs (a queued command of origin kind "human"), or the answer to a question card
+    (a tool result holding both answers and questions). Queued reports from a peer or a
+    task notification are not."""
+    if record.get("type") == "attachment":
+        attachment = record.get("attachment")
+        if not isinstance(attachment, dict) or attachment.get("type") != "queued_command":
+            return False
+        origin = attachment.get("origin")
+        return isinstance(origin, dict) and origin.get("kind") == "human"
+    if record.get("type") == "user":
+        result = record.get("toolUseResult")
+        return isinstance(result, dict) and "answers" in result and "questions" in result
+    return False
+
+
 def prompt_text(record: dict) -> str:
     content = (record.get("message") or {}).get("content")
     if isinstance(content, str):
@@ -278,5 +295,6 @@ def turns(path: Path) -> list[shape.Turn]:
             cut_short=cut,
             last=text,
             findings=findings,
+            operator_input=any(operator_input(r) for r in span[1:]),
         ))
     return out

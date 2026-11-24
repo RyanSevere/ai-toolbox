@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/shape.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-24
 # Description: The tool-neutral half of the response checker.
 #              Parses a reply against the response shape, grades it, and walks
 #              back over finished turns to collect replies whose turn never ran
@@ -86,6 +86,10 @@ LIST_MARKER = re.compile(r"^\s*(?:[-*]\s|\d+\.\s)")
 CONTINUATION_LINE = "Continues the previous reply - no operator message in between."
 ID_PREFIXES = ("LA", "DC", "ND", "CU", "OS", "P", "C", "A", "R", "Q")
 ID_AT_START = re.compile(r"^(" + "|".join(ID_PREFIXES) + r")(\d+)\b")
+# A bold lead-in that starts with an ID and is followed by a prose word on the same line:
+# a reference in a paragraph, not an item. A bold item ends its line or is followed by a tag.
+BOLD_REFERENCE = re.compile(
+    r"^\s*(?:[-*]\s+)?\*\*(?:" + "|".join(ID_PREFIXES) + r")\d+\b[^*]*\*\*\s+\w")
 
 MODES = {"planning", "execution", "planning + execution"}
 
@@ -178,6 +182,7 @@ class Turn:
     cut_short: bool = False
     last: str = ""
     findings: list[str] = field(default_factory=list)
+    operator_input: bool = False  # the operator gave input inside this turn
 
 
 def invoked_in(message: str) -> str | None:
@@ -502,7 +507,10 @@ def check(header: list[str], sections: dict[str, list[dict]]) -> tuple[list[str]
 
 
 def item_numbers(text: str) -> list[tuple[str, int]]:
-    """Every item ID a reply opens a line with, outside fences, as (prefix, number)."""
+    """Every item ID a reply opens a line with, outside fences, as (prefix, number).
+
+    A bold reference opening a prose line, such as '**DC1 (a) is waiting** on you', names
+    an item and is not one, so it is not counted."""
     found: list[tuple[str, int]] = []
     fence: str | None = None
     for raw in text.splitlines():
@@ -511,6 +519,8 @@ def item_numbers(text: str) -> list[tuple[str, int]]:
             fence = marker.group(1)[:3] if fence is None else None
             continue
         if fence is not None:
+            continue
+        if BOLD_REFERENCE.match(raw):
             continue
         match = ID_AT_START.match(strip_md(raw))
         if match:
@@ -524,9 +534,13 @@ def continuation_findings(turns: list[Turn], index: int) -> list[str]:
     Only a NOTIFICATION turn whose immediately preceding turn has a reply is checked: no
     operator message came between them, so the reply continues the previous one. It
     must say so, and its IDs must carry on from the previous reply's counters. Any other
-    turn, or a preceding turn with no reply text, has nothing to continue.
+    turn, or a preceding turn with no reply text, has nothing to continue. A turn that
+    holds operator input, a typed message or a question-card answer, is not checked
+    either: the operator spoke in between, so the reply restarts its counters.
     """
     if index < 1 or index >= len(turns) or turns[index].kind != NOTIFICATION:
+        return []
+    if turns[index].operator_input:
         return []
     before = turns[index - 1]
     if not before.text.strip():
