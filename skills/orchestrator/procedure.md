@@ -203,11 +203,19 @@ It sets the mode the workstreams ask in, as the operator tells it. Five modes:
   Remote Control, so everyone has it on. Primaries keep asking in their own chat.
   Remote Control is on.
 - **Local remote:** the operator is near the desk but reads the chats only through
-  cards, and can come to the desk briefly. Primaries ask on cards, never through the
-  async channel, and a card whose answer needs the operator at the desk says so.
+  cards, and can come to the desk briefly. Primaries ask on cards, and a card whose
+  answer needs the operator at the desk says so.
   Remote Control is on for the workstreams the operator switches it on for.
 <!-- requires: asks.ask -->
-- **Away:** the operator answers from their phone. Primaries ask through {{asks.ask}}. Remote Control is on.
+  When this session's Remote Control is off while the operator is remote, or the work is non-interactive, primaries ask through {{asks.ask}} instead.
+<!-- end -->
+- **Away:** the operator answers from their phone. Primaries ask on cards when
+  interactive, in the same three forms as local remote: the merge card, raised only once every
+  check is green; for an important question the full reply, then ONE card telling the
+  operator to scroll back one turn; and a question card on its own for a simple one.
+  Remote Control is on.
+<!-- requires: asks.ask -->
+  When this session's Remote Control is off while the operator is remote, or the work is non-interactive, primaries ask through {{asks.ask}} instead.
 <!-- end -->
 - **Night:** pushes carry on. A failed push or red gates get fixed and pushed, and
   pull requests wait for the operator's morning review. Remote Control is off.

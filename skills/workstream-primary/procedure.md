@@ -268,10 +268,18 @@ primary asks in each:
     the full reply with its DCs, then ONE card telling the operator to scroll back
     one turn and answer that reply.
   - A simple question: a question card on its own.
-  - Never the async channel.
   - A card whose answer needs the operator at the desk says so.
 <!-- requires: asks.ask -->
-- **Away:** every DC goes through {{asks.ask}}.
+  - When this session's Remote Control is off while the operator is remote, or the work is non-interactive, ask through {{asks.ask}} instead.
+<!-- end -->
+- **Away:** the operator answers from their phone. An interactive session asks by card, in the same three forms.
+  - A merge: the merge card, raised only once every check is green.
+  - An important question, meaning anything that changes design, scope or a gate:
+    the full reply with its DCs, then ONE card telling the operator to scroll back
+    one turn and answer that reply.
+  - A simple question: a question card on its own.
+<!-- requires: asks.ask -->
+  - When this session's Remote Control is off while the operator is remote, or the work is non-interactive, ask through {{asks.ask}} instead.
 <!-- end -->
 - **Night:** keep pushing, and fix and push a failed push or red gates. Hold anything
   that needs the operator: no chat ask, no queued ask. The title is
@@ -282,7 +290,7 @@ Rules:
 
 - Not told a mode, treat it as desk, and say so in the first reply.
 - Claude Code only: Remote Control is the operator's to switch. Never set it.
-- The mode changes while an ask is in flight. Desk or bio to away: re-ask it through
-  the away channel. Night to desk or bio: post every held ask as a fresh DC (the
-  re-post rule above). Night to away: send every held ask through the away channel. To or from local remote: re-raise every ask in flight in the new mode's form, a card in local remote, a DC in your own chat at desk or bio, and the away channel in away.
+- The mode changes while an ask is in flight. Desk or bio to away: re-raise it as a
+  card. Night to desk or bio: post every held ask as a fresh DC (the re-post rule
+  above). Night to away: raise every held ask as a card. To or from local remote: re-raise every ask in flight in the new mode's form, a card in local remote or away, a DC in your own chat at desk or bio. The async channel is used only when Remote Control is off while the operator is remote, or the work is non-interactive.
 - Two mode messages cross: the later operator word wins.
