@@ -1460,26 +1460,33 @@ class CondensedShape(TranscriptCase):
             self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n\n" + self.SECOND)
         self.assertEqual(self.findings(text), [])
 
-    def test_summary_paragraph_without_a_bold_lead_in_fails(self):
+    def test_summary_first_block_without_a_bold_lead_in_fails_once_a_topic_exists(self):
         text = CONDENSED_CLEAN.replace(
             self.PARAGRAPH,
-            "**State.** " + self.PARAGRAPH + '\n\nA second paragraph quotes "the gate passed".')
+            self.PARAGRAPH + '\n\n**Gate.** The draft passed: "the gate passed the draft".')
         found = self.findings(text)
-        self.assertTrue(any(f.startswith("summary: paragraph 2 (") and "no bold lead-in" in f
+        self.assertTrue(any(f.startswith("summary: first block (") and "no bold lead-in" in f
                             for f in found), found)
 
-    def test_summary_list_marker_fails(self):
+    def test_summary_list_inside_a_topic_passes(self):
         for marker in ("- ", "* ", "1. "):
             with self.subTest(marker=marker):
-                text = CONDENSED_CLEAN.replace(self.PARAGRAPH, marker + self.PARAGRAPH)
-                found = self.findings(text)
-                self.assertTrue(any(f.startswith("summary: list marker") for f in found), found)
+                text = CONDENSED_CLEAN.replace(
+                    self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n" + marker + "one item")
+                self.assertEqual(self.findings(text), [])
 
-    def test_summary_multi_paragraph_limit_is_a_constant(self):
+    def test_summary_list_marker_ban_is_a_constant(self):
+        text = CONDENSED_CLEAN.replace(
+            self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n- one item")
+        with mock.patch.object(shape, "SUMMARY_LIST_MARKERS_FORBIDDEN", True):
+            found = self.findings(text)
+        self.assertTrue(any(f.startswith("summary: list marker") for f in found), found)
+
+    def test_summary_multi_topic_limit_is_a_constant(self):
         text = CONDENSED_CLEAN.replace(
             self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n\n" + self.SECOND)
         with mock.patch.object(shape, "SUMMARY_MULTI_PARAGRAPH_WITH_BOLD", False):
-            self.assertIn("summary: 2 paragraphs, exactly 1 allowed", self.findings(text))
+            self.assertIn("summary: 2 topics, exactly 1 allowed", self.findings(text))
 
     def test_condensed_decision_without_a_recommendation_line_fails(self):
         text = CONDENSED_CLEAN.replace(

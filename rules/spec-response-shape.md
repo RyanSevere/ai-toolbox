@@ -50,7 +50,8 @@ check them. That ordering was the flaw in the previous draft.
    of claims means nothing was checked. That is the reading.
 4. **Sub-items are nested list items, not bolded prose and not indented
    lines.** The nesting carries the relationship; a bold lead-in followed by a
-   paragraph does not. An item is a top-level `-` bullet starting with its ID,
+   paragraph does not. The one exception is a Summary topic, which is a bold lead-in
+   followed by prose and an optional list (see the Summary rule). An item is a top-level `-` bullet starting with its ID,
    and its fields are `-` bullets nested under it. Four leading spaces without
    a bullet is a markdown code block, so an indented item renders as monospace
    and its long lines run off the side. Once, every example below
@@ -254,15 +255,19 @@ In this order:
 - **The header**, unchanged, with the compliance line beside it. `Needs from you`
   counts decisions, questions and operator steps.
 - **`## Summary`**: what happened this turn, one topic at a time. Each topic is its
-  own paragraph of prose that opens with a bold lead-in, and there are no list
-  markers (`- `, `* `, `1. `) anywhere in it. A Summary of one topic is one
-  paragraph with no blank line inside it. Every result it claims carries an
-  inline pointer: a `path:line`, a backticked command or its output, a URL, or a
-  quotation. The checker requires at least one pointer across the whole Summary,
+  own run of text that opens with a bold lead-in and continues until the next
+  bold lead-in. Lists are allowed inside a Summary topic, and so are further
+  paragraphs. A Summary with no bold lead-in at all is one plain paragraph; once
+  any topic opens with a bold lead-in, the first block must too, and a Summary
+  never opens with a list. Every result it
+  claims carries an inline pointer: a `path:line`, a backticked command or its
+  output, a URL, a quotation, a markdown link, or a backticked hex hash of 7 or
+  more characters. The checker requires at least one pointer across the whole Summary,
   which is the floor, not the obligation. A reply that claims no result writes the
   single line `None this turn.` These limits are the constants
-  `SUMMARY_MULTI_PARAGRAPH_WITH_BOLD` and `SUMMARY_LIST_MARKERS_FORBIDDEN` at the top
-  of `shape.py`; a profile that wants another layout changes them there.
+  `SUMMARY_MULTI_PARAGRAPH_WITH_BOLD` (several topics allowed) and
+  `SUMMARY_LIST_MARKERS_FORBIDDEN` (off by default) at the top of `shape.py`; a
+  profile that wants another layout changes them there.
 - **`## Logic and approach`**, required when the Mode contains Planning (Planning,
   or Planning + Execution), optional otherwise: the reasoning behind an approach,
   in `LA` items with a verdict, as in the full shape. Operator ruling 2026-11-13:
@@ -336,8 +341,9 @@ header checks, the item-ID check and the caps apply to both.
 | `## Came up while doing it` absent | `condensed: section missing: cameupwhiledoingit` |
 | Mode contains Planning and `## Logic and approach` absent | `condensed: section missing for planning mode: logicandapproach` |
 | Summary has no paragraph | `summary: 0 paragraphs, at least 1 required` |
-| Summary has several paragraphs and one lacks a bold lead-in | `summary: paragraph <n> ('<start>') has no bold lead-in - several paragraphs each open with one` |
-| Summary has a line opening with a list marker | `summary: list marker on '<start>' - one topic at a time as paragraphs, no list` |
+| Summary has a bold lead-in somewhere but its first block does not open with one | `summary: first block ('<start>') has no bold lead-in - a topic opens with one` |
+| Summary has several topics and `SUMMARY_MULTI_PARAGRAPH_WITH_BOLD` is off | `summary: <n> topics, exactly 1 allowed` |
+| Summary has a line opening with a list marker and `SUMMARY_LIST_MARKERS_FORBIDDEN` is on | `summary: list marker on '<start>' - one topic at a time as paragraphs, no list` |
 | Summary carries no pointer and is not exactly `None this turn.` | `summary: no pointer a reader could follow` |
 | A condensed `DC` has no `Recommendation:` line | `decisions: '<title>' missing 'recommendation'` |
 | A condensed `DC` has no `Would change my answer:` line | `decisions: '<title>' missing 'would change my answer'` |

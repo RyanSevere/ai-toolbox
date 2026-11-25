@@ -24,7 +24,7 @@ Applies only in Claude Code. The shared rules cover everything else.
 ```
 
 - Everything before the marker is progress. Between tool calls, a progress note is one line.
-- In the Summary, leave a blank line between topics. Bold is subtle in the terminal, so the gap does the separating.
+- In the Summary, each topic opens with a bold lead-in and runs to the next one. A list or a second paragraph stays inside its topic, and a blank line before the next lead-in keeps the topics apart.
 - The Stop hook and the response check read from the last marker line. A reply with no marker is graded whole and flagged.
 
 ## Only what is mirrored remotely
