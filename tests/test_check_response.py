@@ -2266,6 +2266,120 @@ class ClaudeCodeMain(TranscriptCase):
         self.assertEqual(shape.Turn(shape.OPERATOR, "x", "t0").findings, [])
 
 
+def k_skill(name: str) -> str:
+    """The Skill tool call that loads a skill, as Claude Code writes it."""
+    return k_block({"type": "tool_use", "id": "t-2", "name": "Skill", "input": {"skill": name}},
+                   "tool_use")
+
+
+class StatusFooter(TranscriptCase):
+    """The STATUS footer, end to end on a Claude Code transcript: the last line of a
+    layer 1 or layer 2 reply, required when the transcript shows the layer's skill
+    loaded, and form-checked wherever the line appears."""
+
+    STATUS = "STATUS: needs operator: none; workers running: 0; background tasks: none"
+    WITH_STATUS = CONDENSED_CLEAN + "\n" + STATUS + "\n"
+    CONTINUED = ContinuationReplies.CONTINUED + "\n" + STATUS + "\n"
+
+    def setUp(self):
+        ledger = tempfile.TemporaryDirectory()
+        self.addCleanup(ledger.cleanup)
+        patcher = mock.patch.object(cr.tempfile, "gettempdir", return_value=ledger.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def graded(self, reply_text: str, skill: str | None) -> tuple[int, str]:
+        """Grade one reply in a transcript that loaded `skill`, or none."""
+        loading = [k_skill(skill), k_result()] if skill else []
+        path = self.transcript(k_user("one"), *loading, k_text(K_MARKER), k_final(reply_text),
+                               k_user("two - in progress"))
+        out = io.StringIO()
+        argv = ["check_response.py", "--tool", "claude", "--transcript", str(path), "--previous"]
+        with mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.stderr", new=io.StringIO()):
+            return cr.main(), out.getvalue()
+
+    def test_a_workstream_primary_reply_with_no_status_last_line_is_a_finding(self):
+        """Intent: the ticket's Done when, second item - a reply in a session that loaded
+        workstream-primary, with no STATUS last line, gets a finding."""
+        code, out = self.graded(CONDENSED_CLEAN, "workstream-primary")
+        self.assertEqual(code, 1, out)
+        self.assertIn("  - status:", out)
+
+    def test_an_orchestrator_reply_with_no_status_last_line_is_a_finding(self):
+        """Intent: the ticket's Done when, second item - the same for orchestrator."""
+        code, out = self.graded(CONDENSED_CLEAN, "orchestrator")
+        self.assertEqual(code, 1, out)
+        self.assertIn("  - status:", out)
+
+    def test_a_plugin_prefixed_skill_name_counts_as_the_layer(self):
+        """Intent: the ticket's Done when, second item - a plugin-prefixed skill name
+        ending in the layer's name still shows the layer loaded."""
+        code, out = self.graded(CONDENSED_CLEAN, "example-plugin:workstream-primary")
+        self.assertEqual(code, 1, out)
+        self.assertIn("  - status:", out)
+
+    def test_a_well_formed_status_last_line_passes_in_a_layer_session(self):
+        """Intent: the ticket's Done when, second item - the same reply ending with a
+        well-formed STATUS line gets no status finding."""
+        for skill in ("workstream-primary", "orchestrator"):
+            with self.subTest(skill=skill):
+                code, out = self.graded(self.WITH_STATUS, skill)
+                self.assertNotIn("  - status:", out)
+                self.assertEqual(code, 0, out)
+
+    def test_a_session_that_loaded_neither_skill_is_not_required_to_carry_it(self):
+        """Intent: the ticket's Done when, third item - a reply in a session that loaded
+        neither skill gets no finding for a missing footer. Another skill loaded does
+        not make the session a layer."""
+        for skill in (None, "file-tickets"):
+            with self.subTest(skill=skill):
+                code, out = self.graded(CONDENSED_CLEAN, skill)
+                self.assertNotIn("  - status:", out)
+                self.assertEqual(code, 0, out)
+
+    def test_a_status_line_missing_a_field_is_a_finding_in_any_session(self):
+        """Intent: the ticket's Done when, fourth item - a STATUS line missing one of its
+        three fields, or with one empty, gets a finding even where neither skill loaded."""
+        broken = (
+            "STATUS: needs operator: none; workers running: 0",
+            "STATUS: workers running: 0; background tasks: none",
+            "STATUS: needs operator: none; background tasks: none",
+            "STATUS: needs operator: none; workers running: ; background tasks: none",
+        )
+        for line in broken:
+            with self.subTest(line=line):
+                code, out = self.graded(CONDENSED_CLEAN + "\n" + line + "\n", None)
+                self.assertEqual(code, 1, out)
+                self.assertIn("  - status:", out)
+
+    def test_a_status_line_inside_the_header_is_a_finding(self):
+        """Intent: the ticket's Done when, fourth item - a STATUS line placed in the
+        header, not on the last line, gets a finding. Checked where neither skill
+        loaded, so the finding is about placement and not about a missing footer."""
+        header_status = CONDENSED_CLEAN.replace(
+            "Changed: nothing\n", "Changed: nothing\n" + self.STATUS + "\n", 1)
+        code, out = self.graded(header_status, None)
+        self.assertEqual(code, 1, out)
+        self.assertIn("  - status:", out)
+
+    def test_a_continuation_reply_ending_with_status_passes_in_a_layer_session(self):
+        """Intent: the ticket's placement note - a reply with the continuation line in its
+        header and a STATUS last line passes in a session that loaded workstream-primary."""
+        path = self.transcript(
+            k_user("one"), k_skill("workstream-primary"), k_result(), k_text(K_MARKER),
+            k_final(self.WITH_STATUS), k_peer("a report"), k_text(K_MARKER),
+            k_final(self.CONTINUED), k_user("three - in progress"))
+        out = io.StringIO()
+        argv = ["check_response.py", "--tool", "claude", "--transcript", str(path), "--previous"]
+        with mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.stderr", new=io.StringIO()):
+            code = cr.main()
+        self.assertNotIn("  - status:", out.getvalue())
+        self.assertNotIn("  - continuation:", out.getvalue())
+        self.assertEqual(code, 0, out.getvalue())
+
+
 class StopHook(unittest.TestCase):
     """--stop: a Claude Code Stop hook. Hook JSON on stdin, findings on stderr, exit 2 to
     send the turn back once, and never a block on the checker's own failure."""
