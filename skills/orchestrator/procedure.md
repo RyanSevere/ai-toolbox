@@ -42,8 +42,9 @@ from memory of an earlier one:
   `STATUS:` line; read that first.
 - **Title prefixes:** read each session's title prefix against its STATUS line, under
   the `workstream-primary` skill's title prefix section. A `working` prefix on a
-  session that is not running is stale. Report a stale one to its session by
-  message; do not fix it yourself.
+  session that is not running is stale. `pending workers` and `pending ci` are waits
+  on a session's own work, never a missing session. Report a stale one to its session
+  by message; do not fix it yourself.
 - **Rotation calls:** which sessions meet a rotation trigger (Who rotates, below), from
   the transcripts' compaction and usage records.
 <!-- requires: asks.list -->

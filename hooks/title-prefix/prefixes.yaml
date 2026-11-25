@@ -3,7 +3,7 @@
 # Path: {PROJECT_ROOT}/hooks/title-prefix/prefixes.yaml
 # Created by: Ryan Severe
 # Created: 2026-11-21
-# Last Updated: 2026-11-21
+# Last Updated: 2026-11-25
 # Description: The core's default session-title status prefixes and the rule
 #              each one is graded by. hook.py reads the rendered copy beside
 #              it. A profile replaces this list whole with a title_prefixes
@@ -43,7 +43,7 @@
 # ===========================================================================
 
 # A title is "<prefix> - <session name>". The first entry that matches the prefix wins, so
-# "pending push" must precede "pending <name>". An entry names its prefix literally
+# "pending push", "pending workers" and "pending ci" must precede "pending <name>". An entry names its prefix literally
 # (prefix:) or as a regular expression matched against the whole prefix (label: names it
 # for a reader, pattern: is the expression).
 # Rules: ask = the reply must carry an open ask (a "## Decisions and clarifications" or
@@ -55,6 +55,12 @@ prefixes:
   - prefix: holding pending desk
     rule: unchecked
   - prefix: pending push
+    rule: no-ask
+  # Waiting on the session's own workers to finish what it handed them.
+  - prefix: pending workers
+    rule: no-ask
+  # Waiting on the session's own pull request's checks, or a background task it started.
+  - prefix: pending ci
     rule: no-ask
   - label: "pending <name>"
     pattern: "pending .+"

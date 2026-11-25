@@ -1519,9 +1519,9 @@ class TitlePrefix(unittest.TestCase):
         self.assertEqual((spec["event"], spec["tools"]), ("turn.end", ["claude"]))
         self.assertEqual(spec["run"][:2], ["{python}", "{hooks}/title-prefix/hook.py"])
 
-    def test_the_default_vocabulary_holds_eight_entries(self):
+    def test_the_default_vocabulary_holds_ten_entries(self):
         entries = self.hook.load_entries(TITLE_PREFIX / "prefixes.yaml")
-        self.assertEqual(len(entries), 8)
+        self.assertEqual(len(entries), 10)
         self.assertEqual({e["rule"] for e in entries}, {"ask", "no-ask", "unchecked"})
 
     def test_ask_rule_with_no_ask_is_sent_back_naming_the_prefix(self):
