@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/shape.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-24
+# Last Updated: 2026-11-25
 # Description: The tool-neutral half of the response checker.
 #              Parses a reply against the response shape, grades it, and walks
 #              back over finished turns to collect replies whose turn never ran
@@ -72,11 +72,12 @@ NOTIFICATION = "notification"
 
 # Layout limits of the condensed Summary. They are named here so that a profile's fork
 # changes the shape in one place: the toolbox does not resist a different response shape.
-# True: several paragraphs are allowed when every one opens with a bold lead-in.
-# False: exactly one paragraph.
+# A topic runs from one bold lead-in to the next, and the first block opens with one.
+# True: several topics are allowed. False: exactly one topic.
 SUMMARY_MULTI_PARAGRAPH_WITH_BOLD = True
-# True: a list marker (-, * or 1.) at the start of a Summary line is a finding.
-SUMMARY_LIST_MARKERS_FORBIDDEN = True
+# True: a list marker (-, * or 1.) at the start of a Summary line is a finding. The
+# default is False: lists are allowed inside a topic.
+SUMMARY_LIST_MARKERS_FORBIDDEN = False
 BOLD_LEAD_IN = "**"
 LIST_MARKER = re.compile(r"^\s*(?:[-*]\s|\d+\.\s)")
 
@@ -160,6 +161,8 @@ POINTERS = (
     ("url", re.compile(r"https?://\S+")),
     ("quotation", re.compile(r"[\"\u201c][^\"\u201d]{8,}[\"\u201d]")),
     ("command or output", re.compile(r"`[^`\n]*\s[^`\n]*`")),
+    ("markdown link", re.compile(r"\[[^\]\n]+\]\([^)\s]+\)")),
+    ("commit hash", re.compile(r"`[0-9a-fA-F]{7,}`")),
 )
 
 
@@ -337,6 +340,19 @@ def paragraphs(lines: list[str]) -> list[str]:
     return found
 
 
+def summary_topics(lines: list[str]) -> list[str]:
+    """The Summary's topics: each runs from a line opening with a bold lead-in, up to the
+    next such line. A list item that opens with bold text belongs to the topic it is in."""
+    topics: list[list[str]] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(BOLD_LEAD_IN) and not LIST_MARKER.match(line):
+            topics.append([stripped])
+        elif topics and stripped:
+            topics[-1].append(stripped)
+    return [" ".join(topic) for topic in topics]
+
+
 def condensed_findings(sections: dict, mode: str | None = None) -> list[str]:
     """Findings that apply only to the condensed shape."""
     findings: list[str] = []
@@ -352,15 +368,19 @@ def condensed_findings(sections: dict, mode: str | None = None) -> list[str]:
     if "summary" in sections:
         lines = sections.get("summary" + LINES, [])
         found = paragraphs(lines)
+        topics = summary_topics(lines)
         if not found:
             findings.append("summary: 0 paragraphs, at least 1 required")
-        elif len(found) > 1 and not SUMMARY_MULTI_PARAGRAPH_WITH_BOLD:
-            findings.append(f"summary: {len(found)} paragraphs, exactly 1 allowed")
-        elif len(found) > 1:
-            for number, paragraph in enumerate(found, 1):
-                if not paragraph.startswith(BOLD_LEAD_IN):
-                    findings.append(f"summary: paragraph {number} ('{paragraph[:40]}') has no "
-                                    "bold lead-in - several paragraphs each open with one")
+        else:
+            if len(topics) > 1 and not SUMMARY_MULTI_PARAGRAPH_WITH_BOLD:
+                findings.append(f"summary: {len(topics)} topics, exactly 1 allowed")
+            # A Summary with no bold lead-in at all is one unlabelled paragraph and stays
+            # valid. Once a topic opens with one, the first block must too, and a list
+            # belongs inside a topic, so a Summary never opens with one.
+            opens_with_list = bool(LIST_MARKER.match(next(row for row in lines if row.strip())))
+            if (topics or opens_with_list) and not found[0].startswith(BOLD_LEAD_IN):
+                findings.append(f"summary: first block ('{found[0][:40]}') has no bold "
+                                "lead-in - a topic opens with one")
         if SUMMARY_LIST_MARKERS_FORBIDDEN:
             marked = [line.strip() for line in lines if LIST_MARKER.match(line)]
             if marked:
@@ -495,6 +515,8 @@ def check(header: list[str], sections: dict[str, list[dict]]) -> tuple[list[str]
         if not key.endswith(ENTRIES):
             continue
         name = key[:-len(ENTRIES)]
+        if name == "summary":
+            continue  # a Summary topic is prose and lists, not an ID'd item
         for entry in entries:
             if name in RESURFACED:
                 if not QUESTION.match(entry):

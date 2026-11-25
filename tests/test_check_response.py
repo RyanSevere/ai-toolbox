@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_check_response.py
 # Created by: Ryan Severe
 # Created: 2026-09-23
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-25
 # Description: Transcript fixtures for responses/check_response.py, its shared
 #              shape core and its per-tool adapters. Every case here was
 #              found by using the script and verified by hand first; the tests
@@ -1460,26 +1460,33 @@ class CondensedShape(TranscriptCase):
             self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n\n" + self.SECOND)
         self.assertEqual(self.findings(text), [])
 
-    def test_summary_paragraph_without_a_bold_lead_in_fails(self):
+    def test_summary_first_block_without_a_bold_lead_in_fails_once_a_topic_exists(self):
         text = CONDENSED_CLEAN.replace(
             self.PARAGRAPH,
-            "**State.** " + self.PARAGRAPH + '\n\nA second paragraph quotes "the gate passed".')
+            self.PARAGRAPH + '\n\n**Gate.** The draft passed: "the gate passed the draft".')
         found = self.findings(text)
-        self.assertTrue(any(f.startswith("summary: paragraph 2 (") and "no bold lead-in" in f
+        self.assertTrue(any(f.startswith("summary: first block (") and "no bold lead-in" in f
                             for f in found), found)
 
-    def test_summary_list_marker_fails(self):
+    def test_summary_list_inside_a_topic_passes(self):
         for marker in ("- ", "* ", "1. "):
             with self.subTest(marker=marker):
-                text = CONDENSED_CLEAN.replace(self.PARAGRAPH, marker + self.PARAGRAPH)
-                found = self.findings(text)
-                self.assertTrue(any(f.startswith("summary: list marker") for f in found), found)
+                text = CONDENSED_CLEAN.replace(
+                    self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n" + marker + "one item")
+                self.assertEqual(self.findings(text), [])
 
-    def test_summary_multi_paragraph_limit_is_a_constant(self):
+    def test_summary_list_marker_ban_is_a_constant(self):
+        text = CONDENSED_CLEAN.replace(
+            self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n- one item")
+        with mock.patch.object(shape, "SUMMARY_LIST_MARKERS_FORBIDDEN", True):
+            found = self.findings(text)
+        self.assertTrue(any(f.startswith("summary: list marker") for f in found), found)
+
+    def test_summary_multi_topic_limit_is_a_constant(self):
         text = CONDENSED_CLEAN.replace(
             self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n\n" + self.SECOND)
         with mock.patch.object(shape, "SUMMARY_MULTI_PARAGRAPH_WITH_BOLD", False):
-            self.assertIn("summary: 2 paragraphs, exactly 1 allowed", self.findings(text))
+            self.assertIn("summary: 2 topics, exactly 1 allowed", self.findings(text))
 
     def test_condensed_decision_without_a_recommendation_line_fails(self):
         text = CONDENSED_CLEAN.replace(
@@ -2370,6 +2377,109 @@ class StopHook(unittest.TestCase):
             code, out, err = self.run_stop(stdin)
             self.assertEqual((code, out), (0, ""), stdin)
             self.assertEqual(len(err.strip().splitlines()), 1, stdin)
+
+
+class SummaryTopics(unittest.TestCase):
+    """A Summary topic runs from one bold lead-in to the next: lists and further
+    paragraphs belong inside it, and more evidence counts as a pointer."""
+
+    PARAGRAPH = ('The live state matches the seed: `git status -sb` printed '
+                 '"## main...origin/main", and the gate passed the draft.')
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def findings(self, summary: str) -> list[str]:
+        text = CONDENSED_CLEAN.replace(self.PARAGRAPH, summary)
+        return shape.check(*shape.parse(text))[0]
+
+    def summary_findings(self, summary: str) -> list[str]:
+        return [f for f in self.findings(summary) if f.startswith("summary:")]
+
+    def rule(self, name: str) -> str:
+        return " ".join((self.ROOT / "rules" / name).read_text(encoding="utf-8").split())
+
+    def test_two_topics_with_paragraph_and_list_pass(self):
+        """Intent: the ticket's Done when, first item - a Summary of two topics, each a
+        bold lead-in, a paragraph and a bulleted list, passes."""
+        summary = (
+            "**State.** " + self.PARAGRAPH + "\n"
+            "- the seed was read\n"
+            "- the gate was run\n\n"
+            '**Gate.** The draft passed: "the gate passed the draft".\n'
+            "- one check was skipped\n"
+            "- none failed"
+        )
+        self.assertEqual(self.summary_findings(summary), [])
+
+    def test_first_block_without_a_bold_lead_in_still_fails(self):
+        """Intent: the ticket's Done when, second item - a Summary whose first block has
+        no bold lead-in still fails."""
+        summary = ("The state matches. " + self.PARAGRAPH + "\n"
+                   "- the seed was read\n\n"
+                   "**Gate.** It passed.")
+        found = self.summary_findings(summary)
+        self.assertTrue(any("no bold lead-in" in f for f in found), found)
+
+    def test_a_summary_with_no_pointer_still_fails(self):
+        """Intent: the ticket's Done when, second item - a Summary with no pointer still
+        fails with `summary: no pointer`."""
+        summary = "**State.** The live state matches the seed.\n- the gate passed"
+        found = self.summary_findings(summary)
+        self.assertTrue(any(f.startswith("summary: no pointer") for f in found), found)
+
+    def test_a_bulleted_summary_raises_no_item_id_finding(self):
+        """Intent: the ticket's Done when, third item - no "has no item ID" finding is
+        raised for a Summary line."""
+        summary = "**State.** " + self.PARAGRAPH + "\n- the seed was read\n- the gate was run"
+        found = [f for f in self.findings(summary) if "has no item ID" in f]
+        self.assertEqual(found, [])
+
+    def test_a_markdown_link_is_a_pointer(self):
+        """Intent: the ticket's Done when, fourth item - a markdown link counts as a
+        pointer."""
+        summary = "**State.** The check is described in [the page](https://example.com/x)."
+        self.assertEqual(self.summary_findings(summary), [])
+
+    def test_a_backticked_seven_character_hash_is_a_pointer(self):
+        """Intent: the ticket's Done when, fourth item - a backticked 7-character hex
+        hash counts as a pointer."""
+        summary = "**State.** The change landed as `abc1234`."
+        self.assertEqual(self.summary_findings(summary), [])
+
+    def test_a_backticked_word_that_is_not_hex_is_not_a_pointer(self):
+        """Intent: the ticket's Done when, fourth item - only hex hashes count, so a
+        backticked word still fails with no pointer."""
+        summary = "**State.** The step was `deploy` and it ran."
+        found = self.summary_findings(summary)
+        self.assertTrue(any(f.startswith("summary: no pointer") for f in found), found)
+
+    def test_shape_spec_allows_lists_inside_a_summary_topic(self):
+        """Intent: the ticket's Done when, fifth item - the spec's Summary rule agrees
+        with the topic rule."""
+        text = self.rule("spec-response-shape.md").lower()
+        self.assertIn("lists are allowed inside a summary topic", text)
+        self.assertNotIn("there are no list markers", text)
+
+    def test_shape_spec_rule_four_names_the_summary_topic_exception(self):
+        """Intent: the ticket's Done when, fifth item - rule 4's nesting rule names the
+        Summary topic list as its exception."""
+        text = self.rule("spec-response-shape.md")
+        start = text.index("4. **Sub-items are nested list items")
+        rule_four = text[start:text.index(" 5. **", start)]
+        self.assertIn("Summary topic", rule_four)
+
+    def test_claude_code_spec_does_not_separate_topics_by_blank_lines_alone(self):
+        """Intent: the ticket's Done when, fifth item - the Claude Code spec no longer
+        says blank lines separate Summary topics without a lead-in."""
+        text = self.rule("spec-claude-code.md")
+        self.assertNotIn("leave a blank line between topics", text)
+        self.assertIn("bold lead-in", text)
+
+    def test_prescriptions_quote_the_came_up_heading_and_none(self):
+        """Intent: the ticket's Done when, sixth item - the prescriptions quote
+        `## Came up while doing it` and `None.`."""
+        text = self.rule("prescriptions.md")
+        self.assertIn("`## Came up while doing it`", text)
+        self.assertIn("`None.`", text)
 
 
 if __name__ == "__main__":
