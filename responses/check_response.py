@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/check_response.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-14
+# Last Updated: 2026-11-25
 # Description: Checks assistant replies against the response shape in
 #              rules/spec-response-shape.md, rendered into each repo as
 #              .github/rules/response-shape.md. The entry point of a shared
@@ -369,7 +369,8 @@ def main() -> int:
             record_verdictless(path, current.key)
             return 3
         print(f"run {runs + 1} of {limit} | in-flight")
-        results = [shape.grade("reply being written", current.last, extra=current.findings)]
+        results = [shape.grade("reply being written", current.last, extra=current.findings,
+                               layer=current.layer)]
         truncated = False
     else:
         walked = delivered_runs(path, turns) if adapter.LEDGER_COUNTS else turns
@@ -400,7 +401,8 @@ def main() -> int:
         results = [
             shape.grade("previous reply" if back == 0 else f"{back} turn(s) back, UNGRADED",
                         turn.text, turn.cut_short, turn.invoked,
-                        turn.findings + continuation_for(adapter, walked, back))
+                        turn.findings + continuation_for(adapter, walked, back),
+                        layer=turn.layer)
             for back, turn in picked
         ]
 

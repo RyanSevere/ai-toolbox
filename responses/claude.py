@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/claude.py
 # Created by: Ryan Severe
 # Created: 2026-11-13
-# Last Updated: 2026-11-24
+# Last Updated: 2026-11-25
 # Description: The Claude Code adapter for the response checker.
 #              Finds the session's transcript from CLAUDE_CODE_SESSION_ID and
 #              turns its one-line-per-content-block records into Turns. A turn
@@ -85,6 +85,9 @@ PEER = "peer"
 # Fallback, used only when a record has no origin key: a note from a side session or a
 # CI monitor is written without one, with one of these tags in its text.
 ORIGINLESS_EVENTS = ("<side-sessions-event>", "<ci-monitor-event>")
+# A turn is layer 1 or 2, and owes the STATUS footer, once the transcript shows one of
+# these skills loaded.
+LAYER_SKILLS = ("orchestrator", "workstream-primary")
 
 
 def detect(env: Mapping[str, str]) -> bool:
@@ -255,6 +258,21 @@ def runs_in(records: list[dict]) -> int:
     )
 
 
+def loads_layer_skill(record: dict) -> bool:
+    """Whether an assistant record calls the Skill tool for layer 1 or layer 2: the skill is
+    named in full or with a plugin prefix."""
+    if record.get("type") != "assistant":
+        return False
+    for block in blocks(record):
+        if block.get("type") != "tool_use" or block.get("name") != "Skill":
+            continue
+        name = (block.get("input") or {}).get("skill")
+        if isinstance(name, str) and any(
+                name == layer or name.endswith(":" + layer) for layer in LAYER_SKILLS):
+            return True
+    return False
+
+
 def turns(path: Path) -> list[shape.Turn]:
     """Every turn, in order; the last is the one being written.
 
@@ -280,6 +298,9 @@ def turns(path: Path) -> list[shape.Turn]:
     if not starts:
         return [shape.Turn(shape.OPERATOR, "", "t0")]
     edges = starts + [len(records)]
+    # A loaded skill stays loaded, so a reply is layer 1 or 2 when any record up to the end
+    # of its turn called the skill.
+    first_layer = next((i for i, r in enumerate(records) if loads_layer_skill(r)), len(records))
     out = []
     for position, (lo, hi) in enumerate(zip(edges, edges[1:])):
         span = records[lo:hi]
@@ -296,5 +317,6 @@ def turns(path: Path) -> list[shape.Turn]:
             last=text,
             findings=findings,
             operator_input=any(operator_input(r) for r in span[1:]),
+            layer=first_layer < hi,
         ))
     return out
