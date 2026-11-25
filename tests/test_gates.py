@@ -737,6 +737,35 @@ class Tests(GateCase):
         self.assertIn("exit 3", result.stdout)
         self.assertIn("boom-output", result.stdout)
 
+    FLOOD = ('i=1; while [ $i -le 50 ]; do '
+             'echo "timing: $i.00 s mod.Class$i"; i=$((i+1)); done')
+
+    def test_failure_text_survives_a_flood_of_timing_lines(self):
+        """Intent: ticket 203 Done when 1 and 2. A failed command whose failure
+        text is followed by more than 40 timing lines still shows that text in the
+        gate output, each timing line appears exactly once, and the gate fails."""
+        self.write(".github/test-roots", f"run: echo 'FAIL: test_x'; {self.FLOOD}; exit 1\n")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        lines = [ln.strip() for ln in result.stdout.splitlines()]
+        self.assertIn("FAIL: test_x", lines)
+        for n in range(1, 51):
+            self.assertEqual(lines.count(f"timing: {n}.00 s mod.Class{n}"), 1, n)
+
+    def test_a_line_quoting_timing_partway_is_kept_in_the_failure_tail(self):
+        """Intent: ticket 203 Edge cases, malformed. Only lines that start with
+        timing: or selected: are dropped from the tail, so a traceback line that
+        quotes timing: partway through stays under the FAILED line."""
+        quoted = "AssertionError: saw timing: in the middle"
+        self.write(".github/test-roots",
+                   f"run: echo '{quoted}'; {self.FLOOD}; exit 1\n")
+        self.commit()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        # The gate echoes the command line too; only the indented tail line counts.
+        self.assertIn(f"    {quoted}", result.stdout.splitlines())
+
     def test_every_command_runs_even_after_one_fails(self):
         self.write(".github/test-roots", "run: exit 1\nrun: echo second-ran\n")
         self.commit()
