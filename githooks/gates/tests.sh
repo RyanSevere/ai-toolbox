@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/githooks/gates/tests.sh
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-21
+# Last Updated: 2026-11-24
 # Description: Runs each test command a repository declares with a 'run:' line
 #              in test-roots, in its gate-config config-dir, and refuses the
 #              push if any fails. Given a pushed commit, the commands run in a
@@ -336,7 +336,9 @@ report() {
   else
     failed=1
     echo "  FAILED (exit $rc, $secs s). Last $tail_lines lines:"
-    tail -n "$tail_lines" "$logs/$1.log" | sed 's/^/    /'
+    # The suite's timing and selection lines are reported below; left out here
+    # so they cannot push the failure out of the tail. A no-match grep is fine.
+    { grep -Ev '^(timing|selected):' "$logs/$1.log" || true; } | tail -n "$tail_lines" | sed 's/^/    /'
   fi
   # A suite's own 'timing:' and 'selected:' lines go into the gate report.
   grep -E '^(timing|selected):' "$logs/$1.log" 2>/dev/null | sed 's/^/  /' || true
