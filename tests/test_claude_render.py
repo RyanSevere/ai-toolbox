@@ -582,9 +582,9 @@ class TitlePrefixes(unittest.TestCase):
     def entries(self, plan: sync.Plan) -> list[dict]:
         return yaml.safe_load(plan[self.RENDERED])["prefixes"]
 
-    def test_no_key_renders_the_cores_default_of_eight(self):
+    def test_no_key_renders_the_cores_default_of_ten(self):
         entries = self.entries(self.plan())
-        self.assertEqual(len(entries), 8)
+        self.assertEqual(len(entries), 10)
         shipped = yaml.safe_load(self.DEFAULT.read_text(encoding="utf-8"))["prefixes"]
         self.assertEqual(entries, shipped)
 
