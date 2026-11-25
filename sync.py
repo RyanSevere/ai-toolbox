@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-14
-# Last Updated: 2026-11-21
+# Last Updated: 2026-11-25
 # Description: Renders the core and a profile's seeds into a consuming repository's
 #              per-tool formats and stamps each output with the source SHA.
 #              Dry-run by default; --write applies. Never writes Tier 3.
@@ -385,6 +385,7 @@ def load_profile(folder: Path) -> dict:
                                     "non-empty string")
     check_tracked(data, path)
     check_repo_names(data, path)
+    check_target_kinds(data, path)
     selected_tools(data, str(path))
     gate_report_skips(data, str(path))
     gate_report_rerun(data, str(path))
@@ -428,6 +429,23 @@ def check_repo_names(data: dict, path: Path) -> None:
                         f"{path}: {section}: {name!r} {key}: {value!r} is not allowed. "
                         "Use letters, digits, - _ and ., with no spaces or /. "
                         "Set owner: for a repository under another owner")
+
+
+TARGET_KIND_FOLDER = "folder"
+
+
+def check_target_kinds(data: dict, path: Path) -> None:
+    """Refuse a target `kind:` other than `folder`. A target with no kind is a git repository."""
+    for name, cfg in (data.get("targets") or {}).items():
+        if isinstance(cfg, dict) and "kind" in cfg and cfg["kind"] != TARGET_KIND_FOLDER:
+            raise SyncError(f"{path}: targets: {name!r} kind: {cfg['kind']!r} is not allowed. "
+                            f"The only kind is {TARGET_KIND_FOLDER!r}, a plain folder that is "
+                            "not a git repository; leave kind out for a repository")
+
+
+def is_folder_target(cfg: dict) -> bool:
+    """Whether a target's manifest entry declares a plain folder, not a git repository."""
+    return (cfg or {}).get("kind") == TARGET_KIND_FOLDER
 
 
 class SyncError(Exception):
@@ -2650,7 +2668,10 @@ def verify_identity(repo: Path, ident: dict[str, str]) -> None:
                             "outside the local config wins; nothing committed")
 
 
-def emit(repo: Path, plan: dict[str, str], write: bool, *, ident: dict[str, str]) -> int:
+def emit(repo: Path, plan: dict[str, str], write: bool, *, ident: dict[str, str],
+         git: bool = True) -> int:
+    """Write or compare the plan in repo. git=False is a plain folder: no git config is read
+    or set there."""
     # Checked before anything is written. A hand-owned hooks.json is that repo's own guard,
     # and overwriting it drops the guard silently.
     for rel in MARKED_JSON:
@@ -2695,10 +2716,11 @@ def emit(repo: Path, plan: dict[str, str], write: bool, *, ident: dict[str, str]
             )
             for line in list(diff)[:40]:
                 print(line)
-    activate_hooks(repo, write)
-    # Local config, like core.hooksPath: a fresh CI checkout never has it, so it is
-    # reported but not counted, or --check would fail every drift run.
-    ensure_identity(repo, write, ident)
+    if git:
+        activate_hooks(repo, write)
+        # Local config, like core.hooksPath: a fresh CI checkout never has it, so it is
+        # reported but not counted, or --check would fail every drift run.
+        ensure_identity(repo, write, ident)
     return changed
 
 
@@ -3282,6 +3304,9 @@ def rollout(args: argparse.Namespace, manifest: dict, defaults: dict) -> int:
             if cfg.get("skip"):
                 print(f"{name}: skipped - {cfg['skip']}")
                 continue
+            if is_folder_target(cfg):
+                print(f"{name}: skipped - a plain folder, not a repository")
+                continue
             try:
                 line = rollout_target(name, cfg, args.root, defaults, sha, manifest, subject,
                                       profile_dir)
@@ -3613,6 +3638,7 @@ def main(argv: list[str] | None = None) -> int:
             cfg = self_config(manifest)
             name = source_repo(manifest)
             repo = resolve_profile(args.profile)
+            folder = False
         else:
             if not args.target:
                 raise SyncError("a target is required unless --self is given")
@@ -3626,7 +3652,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise SyncError(f"'{args.target}' is marked skip in {PROFILE_NAME}")
             name = args.target
             repo = args.root / args.target
-            if not (repo / ".git").exists():
+            # A plain folder has no repository to refuse, and no git is run against it.
+            folder = is_folder_target(cfg)
+            if folder:
+                if not repo.is_dir():
+                    raise SyncError(f"{repo} is not a folder")
+            elif not (repo / ".git").exists():
                 raise SyncError(f"{repo} is not a git repository")
 
         profile_dir = resolve_profile(args.profile)
@@ -3650,16 +3681,17 @@ def main(argv: list[str] | None = None) -> int:
         full_plan = plan
         if args.check:
             plan = {k: v for k, v in plan.items() if k not in LOCAL_RENDERED}
-        if write:
+        if write and not folder:
             refuse_orphan_readers(repo, find_orphans(repo, full_plan), full_plan)
         ident = identity(manifest)
-        changed = emit(repo, plan, write, ident=ident)
-        changed += ensure_scratch_ignored(repo, write)
-        changed += ensure_pycache_ignored(repo, write)
-        changed += ensure_claude_local_ignored(repo, write)
-        changed += ensure_claude_worktrees_ignored(repo, write)
-        changed += ensure_cursor_tracked(repo, write)
-        changed += ensure_hooks_local(repo, write)
+        changed = emit(repo, plan, write, ident=ident, **({"git": False} if folder else {}))
+        if not folder:
+            changed += ensure_scratch_ignored(repo, write)
+            changed += ensure_pycache_ignored(repo, write)
+            changed += ensure_claude_local_ignored(repo, write)
+            changed += ensure_claude_worktrees_ignored(repo, write)
+            changed += ensure_cursor_tracked(repo, write)
+            changed += ensure_hooks_local(repo, write)
 
         # This repo is the first target, not an exception to its own rules. The
         # seed files stay inert; the rendered output applies here as anywhere
@@ -3677,14 +3709,20 @@ def main(argv: list[str] | None = None) -> int:
 
         orphans = find_orphans(repo, full_plan)
         readers: list[str] = []
-        if write:
+        if write and folder:
+            # No tracked files to read an orphan: a folder has no index.
+            for rel in orphans:
+                (repo / rel).unlink()
+                print(f"  removed orphan {rel}")
+        elif write:
             remove_orphans(repo, orphans, full_plan,
                            on_remove=lambda rel: print(f"  removed orphan {rel}"))
         else:
             for rel in orphans:
                 print(f"  orphan (would remove): {rel}")
-            readers = orphan_readers(repo, orphans, full_plan)
-            report_orphan_readers(readers)
+            if not folder:
+                readers = orphan_readers(repo, orphans, full_plan)
+                report_orphan_readers(readers)
 
         print()
         for line in resident_report(repo, selected_tools(manifest)):
