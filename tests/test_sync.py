@@ -2833,6 +2833,34 @@ class FolderTarget(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertFalse((self.folder / ".git").exists())
 
+    def test_a_target_kind_other_than_folder_is_refused(self):
+        """Intent: the ticket's Done when, third item - folder is the only target kind, so a
+        manifest that declares any other kind is refused, naming the kind and the one allowed."""
+        self.declare("acme-parent", {"kind": "repo"})
+        code, output = self.run_main("--write", "acme-parent")
+        self.assertEqual(code, 1, output)
+        self.assertIn("'repo'", output)
+        self.assertIn("only kind is 'folder'", output)
+        self.assertFalse((self.folder / "AGENTS.md").exists())
+
+    def test_write_removes_a_stamped_orphan_from_a_plain_folder(self):
+        """Intent: the ticket's Done when, first and second items - a plain folder has no
+        index, so --write removes a stale generated file by unlinking it directly, and leaves
+        a file that carries no stamp where it is."""
+        self.declare("acme-parent", {"kind": "folder"})
+        code, output = self.run_main("--write", "acme-parent")
+        self.assertEqual(code, 0, output)
+        rendered = next((self.folder / ".github" / "rules").glob("*.md"))
+        orphan = rendered.with_name("acme-retired-rule.md")
+        orphan.write_text(rendered.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+        kept = rendered.with_name("acme-hand-written.md")
+        kept.write_text("A note with no generated stamp.\n", encoding="utf-8", newline="\n")
+        code, output = self.run_main("--write", "acme-parent")
+        self.assertEqual(code, 0, output)
+        self.assertIn(f"removed orphan {orphan.relative_to(self.folder).as_posix()}", output)
+        self.assertFalse(orphan.exists())
+        self.assertTrue(kept.is_file())
+
 
 class StampSource(unittest.TestCase):
     """The stamp names the profile's source repository, and every detector accepts any
