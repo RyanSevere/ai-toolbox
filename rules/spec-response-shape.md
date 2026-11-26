@@ -422,13 +422,18 @@ It is required for layers 1 and 2. On Claude Code the checker marks a turn as on
 them when an earlier assistant record in the transcript holds a `Skill` tool call that
 loads `orchestrator` or `workstream-primary`, a plugin-prefixed name ending in either
 included. Cursor and Copilot never mark it, so there the line is form-checked when
-present and never required. `--stop` does not require it.
+present and never required. `--stop` requires the line when it can read the transcript,
+taking the layer from the hook's `transcript_path`; with no readable transcript the layer
+is unknown and the line is only form-checked. The line is plain text, never in a fence: a
+fenced STATUS line is not read as the footer. A `status:` finding is report-only under
+`--stop`.
 
 | Condition | Finding |
 |---|---|
 | A line starting `STATUS:` that lacks one of the three fields, or has one empty | `status: ...` |
 | A line starting `STATUS:` that is not the reply's last line, such as one in the header | `status: ...` |
 | No STATUS last line, in a turn marked as layer 1 or 2 | `status: ...` |
+| The reply's last non-empty content is a code fence whose last line is a `STATUS:` line | `status: ...`, naming the fence |
 
 ---
 
