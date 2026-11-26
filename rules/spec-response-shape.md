@@ -932,9 +932,10 @@ look-back skips it.
 from stdin and grades `last_assistant_message`, because the transcript may lag the turn.
 The reply is the text from the last marker line, or, with no marker, the whole message
 plus the `reply marker missing` finding. It also reads the hook's `transcript_path` to
-check continuation, so a notification turn's reply is compared with the turn before it;
-a missing `transcript_path`, a missing file or an unreadable transcript skips that
-check and never blocks. It prints every finding to stderr, in two
+check continuation, so a notification turn's reply is compared with the turn before it,
+and to take the layer that decides whether the STATUS footer is required; a missing
+`transcript_path`, a missing file or an unreadable transcript skips both and never
+blocks. It prints every finding to stderr, in two
 classes. A *send-back* finding can change what the operator is asked or decides: it starts
 with an entry of `SEND_BACK_PREFIXES` in `shape.py` (`decisions:`, `continuation:`). Any send-back finding
 exits 2, which sends the turn back once. Every other finding is *report-only*: it prints
