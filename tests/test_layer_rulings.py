@@ -56,6 +56,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PRIMARY = ROOT / "skills" / "workstream-primary" / "procedure.md"
 ORCHESTRATOR = ROOT / "skills" / "orchestrator" / "procedure.md"
+SPEC = ROOT / "rules" / "spec-response-shape.md"
 
 
 def squash(text: str) -> str:
@@ -112,6 +113,36 @@ class LayerRulings(unittest.TestCase):
         self.assertIn("the operator starts it", step)
         self.assertIn("The status lists each waiting card", step)
 
+    def test_primary_title_prefix_section_names_the_own_work_prefixes(self):
+        """Intent: the ticket's Done when - the skill's Title prefix section lists
+        `pending workers` and `pending ci`, and says a wait on the session's own work
+        always names what it waits on."""
+        section = between(PRIMARY, "## Title prefix", "## Rotation")
+        self.assertIn("`pending workers`", section)
+        self.assertIn("`pending ci`", section)
+        self.assertIn("always names what it waits on", section)
+
+    def test_primary_title_prefix_section_has_no_unprefixed_case(self):
+        """Intent: the ticket's Done when - the skill no longer has a "leaves no prefix"
+        case; a wait on the session's own work is never left bare."""
+        section = between(PRIMARY, "## Title prefix", "## Rotation")
+        self.assertNotIn("leaves no prefix", section)
+
+    def test_primary_staleness_rule_excludes_the_own_work_prefixes(self):
+        """Intent: the ticket's Done when - the staleness rule for `pending <name>`
+        excludes the literal own-work prefixes, so they are not read as a gone session."""
+        rule = between(PRIMARY, "- A `pending <name>` whose session", "- If `list_sessions`")
+        self.assertIn("`pending workers`", rule)
+        self.assertIn("`pending ci`", rule)
+
+    def test_orchestrator_title_check_does_not_report_own_work_prefixes_as_missing(self):
+        """Intent: the ticket's Done when - the orchestrator's title check names
+        `pending workers` and `pending ci`, so it does not report them as a missing
+        session."""
+        check = between(ORCHESTRATOR, "- **Title prefixes:**", "- **Rotation calls:**")
+        self.assertIn("`pending workers`", check)
+        self.assertIn("`pending ci`", check)
+
     def test_already_fresh_names_no_time_window(self):
         """Intent: ticket 185's operator ruling - the already-fresh condition replaces the
         one-hour window, so the paragraph names no time window at all."""
@@ -162,6 +193,33 @@ class LayerRulings(unittest.TestCase):
         section = squash(PRIMARY.read_text(encoding="utf-8")).split("## Modes", 1)[1]
         self.assertIn("Remote Control is the operator's to switch. Never set it.", section)
         self.assertNotIn("the orchestrator sets Remote Control", section)
+
+    def test_spec_defines_the_status_footer(self):
+        """Intent: the ticket's Done when, first item - the response-shape spec has a
+        STATUS footer section naming the three fields, saying it is the reply's last
+        line, and saying layers 1 and 2 require it."""
+        text = SPEC.read_text(encoding="utf-8")
+        match = re.search(r"^## STATUS footer\s*$", text, re.MULTILINE)
+        self.assertIsNotNone(match, "no '## STATUS footer' section in the spec")
+        section = squash(re.split(r"^## ", text[match.end():], maxsplit=1, flags=re.MULTILINE)[0])
+        for field in ("needs operator:", "workers running:", "background tasks:"):
+            self.assertIn(field, section)
+        self.assertIn("the reply's last line", section)
+        self.assertIn("layers 1 and 2", section)
+
+    def test_primary_status_section_says_the_reply_ends_with_the_line(self):
+        """Intent: the ticket's Done when, fifth item - the workstream-primary STATUS
+        section says the reply ends with the line, and the wrap-up copy matches it
+        word for word."""
+        section = between(PRIMARY, "## STATUS", "## Title prefix")
+        self.assertIn("The reply ends with the STATUS line", section)
+        self.assertIn("word for word", section)
+
+    def test_orchestrator_says_layer_1_ends_its_replies_with_the_same_line(self):
+        """Intent: the ticket's Done when, fifth item - the orchestrator procedure says
+        layer 1 ends its replies with the same STATUS line."""
+        text = squash(ORCHESTRATOR.read_text(encoding="utf-8"))
+        self.assertIn("layer 1 ends its replies with the same STATUS line", text)
 
 
 if __name__ == "__main__":

@@ -68,7 +68,8 @@ not as clear.
 
 ## STATUS
 
-Every wrap-up recap carries one line, copied in this form:
+The reply ends with the STATUS line, as its last line. The wrap-up recap carries the
+same line, copied word for word from the reply's footer, in this form:
 
 ```text
 STATUS: needs operator: <none or what>; workers running: <n, which tickets>; background tasks: <none or what>
@@ -85,13 +86,17 @@ receiver, which re-reads its whole context.
 ## Title prefix
 
 The session's title carries one prefix, then ` - ` and the session's name. The
-operator reads a dozen sessions at a glance by it. The eight prefixes:
+operator reads a dozen sessions at a glance by it. The ten prefixes:
 
 - `working`: a turn is running. Set at the start of every turn, replaced before the
   reply.
 - `needs you`: the latest reply has an open DC or operator step for the operator.
 - `holding pending desk`: night mode; there is an ask, held until morning.
 - `pending push`: a push or its gates are running, and nothing is asked.
+- `pending workers`: the session's remaining work all waits on its own workers, and
+  nothing is asked.
+- `pending ci`: the session waits on its own pull request's checks, or on a background
+  task it started, and nothing is asked.
 - `pending <short name>`: waiting on another live session, named by the exact short
   name `list_sessions` reports. It means this session is blocked until that session
   acts. Watching or waiting on a session that does not block you gets no prefix.
@@ -116,11 +121,12 @@ Rules:
 - **Before the reply.** Set the prefix the reply calls for before writing it, and check
   it against the STATUS line, mini turns included. `needs operator:` other than `none` means `needs you`, or
   `holding pending desk` in night mode.
-- A turn that ends with no ask while work carries on, for example while its own
-  workers build, leaves no prefix: a session that is not blocking this one does not
-  make it pending.
+- A wait on the session's own work always names what it waits on: `pending workers`
+  for its workers, `pending push` for its push, `pending ci` for its pull request's
+  checks or a background task it started. No such wait is left bare.
 - A reply that asks and also has a push running is `needs you`. The ask wins.
-- A `pending <name>` whose session is archived or gone is stale. Reset it.
+- A `pending <name>` whose session is archived or gone is stale. Reset it. This does
+  not apply to `pending workers` and `pending ci`, which name no session.
 - If `list_sessions` cannot be read, keep the prefix and say in the wrap-up that the
   target could not be checked. Never treat it as gone.
 - A `working` prefix on a session that is not running means its last turn was cut off.

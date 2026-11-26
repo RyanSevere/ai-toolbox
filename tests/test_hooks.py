@@ -1519,9 +1519,9 @@ class TitlePrefix(unittest.TestCase):
         self.assertEqual((spec["event"], spec["tools"]), ("turn.end", ["claude"]))
         self.assertEqual(spec["run"][:2], ["{python}", "{hooks}/title-prefix/hook.py"])
 
-    def test_the_default_vocabulary_holds_eight_entries(self):
+    def test_the_default_vocabulary_holds_ten_entries(self):
         entries = self.hook.load_entries(TITLE_PREFIX / "prefixes.yaml")
-        self.assertEqual(len(entries), 8)
+        self.assertEqual(len(entries), 10)
         self.assertEqual({e["rule"] for e in entries}, {"ask", "no-ask", "unchecked"})
 
     def test_ask_rule_with_no_ask_is_sent_back_naming_the_prefix(self):
@@ -1568,6 +1568,39 @@ class TitlePrefix(unittest.TestCase):
             for reply in (self.NO_ASK, self.WITH_ASK):
                 with self.subTest(title=title):
                     self.assertEqual(self.graded(title, reply)[0], 0)
+
+    def test_own_work_prefixes_are_literal_no_ask_entries_before_the_pending_pattern(self):
+        """Intent: the ticket's Done when - the default list has literal `pending workers`
+        and `pending ci` entries with rule no-ask, ahead of the `pending <name>` pattern."""
+        entries = self.hook.load_entries(TITLE_PREFIX / "prefixes.yaml")
+        names = [e.get("prefix") or e.get("label") for e in entries]
+        for own in ("pending workers", "pending ci"):
+            with self.subTest(prefix=own):
+                self.assertIn(own, names)
+                entry = entries[names.index(own)]
+                self.assertEqual(entry.get("prefix"), own, "literal, not a pattern")
+                self.assertEqual(entry["rule"], "no-ask")
+                self.assertLess(names.index(own), names.index("pending <name>"))
+
+    def test_own_work_prefixes_with_an_ask_are_sent_back(self):
+        """Characterisation: the generic `pending <name>` pattern already grades these
+        titles as a finding, so this passes before the change; it guards the Done when
+        item (a finding on an ask) once the literal entries are added."""
+        for title, named in (("pending workers - x", "pending workers"),
+                             ("pending ci - x", "pending ci")):
+            for reply in (self.WITH_ASK, self.WITH_STEPS):
+                with self.subTest(title=title, reply=reply[:40]):
+                    code, err = self.graded(title, reply)
+                    self.assertEqual(code, 2)
+                    self.assertIn(named, err)
+
+    def test_own_work_prefixes_without_an_ask_are_clean(self):
+        """Characterisation: the generic `pending <name>` pattern already passes these
+        titles on a reply with no ask, so this passes before the change; it guards the
+        Done when item (clean without an ask) once the literal entries are added."""
+        for title in ("pending workers - x", "pending ci - x"):
+            with self.subTest(title=title):
+                self.assertEqual(self.graded(title, self.NO_ASK), (0, ""))
 
     def test_an_unknown_prefix_passes(self):
         self.assertEqual(self.graded("something else - x", self.NO_ASK)[0], 0)

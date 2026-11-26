@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_check_response.py
 # Created by: Ryan Severe
 # Created: 2026-09-23
-# Last Updated: 2026-11-15
+# Last Updated: 2026-11-26
 # Description: Transcript fixtures for responses/check_response.py, its shared
 #              shape core and its per-tool adapters. Every case here was
 #              found by using the script and verified by hand first; the tests
@@ -1460,26 +1460,33 @@ class CondensedShape(TranscriptCase):
             self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n\n" + self.SECOND)
         self.assertEqual(self.findings(text), [])
 
-    def test_summary_paragraph_without_a_bold_lead_in_fails(self):
+    def test_summary_first_block_without_a_bold_lead_in_fails_once_a_topic_exists(self):
         text = CONDENSED_CLEAN.replace(
             self.PARAGRAPH,
-            "**State.** " + self.PARAGRAPH + '\n\nA second paragraph quotes "the gate passed".')
+            self.PARAGRAPH + '\n\n**Gate.** The draft passed: "the gate passed the draft".')
         found = self.findings(text)
-        self.assertTrue(any(f.startswith("summary: paragraph 2 (") and "no bold lead-in" in f
+        self.assertTrue(any(f.startswith("summary: first block (") and "no bold lead-in" in f
                             for f in found), found)
 
-    def test_summary_list_marker_fails(self):
+    def test_summary_list_inside_a_topic_passes(self):
         for marker in ("- ", "* ", "1. "):
             with self.subTest(marker=marker):
-                text = CONDENSED_CLEAN.replace(self.PARAGRAPH, marker + self.PARAGRAPH)
-                found = self.findings(text)
-                self.assertTrue(any(f.startswith("summary: list marker") for f in found), found)
+                text = CONDENSED_CLEAN.replace(
+                    self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n" + marker + "one item")
+                self.assertEqual(self.findings(text), [])
 
-    def test_summary_multi_paragraph_limit_is_a_constant(self):
+    def test_summary_list_marker_ban_is_a_constant(self):
+        text = CONDENSED_CLEAN.replace(
+            self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n- one item")
+        with mock.patch.object(shape, "SUMMARY_LIST_MARKERS_FORBIDDEN", True):
+            found = self.findings(text)
+        self.assertTrue(any(f.startswith("summary: list marker") for f in found), found)
+
+    def test_summary_multi_topic_limit_is_a_constant(self):
         text = CONDENSED_CLEAN.replace(
             self.PARAGRAPH, "**State.** " + self.PARAGRAPH + "\n\n" + self.SECOND)
         with mock.patch.object(shape, "SUMMARY_MULTI_PARAGRAPH_WITH_BOLD", False):
-            self.assertIn("summary: 2 paragraphs, exactly 1 allowed", self.findings(text))
+            self.assertIn("summary: 2 topics, exactly 1 allowed", self.findings(text))
 
     def test_condensed_decision_without_a_recommendation_line_fails(self):
         text = CONDENSED_CLEAN.replace(
@@ -2259,6 +2266,251 @@ class ClaudeCodeMain(TranscriptCase):
         self.assertEqual(shape.Turn(shape.OPERATOR, "x", "t0").findings, [])
 
 
+def k_skill(name: str) -> str:
+    """The Skill tool call that loads a skill, as Claude Code writes it."""
+    return k_block({"type": "tool_use", "id": "t-2", "name": "Skill", "input": {"skill": name}},
+                   "tool_use")
+
+
+class StatusFooter(TranscriptCase):
+    """The STATUS footer, end to end on a Claude Code transcript: the last line of a
+    layer 1 or layer 2 reply, required when the transcript shows the layer's skill
+    loaded, and form-checked wherever the line appears."""
+
+    STATUS = "STATUS: needs operator: none; workers running: 0; background tasks: none"
+    WITH_STATUS = CONDENSED_CLEAN + "\n" + STATUS + "\n"
+    CONTINUED = ContinuationReplies.CONTINUED + "\n" + STATUS + "\n"
+
+    def setUp(self):
+        ledger = tempfile.TemporaryDirectory()
+        self.addCleanup(ledger.cleanup)
+        patcher = mock.patch.object(cr.tempfile, "gettempdir", return_value=ledger.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def graded(self, reply_text: str, skill: str | None) -> tuple[int, str]:
+        """Grade one reply in a transcript that loaded `skill`, or none."""
+        loading = [k_skill(skill), k_result()] if skill else []
+        path = self.transcript(k_user("one"), *loading, k_text(K_MARKER), k_final(reply_text),
+                               k_user("two - in progress"))
+        out = io.StringIO()
+        argv = ["check_response.py", "--tool", "claude", "--transcript", str(path), "--previous"]
+        with mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.stderr", new=io.StringIO()):
+            return cr.main(), out.getvalue()
+
+    def test_a_workstream_primary_reply_with_no_status_last_line_is_a_finding(self):
+        """Intent: the ticket's Done when, second item - a reply in a session that loaded
+        workstream-primary, with no STATUS last line, gets a finding."""
+        code, out = self.graded(CONDENSED_CLEAN, "workstream-primary")
+        self.assertEqual(code, 1, out)
+        self.assertIn("  - status:", out)
+
+    def test_an_orchestrator_reply_with_no_status_last_line_is_a_finding(self):
+        """Intent: the ticket's Done when, second item - the same for orchestrator."""
+        code, out = self.graded(CONDENSED_CLEAN, "orchestrator")
+        self.assertEqual(code, 1, out)
+        self.assertIn("  - status:", out)
+
+    def test_a_plugin_prefixed_skill_name_counts_as_the_layer(self):
+        """Intent: the ticket's Done when, second item - a plugin-prefixed skill name
+        ending in the layer's name still shows the layer loaded."""
+        code, out = self.graded(CONDENSED_CLEAN, "example-plugin:workstream-primary")
+        self.assertEqual(code, 1, out)
+        self.assertIn("  - status:", out)
+
+    def test_a_well_formed_status_last_line_passes_in_a_layer_session(self):
+        """Intent: the ticket's Done when, second item - the same reply ending with a
+        well-formed STATUS line gets no status finding."""
+        for skill in ("workstream-primary", "orchestrator"):
+            with self.subTest(skill=skill):
+                code, out = self.graded(self.WITH_STATUS, skill)
+                self.assertNotIn("  - status:", out)
+                self.assertEqual(code, 0, out)
+
+    def test_a_session_that_loaded_neither_skill_is_not_required_to_carry_it(self):
+        """Intent: the ticket's Done when, third item - a reply in a session that loaded
+        neither skill gets no finding for a missing footer. Another skill loaded does
+        not make the session a layer."""
+        for skill in (None, "file-tickets"):
+            with self.subTest(skill=skill):
+                code, out = self.graded(CONDENSED_CLEAN, skill)
+                self.assertNotIn("  - status:", out)
+                self.assertEqual(code, 0, out)
+
+    def test_a_status_line_missing_a_field_is_a_finding_in_any_session(self):
+        """Intent: the ticket's Done when, fourth item - a STATUS line missing one of its
+        three fields, or with one empty, gets a finding even where neither skill loaded."""
+        broken = (
+            "STATUS: needs operator: none; workers running: 0",
+            "STATUS: workers running: 0; background tasks: none",
+            "STATUS: needs operator: none; background tasks: none",
+            "STATUS: needs operator: none; workers running: ; background tasks: none",
+        )
+        for line in broken:
+            with self.subTest(line=line):
+                code, out = self.graded(CONDENSED_CLEAN + "\n" + line + "\n", None)
+                self.assertEqual(code, 1, out)
+                self.assertIn("  - status:", out)
+
+    def test_a_status_line_inside_the_header_is_a_finding(self):
+        """Intent: the ticket's Done when, fourth item - a STATUS line placed in the
+        header, not on the last line, gets a finding. Checked where neither skill
+        loaded, so the finding is about placement and not about a missing footer."""
+        header_status = CONDENSED_CLEAN.replace(
+            "Changed: nothing\n", "Changed: nothing\n" + self.STATUS + "\n", 1)
+        code, out = self.graded(header_status, None)
+        self.assertEqual(code, 1, out)
+        self.assertIn("  - status:", out)
+
+    def test_a_continuation_reply_ending_with_status_passes_in_a_layer_session(self):
+        """Intent: the ticket's placement note - a reply with the continuation line in its
+        header and a STATUS last line passes in a session that loaded workstream-primary."""
+        path = self.transcript(
+            k_user("one"), k_skill("workstream-primary"), k_result(), k_text(K_MARKER),
+            k_final(self.WITH_STATUS), k_peer("a report"), k_text(K_MARKER),
+            k_final(self.CONTINUED), k_user("three - in progress"))
+        out = io.StringIO()
+        argv = ["check_response.py", "--tool", "claude", "--transcript", str(path), "--previous"]
+        with mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.stderr", new=io.StringIO()):
+            code = cr.main()
+        self.assertNotIn("  - status:", out.getvalue())
+        self.assertNotIn("  - continuation:", out.getvalue())
+        self.assertEqual(code, 0, out.getvalue())
+
+    FENCED_LAST = CONDENSED_CLEAN + "\n```\n" + STATUS + "\n```\n"
+    FENCED_EARLIER = CONDENSED_CLEAN.replace(
+        "and the gate passed the draft.\n",
+        "and the gate passed the draft.\n\n```\n" + STATUS + "\n```\n") + "\n" + STATUS + "\n"
+
+    def test_a_reply_ending_in_a_fenced_status_line_gets_a_finding_that_names_the_fence(self):
+        """Intent: the ticket's Done when, sixth item - a reply whose last non-empty content
+        is a code fence ending in a well-formed STATUS line gets a status: finding that
+        names the fence, under --previous in a layer session."""
+        code, out = self.graded(self.FENCED_LAST, "workstream-primary")
+        self.assertEqual(code, 1, out)
+        named = [line for line in out.splitlines()
+                 if line.startswith("  - status:") and "fence" in line]
+        self.assertTrue(named, out)
+
+    def test_a_fenced_status_example_earlier_in_a_reply_gets_no_fence_finding(self):
+        """Characterisation: the ticket's Done when, sixth item - a STATUS line in a fence
+        earlier in the reply is a quoted example and stays ignored, while a plain STATUS
+        last line is accepted: no finding at all. Passes before the change, and guards the
+        fenced-footer finding against firing on every fence."""
+        code, out = self.graded(self.FENCED_EARLIER, "workstream-primary")
+        self.assertNotIn("fence", out)
+        self.assertNotIn("  - status:", out)
+        self.assertEqual(code, 0, out)
+
+
+class StopHookStatus(TranscriptCase):
+    """--stop reads the layer from the transcript_path, so a layer 1 or 2 reply that lacks its
+    STATUS footer is reported, and a fenced footer is named. Both are report-only."""
+
+    STATUS = StatusFooter.STATUS
+    WITH_STATUS = StatusFooter.WITH_STATUS
+    ROOT = Path(__file__).resolve().parent.parent
+    SPEC = ROOT / "rules" / "spec-response-shape.md"
+
+    def run_stop(self, reply: str, path: Path | str | None) -> tuple[int, str, str]:
+        hook: dict[str, object] = {"last_assistant_message": K_MARKER + "\n" + reply}
+        if path is not None:
+            hook["transcript_path"] = str(path)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", ["check_response.py", "--stop"]), \
+                mock.patch("sys.stdin", new=io.StringIO(json.dumps(hook))), \
+                mock.patch("sys.stdout", new=out), mock.patch("sys.stderr", new=err):
+            code = cr.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def layered(self, skill: str) -> Path:
+        """A transcript of an operator turn in a session that has loaded `skill`."""
+        return self.transcript(k_user("one"), k_skill(skill), k_result())
+
+    def spec_section(self) -> str:
+        raw = self.SPEC.read_text(encoding="utf-8")
+        start = raw.index("\n## STATUS footer")
+        end = raw.find("\n## ", start + 1)
+        return " ".join(raw[start:end if end != -1 else len(raw)].split())
+
+    def test_a_layer_reply_with_no_status_last_line_is_reported_and_exits_0(self):
+        """Intent: the ticket's Done when, fifth item - --stop with a transcript_path of a
+        session that loaded workstream-primary or orchestrator reports a reply with no
+        STATUS last line as a status: finding, and exits 0 for it."""
+        for skill in ("workstream-primary", "orchestrator"):
+            with self.subTest(skill=skill):
+                code, out, err = self.run_stop(CONDENSED_CLEAN, self.layered(skill))
+                self.assertIn("  - status:", err)
+                self.assertEqual((code, out), (0, ""), err)
+
+    def test_a_layer_reply_with_a_well_formed_status_last_line_has_no_status_finding(self):
+        """Intent: the ticket's Done when, fifth item - the same reply ending with a
+        well-formed STATUS line gets no status: finding."""
+        for skill in ("workstream-primary", "orchestrator"):
+            with self.subTest(skill=skill):
+                code, out, err = self.run_stop(self.WITH_STATUS, self.layered(skill))
+                self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_no_transcript_path_gives_no_status_finding_for_a_missing_line(self):
+        """Characterisation: the ticket's Done when, fifth item - with no transcript_path the
+        layer is unknown, so a reply with no STATUS line gets no status: finding. Passes
+        before the change, and guards the coder against requiring the line blindly."""
+        code, out, err = self.run_stop(CONDENSED_CLEAN, None)
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_an_unreadable_transcript_gives_no_status_finding_for_a_missing_line(self):
+        """Characterisation: the ticket's Done when, fifth item - a transcript_path to a
+        missing file, or to a file of non-JSON lines, gives no status: finding for a missing
+        line. Passes before the change, and guards the coder against failing closed."""
+        gone = self.layered("workstream-primary")
+        gone.unlink()
+        self.addCleanup(gone.touch)  # the case cleanup unlinks it once more
+        junk = self.transcript("not json", "{broken", "]]]")
+        for label, path in (("missing", gone), ("unparseable", junk)):
+            with self.subTest(transcript=label):
+                code, out, err = self.run_stop(CONDENSED_CLEAN, path)
+                self.assertNotIn("status:", err)
+                self.assertEqual((code, out), (0, ""), err)
+
+    def test_a_reply_ending_in_a_fenced_status_line_gets_a_finding_that_names_the_fence(self):
+        """Intent: the ticket's Done when, sixth item - a reply whose last non-empty content
+        is a code fence ending in a well-formed STATUS line gets a status: finding that
+        names the fence, under --stop with a layer transcript, report-only."""
+        code, out, err = self.run_stop(StatusFooter.FENCED_LAST, self.layered("orchestrator"))
+        named = [line for line in err.splitlines()
+                 if line.startswith("  - status:") and "fence" in line]
+        self.assertTrue(named, err)
+        self.assertEqual((code, out), (0, ""), err)
+
+    def test_a_fenced_status_example_earlier_in_a_reply_gets_no_fence_finding(self):
+        """Characterisation: the ticket's Done when, sixth item - under --stop with a layer
+        transcript, a fenced STATUS example earlier and a plain STATUS last line give no
+        finding. Passes before the change, and guards the fenced-footer finding."""
+        code, out, err = self.run_stop(StatusFooter.FENCED_EARLIER,
+                                       self.layered("workstream-primary"))
+        self.assertNotIn("fence", err)
+        self.assertNotIn("status:", err)
+        self.assertEqual((code, out), (0, ""), err)
+
+    def test_the_spec_says_stop_requires_the_status_line_when_it_can_read_the_transcript(self):
+        """Intent: the ticket's Done when, seventh item - the STATUS footer section says
+        --stop requires the line when it can read the transcript, and no longer says it
+        does not."""
+        section = self.spec_section()
+        self.assertIn("`--stop` requires the line", section)
+        self.assertIn("when it can read the transcript", section)
+        self.assertNotIn("`--stop` does not require it", section)
+
+    def test_the_spec_says_the_status_line_is_plain_text_never_in_a_fence(self):
+        """Intent: the ticket's Done when, seventh item - the STATUS footer section says the
+        line is plain text, never in a fence."""
+        section = self.spec_section()
+        self.assertIn("plain text", section)
+        self.assertIn("never in a fence", section)
+
+
 class StopHook(unittest.TestCase):
     """--stop: a Claude Code Stop hook. Hook JSON on stdin, findings on stderr, exit 2 to
     send the turn back once, and never a block on the checker's own failure."""
@@ -2370,6 +2622,256 @@ class StopHook(unittest.TestCase):
             code, out, err = self.run_stop(stdin)
             self.assertEqual((code, out), (0, ""), stdin)
             self.assertEqual(len(err.strip().splitlines()), 1, stdin)
+
+
+class StopHookContinuation(TranscriptCase):
+    """--stop with a transcript_path: a notification turn's reply is checked against the turn
+    before it, and a continuation finding sends the reply back once."""
+
+    LINE = ContinuationReplies.LINE
+    PREVIOUS = CONDENSED_CLEAN.replace("DC1", "DC2")
+    CONTINUED = ContinuationReplies.CONTINUED.replace("DC2", "DC3")
+    REUSED = CONTINUED.replace("DC3", "DC1")
+    NO_LINE = CONTINUED.replace(LINE + "\n", "")
+    ROOT = Path(__file__).resolve().parent.parent
+    SPEC = ROOT / "rules" / "spec-response-shape.md"
+
+    def run_stop(self, reply: str, path: Path | str | None, **extra) -> tuple[int, str, str]:
+        hook: dict[str, object] = {"last_assistant_message": K_MARKER + "\n" + reply, **extra}
+        if path is not None:
+            hook["transcript_path"] = str(path)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", ["check_response.py", "--stop"]), \
+                mock.patch("sys.stdin", new=io.StringIO(json.dumps(hook))), \
+                mock.patch("sys.stdout", new=out), mock.patch("sys.stderr", new=err):
+            code = cr.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def notified(self, *tail: str) -> Path:
+        """A transcript whose last turn is a subagent hand-back, after a finished reply."""
+        return self.transcript(k_user("one"), k_final(self.PREVIOUS), k_peer("a report"), *tail)
+
+    def spec_text(self) -> str:
+        return " ".join(self.SPEC.read_text(encoding="utf-8").split())
+
+    def test_a_reused_id_in_a_notification_turn_sends_the_reply_back(self):
+        """Intent: the ticket's Done when, first item - --stop with a transcript_path whose
+        previous turn reached DC2 reports a reply that opens at DC1 as a continuation
+        finding and exits 2."""
+        code, out, err = self.run_stop(self.REUSED, self.notified())
+        self.assertEqual(code, 2, err)
+        self.assertIn("  - continuation: DC1 reuses an ID", err)
+        self.assertIn("already reached DC2", err)
+        self.assertEqual(out, "")
+
+    def test_a_missing_continuation_line_sends_the_reply_back(self):
+        """Intent: the ticket's Done when, first item - the continuation finding covers the
+        missing continuation line too, and sends the reply back."""
+        code, _, err = self.run_stop(self.NO_LINE, self.notified())
+        self.assertEqual(code, 2, err)
+        self.assertIn(f"  - continuation: header lacks the line '{self.LINE}'", err)
+
+    def test_a_well_formed_continuation_reply_passes_silently(self):
+        """Characterisation: the ticket's Done when, first item - a reply with the continuation
+        line and counters carried on from the previous turn has no continuation finding.
+        Passes before the change, and guards it against a false positive."""
+        code, out, err = self.run_stop(self.CONTINUED, self.notified())
+        self.assertEqual((code, out), (0, ""), err)
+        self.assertNotIn("continuation:", err)
+
+    def test_stop_hook_active_still_exits_0_and_reports_the_finding(self):
+        """Intent: the ticket's Done when, second item - with stop_hook_active set the exit
+        is 0, and the continuation finding is still printed."""
+        code, _, err = self.run_stop(self.REUSED, self.notified(), stop_hook_active=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn("  - continuation: DC1 reuses an ID", err)
+
+    def test_an_operator_turn_has_no_continuation_finding(self):
+        """Characterisation: the continuation check runs only for a notification turn, so a
+        turn the operator opened that restarts at DC1 is not flagged. Passes before the
+        change, and guards it."""
+        path = self.transcript(k_user("one"), k_final(self.PREVIOUS), k_user("two"))
+        code, out, err = self.run_stop(CONDENSED_CLEAN, path)
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_a_transcript_holding_the_final_text_gives_the_same_result(self):
+        """Intent: the design for the ticket - the transcript may or may not already hold the
+        current turn's final text, and the reply is never compared with itself. Both give the
+        same finding, the same exit."""
+        without = self.run_stop(self.REUSED, self.notified())
+        holding = self.run_stop(self.REUSED, self.notified(k_final(self.REUSED)))
+        self.assertEqual(holding, without)
+        self.assertEqual(holding[0], 2, holding[2])
+        self.assertIn("  - continuation: DC1 reuses an ID", holding[2])
+
+    def test_a_transcript_holding_the_final_text_does_not_flag_a_good_reply(self):
+        """Characterisation: a well-formed continuation reply already in the transcript is not
+        compared with itself, so it is not flagged as reusing its own IDs. Passes before the
+        change, and guards the coder against grading the last turn as its own predecessor."""
+        code, out, err = self.run_stop(self.CONTINUED, self.notified(k_final(self.CONTINUED)))
+        self.assertEqual((code, out), (0, ""), err)
+        self.assertNotIn("continuation:", err)
+
+    def test_no_transcript_path_grades_as_today(self):
+        """Characterisation: the ticket's Done when, third item - no transcript_path grades
+        the reply alone, with no continuation finding, exit 0. Passes before the change."""
+        code, out, err = self.run_stop(self.REUSED, None)
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_a_missing_transcript_file_grades_as_today(self):
+        """Characterisation: the ticket's Done when, third item - a transcript_path to a file
+        that does not exist grades the reply alone, never blocks, never a traceback."""
+        gone = self.notified()
+        gone.unlink()
+        self.addCleanup(gone.touch)  # the case cleanup unlinks it once more
+        code, out, err = self.run_stop(self.REUSED, gone)
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_an_unparseable_transcript_file_grades_as_today(self):
+        """Characterisation: the ticket's Done when, third item - a transcript_path to a file
+        of non-JSON lines grades the reply alone, never blocks, never a traceback."""
+        junk = self.transcript("not json", "{broken", "]]]")
+        code, out, err = self.run_stop(self.REUSED, junk)
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_a_decision_finding_still_sends_back_on_an_unreadable_transcript(self):
+        """Characterisation: the ticket's Done when, third item - the unreadable transcript
+        costs the continuation check only; a decisions: finding still exits 2."""
+        reply = StopHook.DECISION_FINDING
+        code, _, err = self.run_stop(reply, self.transcript("not json"))
+        self.assertEqual(code, 2, err)
+        self.assertIn("  - decisions:", err)
+        self.assertNotIn("continuation:", err)
+
+    def test_continuation_is_a_send_back_prefix(self):
+        """Intent: the ticket's Rulings - continuation: joins SEND_BACK_PREFIXES, so a
+        continuation finding sends the reply back."""
+        self.assertIn("continuation:", shape.SEND_BACK_PREFIXES)
+        self.assertTrue(shape.sends_back("continuation: DC1 reuses an ID - the previous "
+                                         "reply already reached DC2"))
+        self.assertFalse(shape.sends_back("summary mentions continuation: here"))
+
+    def test_the_spec_names_a_message_from_another_session_as_a_notification_turn(self):
+        """Intent: the ticket's Done when, fourth item - the section on a reply with no
+        operator message before it names a message from another session."""
+        text = self.spec_text()
+        start = text.index("### A reply with no operator message before it")
+        section = text[start:text.index("```", start)]
+        self.assertIn("a message from another session", section)
+
+    def test_the_spec_lists_continuation_among_the_send_back_findings(self):
+        """Intent: the ticket's Done when, fourth item - the --stop paragraph lists
+        `continuation:` beside `decisions:` as a send-back finding, and says it reads the
+        transcript_path."""
+        text = self.spec_text()
+        start = text.index("`check_response.py --stop` is the Claude Code `Stop` hook mode")
+        paragraph = text[start:text.index("**A Cursor transcript can lag", start)]
+        self.assertIn("`decisions:`", paragraph)
+        self.assertIn("`continuation:`", paragraph)
+        self.assertIn("`transcript_path`", paragraph)
+
+
+class SummaryTopics(unittest.TestCase):
+    """A Summary topic runs from one bold lead-in to the next: lists and further
+    paragraphs belong inside it, and more evidence counts as a pointer."""
+
+    PARAGRAPH = ('The live state matches the seed: `git status -sb` printed '
+                 '"## main...origin/main", and the gate passed the draft.')
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def findings(self, summary: str) -> list[str]:
+        text = CONDENSED_CLEAN.replace(self.PARAGRAPH, summary)
+        return shape.check(*shape.parse(text))[0]
+
+    def summary_findings(self, summary: str) -> list[str]:
+        return [f for f in self.findings(summary) if f.startswith("summary:")]
+
+    def rule(self, name: str) -> str:
+        return " ".join((self.ROOT / "rules" / name).read_text(encoding="utf-8").split())
+
+    def test_two_topics_with_paragraph_and_list_pass(self):
+        """Intent: the ticket's Done when, first item - a Summary of two topics, each a
+        bold lead-in, a paragraph and a bulleted list, passes."""
+        summary = (
+            "**State.** " + self.PARAGRAPH + "\n"
+            "- the seed was read\n"
+            "- the gate was run\n\n"
+            '**Gate.** The draft passed: "the gate passed the draft".\n'
+            "- one check was skipped\n"
+            "- none failed"
+        )
+        self.assertEqual(self.summary_findings(summary), [])
+
+    def test_first_block_without_a_bold_lead_in_still_fails(self):
+        """Intent: the ticket's Done when, second item - a Summary whose first block has
+        no bold lead-in still fails."""
+        summary = ("The state matches. " + self.PARAGRAPH + "\n"
+                   "- the seed was read\n\n"
+                   "**Gate.** It passed.")
+        found = self.summary_findings(summary)
+        self.assertTrue(any("no bold lead-in" in f for f in found), found)
+
+    def test_a_summary_with_no_pointer_still_fails(self):
+        """Intent: the ticket's Done when, second item - a Summary with no pointer still
+        fails with `summary: no pointer`."""
+        summary = "**State.** The live state matches the seed.\n- the gate passed"
+        found = self.summary_findings(summary)
+        self.assertTrue(any(f.startswith("summary: no pointer") for f in found), found)
+
+    def test_a_bulleted_summary_raises_no_item_id_finding(self):
+        """Intent: the ticket's Done when, third item - no "has no item ID" finding is
+        raised for a Summary line."""
+        summary = "**State.** " + self.PARAGRAPH + "\n- the seed was read\n- the gate was run"
+        found = [f for f in self.findings(summary) if "has no item ID" in f]
+        self.assertEqual(found, [])
+
+    def test_a_markdown_link_is_a_pointer(self):
+        """Intent: the ticket's Done when, fourth item - a markdown link counts as a
+        pointer."""
+        summary = "**State.** The check is described in [the page](https://example.com/x)."
+        self.assertEqual(self.summary_findings(summary), [])
+
+    def test_a_backticked_seven_character_hash_is_a_pointer(self):
+        """Intent: the ticket's Done when, fourth item - a backticked 7-character hex
+        hash counts as a pointer."""
+        summary = "**State.** The change landed as `abc1234`."
+        self.assertEqual(self.summary_findings(summary), [])
+
+    def test_a_backticked_word_that_is_not_hex_is_not_a_pointer(self):
+        """Intent: the ticket's Done when, fourth item - only hex hashes count, so a
+        backticked word still fails with no pointer."""
+        summary = "**State.** The step was `deploy` and it ran."
+        found = self.summary_findings(summary)
+        self.assertTrue(any(f.startswith("summary: no pointer") for f in found), found)
+
+    def test_shape_spec_allows_lists_inside_a_summary_topic(self):
+        """Intent: the ticket's Done when, fifth item - the spec's Summary rule agrees
+        with the topic rule."""
+        text = self.rule("spec-response-shape.md").lower()
+        self.assertIn("lists are allowed inside a summary topic", text)
+        self.assertNotIn("there are no list markers", text)
+
+    def test_shape_spec_rule_four_names_the_summary_topic_exception(self):
+        """Intent: the ticket's Done when, fifth item - rule 4's nesting rule names the
+        Summary topic list as its exception."""
+        text = self.rule("spec-response-shape.md")
+        start = text.index("4. **Sub-items are nested list items")
+        rule_four = text[start:text.index(" 5. **", start)]
+        self.assertIn("Summary topic", rule_four)
+
+    def test_claude_code_spec_does_not_separate_topics_by_blank_lines_alone(self):
+        """Intent: the ticket's Done when, fifth item - the Claude Code spec no longer
+        says blank lines separate Summary topics without a lead-in."""
+        text = self.rule("spec-claude-code.md")
+        self.assertNotIn("leave a blank line between topics", text)
+        self.assertIn("bold lead-in", text)
+
+    def test_prescriptions_quote_the_came_up_heading_and_none(self):
+        """Intent: the ticket's Done when, sixth item - the prescriptions quote
+        `## Came up while doing it` and `None.`."""
+        text = self.rule("prescriptions.md")
+        self.assertIn("`## Came up while doing it`", text)
+        self.assertIn("`None.`", text)
 
 
 if __name__ == "__main__":

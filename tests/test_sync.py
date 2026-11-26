@@ -2725,6 +2725,143 @@ class MainWithAnotherProfile(unittest.TestCase):
         self.assertEqual({str(p) for p in seen}, {str(self.PROFILE.resolve())})
 
 
+class FolderTarget(unittest.TestCase):
+    """A manifest target with `kind: folder` is a plain folder: rendered into and checked
+    without git, and never committed, pushed or rolled out. A target with no `kind`, or any
+    other, is a git repository as before.
+
+    Runs main() in process against a copy of the example profile whose manifest gains a
+    synthetic `acme-parent` folder target. source_sha is fixed, because a dirty checkout
+    refuses it and that refusal has its own tests."""
+
+    def setUp(self):
+        self.profile = locked_example(self)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.folder = self.root / "acme-parent"
+        self.folder.mkdir()
+
+    def tearDown(self):
+        build_plan("t", {}, DEFAULTS, SHA, MANIFEST)  # restores the stamp source name
+
+    def declare(self, name: str, cfg: dict, *, only: bool = False) -> None:
+        path = self.profile / "profile.yaml"
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data["targets"] = {name: cfg} if only else {**(data.get("targets") or {}), name: cfg}
+        path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8", newline="\n")
+
+    def run_main(self, *flags: str, patches=()) -> tuple[int, str]:
+        # --rollout refuses --no-fetch, so it is added for every other run only.
+        fetch = [] if "--rollout" in flags else ["--no-fetch"]
+        argv = ["sync.py", "--profile", str(self.profile), "--root", str(self.root),
+                *fetch, *flags]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(sys, "argv", argv))
+            stack.enter_context(mock.patch.object(sync, "source_sha", return_value=SHA))
+            for patch in patches:
+                stack.enter_context(patch)
+            stack.enter_context(contextlib.redirect_stdout(out))
+            stack.enter_context(contextlib.redirect_stderr(err))
+            code = sync.main()
+        return code, out.getvalue() + err.getvalue()
+
+    def test_write_renders_the_files_into_a_plain_folder(self):
+        """Intent: the ticket's Done when, first item - a manifest entry can declare a root
+        target that is a plain folder, and --write renders that target's files into it."""
+        self.declare("acme-parent", {"kind": "folder"})
+        self.assertFalse((self.folder / ".git").exists())
+        code, output = self.run_main("--write", "acme-parent")
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("is not a git repository", output)
+        self.assertTrue((self.folder / "AGENTS.md").is_file(), output)
+        self.assertFalse((self.folder / ".git").exists(), "a render must not make it a repository")
+
+    def test_check_is_in_sync_after_a_render_of_a_plain_folder(self):
+        """Intent: the ticket's Done when, second item - --check on the plain folder reports
+        in sync right after the render, without git."""
+        self.declare("acme-parent", {"kind": "folder"})
+        code, output = self.run_main("--write", "acme-parent")
+        self.assertEqual(code, 0, output)
+        code, output = self.run_main("--check", "acme-parent")
+        self.assertEqual(code, 0, output)
+        self.assertIn("[OK] committed output matches a render", output)
+
+    def test_check_reports_drift_after_a_rendered_file_is_edited(self):
+        """Intent: the ticket's Done when, second item - --check reports drift on the plain
+        folder the way it does for a repository, after a rendered file is edited."""
+        self.declare("acme-parent", {"kind": "folder"})
+        code, output = self.run_main("--write", "acme-parent")
+        self.assertEqual(code, 0, output)
+        rendered = self.folder / "AGENTS.md"
+        rendered.write_text(rendered.read_text(encoding="utf-8") + "\nhand edit\n",
+                            encoding="utf-8", newline="\n")
+        code, output = self.run_main("--check", "acme-parent")
+        self.assertEqual(code, 1, output)
+        self.assertIn("[FAIL]", output)
+        self.assertNotIn("is not a git repository", output)
+
+    def test_a_plain_folder_with_no_kind_is_still_refused(self):
+        """Characterisation: the renderer refuses a target that is not a git repository with
+        "is not a git repository", and no test pinned it before. Passes on unchanged code; it
+        guards the ticket's Done when, third item, once folders are allowed."""
+        self.declare("acme-plain", {})
+        (self.root / "acme-plain").mkdir()
+        code, output = self.run_main("--write", "acme-plain")
+        self.assertEqual(code, 1, output)
+        self.assertIn("is not a git repository", output)
+        self.assertFalse((self.root / "acme-plain" / "AGENTS.md").exists())
+
+    def test_a_rollout_runs_no_git_command_against_the_folder(self):
+        """Intent: the ticket's Done when, fourth item - no commit, push or rollout step
+        runs against a root target. The target must not run git or report a failure; the
+        rollout's own preconditions (source sha, ahead count, pending self-render) are
+        stubbed because they are not under test."""
+        self.declare("acme-parent", {"kind": "folder"}, only=True)
+        git_calls = mock.Mock(return_value="")
+        code, output = self.run_main(
+            "--rollout", "Add the parent rules",
+            patches=(mock.patch.object(sync, "git_at", git_calls),
+                     mock.patch.object(sync, "run", return_value="0"),
+                     mock.patch.object(sync, "build_plan", return_value={})))
+        touched = [c for c in git_calls.call_args_list
+                   if c.args and Path(c.args[0]).resolve() == self.folder.resolve()]
+        self.assertEqual(touched, [], output)
+        self.assertNotIn("FAILED", output)
+        self.assertNotIn("is not a git repository", output)
+        self.assertEqual(code, 0, output)
+        self.assertFalse((self.folder / ".git").exists())
+
+    def test_a_target_kind_other_than_folder_is_refused(self):
+        """Intent: the ticket's Done when, third item - folder is the only target kind, so a
+        manifest that declares any other kind is refused, naming the kind and the one allowed."""
+        self.declare("acme-parent", {"kind": "repo"})
+        code, output = self.run_main("--write", "acme-parent")
+        self.assertEqual(code, 1, output)
+        self.assertIn("'repo'", output)
+        self.assertIn("only kind is 'folder'", output)
+        self.assertFalse((self.folder / "AGENTS.md").exists())
+
+    def test_write_removes_a_stamped_orphan_from_a_plain_folder(self):
+        """Intent: the ticket's Done when, first and second items - a plain folder has no
+        index, so --write removes a stale generated file by unlinking it directly, and leaves
+        a file that carries no stamp where it is."""
+        self.declare("acme-parent", {"kind": "folder"})
+        code, output = self.run_main("--write", "acme-parent")
+        self.assertEqual(code, 0, output)
+        rendered = next((self.folder / ".github" / "rules").glob("*.md"))
+        orphan = rendered.with_name("acme-retired-rule.md")
+        orphan.write_text(rendered.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+        kept = rendered.with_name("acme-hand-written.md")
+        kept.write_text("A note with no generated stamp.\n", encoding="utf-8", newline="\n")
+        code, output = self.run_main("--write", "acme-parent")
+        self.assertEqual(code, 0, output)
+        self.assertIn(f"removed orphan {orphan.relative_to(self.folder).as_posix()}", output)
+        self.assertFalse(orphan.exists())
+        self.assertTrue(kept.is_file())
+
+
 class StampSource(unittest.TestCase):
     """The stamp names the profile's source repository, and every detector accepts any
     source name."""

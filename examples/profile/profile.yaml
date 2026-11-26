@@ -139,3 +139,11 @@ targets:
       - session-logging
     notes: >
       A target that opts out of two rules.
+
+  # `kind: folder` declares a plain folder that is not a git repository, such as the folder
+  # that holds several repositories. `--write` renders into it and `--check` compares a
+  # fresh render with the files on disk, with no git. A rollout skips it: nothing is
+  # committed or pushed there. Leave `kind` out for a repository; any other value refuses.
+  # Uncomment to use.
+  # example-parent:
+  #   kind: folder

@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/shape.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-24
+# Last Updated: 2026-11-26
 # Description: The tool-neutral half of the response checker.
 #              Parses a reply against the response shape, grades it, and walks
 #              back over finished turns to collect replies whose turn never ran
@@ -72,11 +72,12 @@ NOTIFICATION = "notification"
 
 # Layout limits of the condensed Summary. They are named here so that a profile's fork
 # changes the shape in one place: the toolbox does not resist a different response shape.
-# True: several paragraphs are allowed when every one opens with a bold lead-in.
-# False: exactly one paragraph.
+# A topic runs from one bold lead-in to the next, and the first block opens with one.
+# True: several topics are allowed. False: exactly one topic.
 SUMMARY_MULTI_PARAGRAPH_WITH_BOLD = True
-# True: a list marker (-, * or 1.) at the start of a Summary line is a finding.
-SUMMARY_LIST_MARKERS_FORBIDDEN = True
+# True: a list marker (-, * or 1.) at the start of a Summary line is a finding. The
+# default is False: lists are allowed inside a topic.
+SUMMARY_LIST_MARKERS_FORBIDDEN = False
 BOLD_LEAD_IN = "**"
 LIST_MARKER = re.compile(r"^\s*(?:[-*]\s|\d+\.\s)")
 
@@ -90,6 +91,14 @@ ID_AT_START = re.compile(r"^(" + "|".join(ID_PREFIXES) + r")(\d+)\b")
 # a reference in a paragraph, not an item. A bold item ends its line or is followed by a tag.
 BOLD_REFERENCE = re.compile(
     r"^\s*(?:[-*]\s+)?\*\*(?:" + "|".join(ID_PREFIXES) + r")\d+\b[^*]*\*\*\s+\w")
+
+# The reply's footer for layers 1 and 2: its last line, three fields, each non-empty.
+STATUS_PREFIX = "STATUS:"
+STATUS_SHAPE = ("STATUS: needs operator: <text>; workers running: <text>; "
+                "background tasks: <text>")
+STATUS_FORM = re.compile(
+    r"STATUS:\s*needs operator:\s*[^;\s][^;]*;\s*workers running:\s*[^;\s][^;]*;\s*"
+    r"background tasks:\s*\S.*")
 
 MODES = {"planning", "execution", "planning + execution"}
 
@@ -124,7 +133,7 @@ CAPS = {"cameupwhiledoingit": 3, "recommendednext": 4}  # decisions deliberately
 # The Stop hook sends a reply back only for a finding that starts with one of these: it can
 # change what the operator is asked or decides. Every other finding is report-only. A
 # profile changes the split by editing this tuple.
-SEND_BACK_PREFIXES = ("decisions:",)
+SEND_BACK_PREFIXES = ("decisions:", "continuation:")
 
 
 def sends_back(finding: str) -> bool:
@@ -160,6 +169,8 @@ POINTERS = (
     ("url", re.compile(r"https?://\S+")),
     ("quotation", re.compile(r"[\"\u201c][^\"\u201d]{8,}[\"\u201d]")),
     ("command or output", re.compile(r"`[^`\n]*\s[^`\n]*`")),
+    ("markdown link", re.compile(r"\[[^\]\n]+\]\([^)\s]+\)")),
+    ("commit hash", re.compile(r"`[0-9a-fA-F]{7,}`")),
 )
 
 
@@ -183,6 +194,7 @@ class Turn:
     last: str = ""
     findings: list[str] = field(default_factory=list)
     operator_input: bool = False  # the operator gave input inside this turn
+    layer: bool = False  # the transcript shows a layer 1 or 2 skill loaded: STATUS required
 
 
 def invoked_in(message: str) -> str | None:
@@ -337,6 +349,19 @@ def paragraphs(lines: list[str]) -> list[str]:
     return found
 
 
+def summary_topics(lines: list[str]) -> list[str]:
+    """The Summary's topics: each runs from a line opening with a bold lead-in, up to the
+    next such line. A list item that opens with bold text belongs to the topic it is in."""
+    topics: list[list[str]] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(BOLD_LEAD_IN) and not LIST_MARKER.match(line):
+            topics.append([stripped])
+        elif topics and stripped:
+            topics[-1].append(stripped)
+    return [" ".join(topic) for topic in topics]
+
+
 def condensed_findings(sections: dict, mode: str | None = None) -> list[str]:
     """Findings that apply only to the condensed shape."""
     findings: list[str] = []
@@ -352,15 +377,19 @@ def condensed_findings(sections: dict, mode: str | None = None) -> list[str]:
     if "summary" in sections:
         lines = sections.get("summary" + LINES, [])
         found = paragraphs(lines)
+        topics = summary_topics(lines)
         if not found:
             findings.append("summary: 0 paragraphs, at least 1 required")
-        elif len(found) > 1 and not SUMMARY_MULTI_PARAGRAPH_WITH_BOLD:
-            findings.append(f"summary: {len(found)} paragraphs, exactly 1 allowed")
-        elif len(found) > 1:
-            for number, paragraph in enumerate(found, 1):
-                if not paragraph.startswith(BOLD_LEAD_IN):
-                    findings.append(f"summary: paragraph {number} ('{paragraph[:40]}') has no "
-                                    "bold lead-in - several paragraphs each open with one")
+        else:
+            if len(topics) > 1 and not SUMMARY_MULTI_PARAGRAPH_WITH_BOLD:
+                findings.append(f"summary: {len(topics)} topics, exactly 1 allowed")
+            # A Summary with no bold lead-in at all is one unlabelled paragraph and stays
+            # valid. Once a topic opens with one, the first block must too, and a list
+            # belongs inside a topic, so a Summary never opens with one.
+            opens_with_list = bool(LIST_MARKER.match(next(row for row in lines if row.strip())))
+            if (topics or opens_with_list) and not found[0].startswith(BOLD_LEAD_IN):
+                findings.append(f"summary: first block ('{found[0][:40]}') has no bold "
+                                "lead-in - a topic opens with one")
         if SUMMARY_LIST_MARKERS_FORBIDDEN:
             marked = [line.strip() for line in lines if LIST_MARKER.match(line)]
             if marked:
@@ -495,6 +524,8 @@ def check(header: list[str], sections: dict[str, list[dict]]) -> tuple[list[str]
         if not key.endswith(ENTRIES):
             continue
         name = key[:-len(ENTRIES)]
+        if name == "summary":
+            continue  # a Summary topic is prose and lists, not an ID'd item
         for entry in entries:
             if name in RESURFACED:
                 if not QUESTION.match(entry):
@@ -563,11 +594,57 @@ def continuation_findings(turns: list[Turn], index: int) -> list[str]:
     return findings
 
 
+def status_findings(text: str, layer: bool = False) -> list[str]:
+    """Findings about the STATUS footer of one reply.
+
+    Any line starting 'STATUS:' outside a fence must be well formed and be the reply's
+    last non-empty line, in any session. A reply with no such last line is a finding
+    only when the adapter marked the turn as layer 1 or 2. A reply whose last non-empty
+    content is a code fence ending in a STATUS line gets a finding that names the fence:
+    the footer is plain text, never in a fence."""
+    lines: list[str] = []
+    fence: str | None = None
+    inner: str | None = None
+    closed_inner: str | None = None
+    for raw in text.splitlines():
+        marker = re.match(r"^\s*(`{3,}|~{3,})", raw)
+        if marker and (fence is None or marker.group(1).startswith(fence)):
+            if fence is None:
+                fence, inner, closed_inner = marker.group(1)[:3], None, None
+            else:
+                fence, closed_inner = None, inner
+            continue
+        if raw.strip():
+            if fence is None:
+                lines.append(raw.strip())
+                closed_inner = None
+            else:
+                inner = raw.strip()
+    findings: list[str] = []
+    if closed_inner is not None and closed_inner.startswith(STATUS_PREFIX):
+        findings.append(f"status: '{closed_inner[:60]}' is inside a code fence - the footer is "
+                        f"plain text, never in a fence")
+    last = len(lines) - 1
+    for index, line in enumerate(lines):
+        if not line.startswith(STATUS_PREFIX):
+            continue
+        if not STATUS_FORM.fullmatch(line):
+            findings.append(f"status: '{line[:60]}' lacks a non-empty field - the line reads "
+                            f"'{STATUS_SHAPE}'")
+        if index != last:
+            findings.append(f"status: '{line[:60]}' is not the reply's last line")
+    if layer and not (lines and lines[-1].startswith(STATUS_PREFIX)):
+        findings.append(f"status: no STATUS last line - a layer 1 or 2 reply ends with "
+                        f"'{STATUS_SHAPE}'")
+    return findings
+
+
 def grade(label: str, text: str, interrupted: bool = False, invoked: str | None = None,
-          extra: list[str] | None = None) -> int:
+          extra: list[str] | None = None, layer: bool = False) -> int:
     """Report one reply. Returns 0 clean, 1 findings, EXIT_NOT_APPLICABLE if unshaped.
 
-    extra is a Turn's own findings, reported after the structural ones."""
+    extra is a Turn's own findings, reported after the structural ones. layer is whether
+    the adapter marked the turn as layer 1 or 2, which makes the STATUS footer required."""
     if interrupted:
         print(f"\n{label}: NOT APPLICABLE - cut short by a message sent mid-turn. The turn")
         print("carried on after it, so this slice is progress narration, not a reply.")
@@ -583,6 +660,7 @@ def grade(label: str, text: str, interrupted: bool = False, invoked: str | None 
 
     header, sections = parse(text)
     findings, mode = check(header, sections)
+    findings.extend(status_findings(text, layer))
     findings.extend(extra or [])
     count = sum(not name.endswith((ENTRIES, LINES)) for name in sections)
     print(f"\n{label}: mode={mode} | shape={shape_of(sections)} | {len(text)} chars | "

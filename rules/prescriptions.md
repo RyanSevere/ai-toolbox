@@ -42,7 +42,7 @@ spec files and load when they are needed.
 - No emojis, anywhere, unless explicitly requested and confirmed.
 <!-- mode: interactive -->
 - Bottom line up front. Outcome before supporting detail.
-- End every reply with Recommended next - the work that comes next - and Came up - what was found along the way. Where either has none, say so explicitly - an omitted section and an empty one must not look alike.
+- End every reply with Recommended next - the work that comes next - and Came up - what was found along the way, under the exact heading `## Came up while doing it`. Where either has none, say so explicitly, with the line `None.` - an omitted section and an empty one must not look alike.
 - Qualify every reference on first use in a reply. Issues are `<key>-<number>`
   with the profile's issue keys, and a repo without a key uses its own name. A
   bare number resolves only inside your own context.

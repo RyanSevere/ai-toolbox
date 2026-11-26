@@ -50,7 +50,8 @@ check them. That ordering was the flaw in the previous draft.
    of claims means nothing was checked. That is the reading.
 4. **Sub-items are nested list items, not bolded prose and not indented
    lines.** The nesting carries the relationship; a bold lead-in followed by a
-   paragraph does not. An item is a top-level `-` bullet starting with its ID,
+   paragraph does not. The one exception is a Summary topic, which is a bold lead-in
+   followed by prose and an optional list (see the Summary rule). An item is a top-level `-` bullet starting with its ID,
    and its fields are `-` bullets nested under it. Four leading spaces without
    a bullet is a markdown code block, so an indented item renders as monospace
    and its long lines run off the side. Once, every example below
@@ -254,15 +255,19 @@ In this order:
 - **The header**, unchanged, with the compliance line beside it. `Needs from you`
   counts decisions, questions and operator steps.
 - **`## Summary`**: what happened this turn, one topic at a time. Each topic is its
-  own paragraph of prose that opens with a bold lead-in, and there are no list
-  markers (`- `, `* `, `1. `) anywhere in it. A Summary of one topic is one
-  paragraph with no blank line inside it. Every result it claims carries an
-  inline pointer: a `path:line`, a backticked command or its output, a URL, or a
-  quotation. The checker requires at least one pointer across the whole Summary,
+  own run of text that opens with a bold lead-in and continues until the next
+  bold lead-in. Lists are allowed inside a Summary topic, and so are further
+  paragraphs. A Summary with no bold lead-in at all is one plain paragraph; once
+  any topic opens with a bold lead-in, the first block must too, and a Summary
+  never opens with a list. Every result it
+  claims carries an inline pointer: a `path:line`, a backticked command or its
+  output, a URL, a quotation, a markdown link, or a backticked hex hash of 7 or
+  more characters. The checker requires at least one pointer across the whole Summary,
   which is the floor, not the obligation. A reply that claims no result writes the
   single line `None this turn.` These limits are the constants
-  `SUMMARY_MULTI_PARAGRAPH_WITH_BOLD` and `SUMMARY_LIST_MARKERS_FORBIDDEN` at the top
-  of `shape.py`; a profile that wants another layout changes them there.
+  `SUMMARY_MULTI_PARAGRAPH_WITH_BOLD` (several topics allowed) and
+  `SUMMARY_LIST_MARKERS_FORBIDDEN` (off by default) at the top of `shape.py`; a
+  profile that wants another layout changes them there.
 - **`## Logic and approach`**, required when the Mode contains Planning (Planning,
   or Planning + Execution), optional otherwise: the reasoning behind an approach,
   in `LA` items with a verdict, as in the full shape. Operator ruling 2026-11-13:
@@ -336,8 +341,9 @@ header checks, the item-ID check and the caps apply to both.
 | `## Came up while doing it` absent | `condensed: section missing: cameupwhiledoingit` |
 | Mode contains Planning and `## Logic and approach` absent | `condensed: section missing for planning mode: logicandapproach` |
 | Summary has no paragraph | `summary: 0 paragraphs, at least 1 required` |
-| Summary has several paragraphs and one lacks a bold lead-in | `summary: paragraph <n> ('<start>') has no bold lead-in - several paragraphs each open with one` |
-| Summary has a line opening with a list marker | `summary: list marker on '<start>' - one topic at a time as paragraphs, no list` |
+| Summary has a bold lead-in somewhere but its first block does not open with one | `summary: first block ('<start>') has no bold lead-in - a topic opens with one` |
+| Summary has several topics and `SUMMARY_MULTI_PARAGRAPH_WITH_BOLD` is off | `summary: <n> topics, exactly 1 allowed` |
+| Summary has a line opening with a list marker and `SUMMARY_LIST_MARKERS_FORBIDDEN` is on | `summary: list marker on '<start>' - one topic at a time as paragraphs, no list` |
 | Summary carries no pointer and is not exactly `None this turn.` | `summary: no pointer a reader could follow` |
 | A condensed `DC` has no `Recommendation:` line | `decisions: '<title>' missing 'recommendation'` |
 | A condensed `DC` has no `Would change my answer:` line | `decisions: '<title>' missing 'would change my answer'` |
@@ -355,8 +361,9 @@ reads `unchecked`: it may mark none, and still not more than one.
 
 ### A reply with no operator message before it
 
-A turn a background event opens, such as a subagent's hand-back or a task notification
-arriving right after a finished reply, has no operator message before it. Its reply
+A turn a background event opens, such as a subagent's hand-back, a message from another
+session or a task notification arriving right after a finished reply, has no operator
+message before it. Its reply
 opens, on the first line after the header, with:
 
 ```
@@ -382,8 +389,10 @@ only after a finished reply, as a hand-back does; the first prompt opens one alw
 
 The checker reads `--previous` for this, on Claude Code turns of that kind only. It
 reports a missing continuation line, and any item ID whose number is not above the
-highest of the same prefix in the preceding reply. `--stop` has no previous turn and
-skips it. If the check misfires in use it is dropped and the rule stays.
+highest of the same prefix in the preceding reply. `--stop` runs the same check: it
+reads the hook's `transcript_path`, takes the transcript's last turn as the current one
+and the turn before it as the previous one, and grades the hook's own reply in place of
+the current turn's text. If the check misfires in use it is dropped and the rule stays.
 
 | Condition | Finding |
 |---|---|
@@ -392,6 +401,39 @@ skips it. If the check misfires in use it is dropped and the rule stays.
 
 The grade line names the inferred shape: `previous reply: mode=<mode> |
 shape=<full|condensed> | <n> chars | <n> sections`.
+
+---
+
+## STATUS footer
+
+A reply from a layer 1 or layer 2 session ends with one line, in this form:
+
+```
+STATUS: needs operator: <none or what>; workers running: <n, which tickets>; background tasks: <none or what>
+```
+
+It is a footer, not a header line. The header's `Needs from you` triages this one
+reply; STATUS reports the session's state. The line is the reply's last line, and the
+three fields `needs operator:`, `workers running:` and `background tasks:` are each
+non-empty. A reply that carries the continuation line keeps it in the header, and still
+ends with STATUS.
+
+It is required for layers 1 and 2. On Claude Code the checker marks a turn as one of
+them when an earlier assistant record in the transcript holds a `Skill` tool call that
+loads `orchestrator` or `workstream-primary`, a plugin-prefixed name ending in either
+included. Cursor and Copilot never mark it, so there the line is form-checked when
+present and never required. `--stop` requires the line when it can read the transcript,
+taking the layer from the hook's `transcript_path`; with no readable transcript the layer
+is unknown and the line is only form-checked. The line is plain text, never in a fence: a
+fenced STATUS line is not read as the footer. A `status:` finding is report-only under
+`--stop`.
+
+| Condition | Finding |
+|---|---|
+| A line starting `STATUS:` that lacks one of the three fields, or has one empty | `status: ...` |
+| A line starting `STATUS:` that is not the reply's last line, such as one in the header | `status: ...` |
+| No STATUS last line, in a turn marked as layer 1 or 2 | `status: ...` |
+| The reply's last non-empty content is a code fence whose last line is a `STATUS:` line | `status: ...`, naming the fence |
 
 ---
 
@@ -889,9 +931,13 @@ look-back skips it.
 `check_response.py --stop` is the Claude Code `Stop` hook mode. It reads the hook's JSON
 from stdin and grades `last_assistant_message`, because the transcript may lag the turn.
 The reply is the text from the last marker line, or, with no marker, the whole message
-plus the `reply marker missing` finding. It prints every finding to stderr, in two
+plus the `reply marker missing` finding. It also reads the hook's `transcript_path` to
+check continuation, so a notification turn's reply is compared with the turn before it,
+and to take the layer that decides whether the STATUS footer is required; a missing
+`transcript_path`, a missing file or an unreadable transcript skips both and never
+blocks. It prints every finding to stderr, in two
 classes. A *send-back* finding can change what the operator is asked or decides: it starts
-with an entry of `SEND_BACK_PREFIXES` in `shape.py` (`decisions:`). Any send-back finding
+with an entry of `SEND_BACK_PREFIXES` in `shape.py` (`decisions:`, `continuation:`). Any send-back finding
 exits 2, which sends the turn back once. Every other finding is *report-only*: it prints
 and exits 0, and the next turn's `--previous` look-back reports it again. A profile moves
 the split by editing that constant. When `stop_hook_active` is true it prints and exits 0,
