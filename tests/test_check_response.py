@@ -2379,6 +2379,137 @@ class StatusFooter(TranscriptCase):
         self.assertNotIn("  - continuation:", out.getvalue())
         self.assertEqual(code, 0, out.getvalue())
 
+    FENCED_LAST = CONDENSED_CLEAN + "\n```\n" + STATUS + "\n```\n"
+    FENCED_EARLIER = CONDENSED_CLEAN.replace(
+        "and the gate passed the draft.\n",
+        "and the gate passed the draft.\n\n```\n" + STATUS + "\n```\n") + "\n" + STATUS + "\n"
+
+    def test_a_reply_ending_in_a_fenced_status_line_gets_a_finding_that_names_the_fence(self):
+        """Intent: the ticket's Done when, sixth item - a reply whose last non-empty content
+        is a code fence ending in a well-formed STATUS line gets a status: finding that
+        names the fence, under --previous in a layer session."""
+        code, out = self.graded(self.FENCED_LAST, "workstream-primary")
+        self.assertEqual(code, 1, out)
+        named = [line for line in out.splitlines()
+                 if line.startswith("  - status:") and "fence" in line]
+        self.assertTrue(named, out)
+
+    def test_a_fenced_status_example_earlier_in_a_reply_gets_no_fence_finding(self):
+        """Characterisation: the ticket's Done when, sixth item - a STATUS line in a fence
+        earlier in the reply is a quoted example and stays ignored, while a plain STATUS
+        last line is accepted: no finding at all. Passes before the change, and guards the
+        fenced-footer finding against firing on every fence."""
+        code, out = self.graded(self.FENCED_EARLIER, "workstream-primary")
+        self.assertNotIn("fence", out)
+        self.assertNotIn("  - status:", out)
+        self.assertEqual(code, 0, out)
+
+
+class StopHookStatus(TranscriptCase):
+    """--stop reads the layer from the transcript_path, so a layer 1 or 2 reply that lacks its
+    STATUS footer is reported, and a fenced footer is named. Both are report-only."""
+
+    STATUS = StatusFooter.STATUS
+    WITH_STATUS = StatusFooter.WITH_STATUS
+    ROOT = Path(__file__).resolve().parent.parent
+    SPEC = ROOT / "rules" / "spec-response-shape.md"
+
+    def run_stop(self, reply: str, path: Path | str | None) -> tuple[int, str, str]:
+        hook: dict[str, object] = {"last_assistant_message": K_MARKER + "\n" + reply}
+        if path is not None:
+            hook["transcript_path"] = str(path)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", ["check_response.py", "--stop"]), \
+                mock.patch("sys.stdin", new=io.StringIO(json.dumps(hook))), \
+                mock.patch("sys.stdout", new=out), mock.patch("sys.stderr", new=err):
+            code = cr.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def layered(self, skill: str) -> Path:
+        """A transcript of an operator turn in a session that has loaded `skill`."""
+        return self.transcript(k_user("one"), k_skill(skill), k_result())
+
+    def spec_section(self) -> str:
+        raw = self.SPEC.read_text(encoding="utf-8")
+        start = raw.index("\n## STATUS footer")
+        end = raw.find("\n## ", start + 1)
+        return " ".join(raw[start:end if end != -1 else len(raw)].split())
+
+    def test_a_layer_reply_with_no_status_last_line_is_reported_and_exits_0(self):
+        """Intent: the ticket's Done when, fifth item - --stop with a transcript_path of a
+        session that loaded workstream-primary or orchestrator reports a reply with no
+        STATUS last line as a status: finding, and exits 0 for it."""
+        for skill in ("workstream-primary", "orchestrator"):
+            with self.subTest(skill=skill):
+                code, out, err = self.run_stop(CONDENSED_CLEAN, self.layered(skill))
+                self.assertIn("  - status:", err)
+                self.assertEqual((code, out), (0, ""), err)
+
+    def test_a_layer_reply_with_a_well_formed_status_last_line_has_no_status_finding(self):
+        """Intent: the ticket's Done when, fifth item - the same reply ending with a
+        well-formed STATUS line gets no status: finding."""
+        for skill in ("workstream-primary", "orchestrator"):
+            with self.subTest(skill=skill):
+                code, out, err = self.run_stop(self.WITH_STATUS, self.layered(skill))
+                self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_no_transcript_path_gives_no_status_finding_for_a_missing_line(self):
+        """Characterisation: the ticket's Done when, fifth item - with no transcript_path the
+        layer is unknown, so a reply with no STATUS line gets no status: finding. Passes
+        before the change, and guards the coder against requiring the line blindly."""
+        code, out, err = self.run_stop(CONDENSED_CLEAN, None)
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_an_unreadable_transcript_gives_no_status_finding_for_a_missing_line(self):
+        """Characterisation: the ticket's Done when, fifth item - a transcript_path to a
+        missing file, or to a file of non-JSON lines, gives no status: finding for a missing
+        line. Passes before the change, and guards the coder against failing closed."""
+        gone = self.layered("workstream-primary")
+        gone.unlink()
+        self.addCleanup(gone.touch)  # the case cleanup unlinks it once more
+        junk = self.transcript("not json", "{broken", "]]]")
+        for label, path in (("missing", gone), ("unparseable", junk)):
+            with self.subTest(transcript=label):
+                code, out, err = self.run_stop(CONDENSED_CLEAN, path)
+                self.assertNotIn("status:", err)
+                self.assertEqual((code, out), (0, ""), err)
+
+    def test_a_reply_ending_in_a_fenced_status_line_gets_a_finding_that_names_the_fence(self):
+        """Intent: the ticket's Done when, sixth item - a reply whose last non-empty content
+        is a code fence ending in a well-formed STATUS line gets a status: finding that
+        names the fence, under --stop with a layer transcript, report-only."""
+        code, out, err = self.run_stop(StatusFooter.FENCED_LAST, self.layered("orchestrator"))
+        named = [line for line in err.splitlines()
+                 if line.startswith("  - status:") and "fence" in line]
+        self.assertTrue(named, err)
+        self.assertEqual((code, out), (0, ""), err)
+
+    def test_a_fenced_status_example_earlier_in_a_reply_gets_no_fence_finding(self):
+        """Characterisation: the ticket's Done when, sixth item - under --stop with a layer
+        transcript, a fenced STATUS example earlier and a plain STATUS last line give no
+        finding. Passes before the change, and guards the fenced-footer finding."""
+        code, out, err = self.run_stop(StatusFooter.FENCED_EARLIER,
+                                       self.layered("workstream-primary"))
+        self.assertNotIn("fence", err)
+        self.assertNotIn("status:", err)
+        self.assertEqual((code, out), (0, ""), err)
+
+    def test_the_spec_says_stop_requires_the_status_line_when_it_can_read_the_transcript(self):
+        """Intent: the ticket's Done when, seventh item - the STATUS footer section says
+        --stop requires the line when it can read the transcript, and no longer says it
+        does not."""
+        section = self.spec_section()
+        self.assertIn("`--stop` requires the line", section)
+        self.assertIn("when it can read the transcript", section)
+        self.assertNotIn("`--stop` does not require it", section)
+
+    def test_the_spec_says_the_status_line_is_plain_text_never_in_a_fence(self):
+        """Intent: the ticket's Done when, seventh item - the STATUS footer section says the
+        line is plain text, never in a fence."""
+        section = self.spec_section()
+        self.assertIn("plain text", section)
+        self.assertIn("never in a fence", section)
+
 
 class StopHook(unittest.TestCase):
     """--stop: a Claude Code Stop hook. Hook JSON on stdin, findings on stderr, exit 2 to
