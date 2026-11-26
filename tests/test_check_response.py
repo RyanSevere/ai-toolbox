@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_check_response.py
 # Created by: Ryan Severe
 # Created: 2026-09-23
-# Last Updated: 2026-11-25
+# Last Updated: 2026-11-26
 # Description: Transcript fixtures for responses/check_response.py, its shared
 #              shape core and its per-tool adapters. Every case here was
 #              found by using the script and verified by hand first; the tests
@@ -2499,8 +2499,8 @@ class StopHookContinuation(TranscriptCase):
 
     LINE = ContinuationReplies.LINE
     PREVIOUS = CONDENSED_CLEAN.replace("DC1", "DC2")
-    CONTINUED = ContinuationReplies.CONTINUED
-    REUSED = CONTINUED.replace("DC2", "DC1")
+    CONTINUED = ContinuationReplies.CONTINUED.replace("DC2", "DC3")
+    REUSED = CONTINUED.replace("DC3", "DC1")
     NO_LINE = CONTINUED.replace(LINE + "\n", "")
     ROOT = Path(__file__).resolve().parent.parent
     SPEC = ROOT / "rules" / "spec-response-shape.md"
