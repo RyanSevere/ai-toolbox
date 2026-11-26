@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/check_response.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-25
+# Last Updated: 2026-11-26
 # Description: Checks assistant replies against the response shape in
 #              rules/spec-response-shape.md, rendered into each repo as
 #              .github/rules/response-shape.md. The entry point of a shared
@@ -226,12 +226,37 @@ def continuation_for(adapter, turns: list[shape.Turn], back: int) -> list[str]:
     that open with no operator message. Cursor marks a canned notification prompt the same
     kind but is not graded here; Copilot has no notification turns.
 
-    --stop never calls this: the hook sees only last_assistant_message, with no previous
-    turn to compare against, so the check is skipped there.
+    --stop calls stop_continuation instead: the reply it grades is not yet in the
+    transcript, so the current turn is read with the reply substituted for its text.
     """
     if adapter is not claude:
         return []
     return shape.continuation_findings(turns, len(turns) - 2 - back)
+
+
+def stop_continuation(data: dict, reply: str) -> tuple[list[str], bool]:
+    """Continuation findings, and the layer, for the reply the Stop hook is grading.
+
+    The hook JSON's transcript_path names the transcript, read once. Its last turn is the
+    current one, whether or not it already holds the final text, and the turn before it is
+    the previous turn; the reply graded is the hook's own, put in place of the current
+    turn's text so it is never compared with itself. The layer is that current turn's
+    `layer` field, whether the session loaded a layer 1 or 2 skill. No path, a missing file
+    or a transcript that cannot be read or parsed gives ([], False): the checks are skipped
+    and never block.
+    """
+    path = data.get("transcript_path")
+    if not isinstance(path, str) or not path:
+        return [], False
+    try:
+        turns = claude.turns(Path(path))
+    except (OSError, ValueError):
+        return [], False
+    if not turns:
+        return [], False
+    layer = turns[-1].layer
+    turns[-1] = dataclasses.replace(turns[-1], text=reply, last=reply)
+    return shape.continuation_findings(turns, len(turns) - 1), layer
 
 
 def stop_hook() -> int:
@@ -242,7 +267,8 @@ def stop_hook() -> int:
     only when a finding starts with a `shape.SEND_BACK_PREFIXES` entry; other findings are
     report-only (exit 0). With `stop_hook_active` set the turn is already a revision, so the
     exit is 0 - one forced revision, never a loop. The checker's own failure never blocks.
-    Nothing is recorded in the run ledgers.
+    When the hook JSON has a readable `transcript_path`, a notification turn's reply is also
+    checked for continuation (see stop_continuation). Nothing is recorded in the run ledgers.
     """
     try:
         data = json.loads(sys.stdin.read())
@@ -260,11 +286,13 @@ def stop_hook() -> int:
         text, extra = "\n".join(lines[marks[-1]:]), []
     else:
         text, extra = message, [claude.MARKER_MISSING]
-    # The continuation check is skipped here: it compares with the previous turn, which
-    # the hook does not have (only last_assistant_message). --previous reports it.
+    # The transcript_path gives the previous turn for the continuation check and the layer
+    # for the STATUS footer; an unreadable transcript skips the first and leaves the second
+    # off. Both grade the same text the other checks do.
+    continuation, layer = stop_continuation(data, text)
     report = io.StringIO()
     with contextlib.redirect_stdout(report):
-        result = shape.grade("reply", text, extra=extra)
+        result = shape.grade("reply", text, extra=extra + continuation, layer=layer)
     if result != 1:
         return 0
     # The ledger line is about --previous's run ledgers, which this mode never touches.

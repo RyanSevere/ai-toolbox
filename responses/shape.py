@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/shape.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-25
+# Last Updated: 2026-11-26
 # Description: The tool-neutral half of the response checker.
 #              Parses a reply against the response shape, grades it, and walks
 #              back over finished turns to collect replies whose turn never ran
@@ -133,7 +133,7 @@ CAPS = {"cameupwhiledoingit": 3, "recommendednext": 4}  # decisions deliberately
 # The Stop hook sends a reply back only for a finding that starts with one of these: it can
 # change what the operator is asked or decides. Every other finding is report-only. A
 # profile changes the split by editing this tuple.
-SEND_BACK_PREFIXES = ("decisions:",)
+SEND_BACK_PREFIXES = ("decisions:", "continuation:")
 
 
 def sends_back(finding: str) -> bool:
@@ -599,17 +599,31 @@ def status_findings(text: str, layer: bool = False) -> list[str]:
 
     Any line starting 'STATUS:' outside a fence must be well formed and be the reply's
     last non-empty line, in any session. A reply with no such last line is a finding
-    only when the adapter marked the turn as layer 1 or 2."""
+    only when the adapter marked the turn as layer 1 or 2. A reply whose last non-empty
+    content is a code fence ending in a STATUS line gets a finding that names the fence:
+    the footer is plain text, never in a fence."""
     lines: list[str] = []
     fence: str | None = None
+    inner: str | None = None
+    closed_inner: str | None = None
     for raw in text.splitlines():
         marker = re.match(r"^\s*(`{3,}|~{3,})", raw)
         if marker and (fence is None or marker.group(1).startswith(fence)):
-            fence = marker.group(1)[:3] if fence is None else None
+            if fence is None:
+                fence, inner, closed_inner = marker.group(1)[:3], None, None
+            else:
+                fence, closed_inner = None, inner
             continue
-        if fence is None and raw.strip():
-            lines.append(raw.strip())
+        if raw.strip():
+            if fence is None:
+                lines.append(raw.strip())
+                closed_inner = None
+            else:
+                inner = raw.strip()
     findings: list[str] = []
+    if closed_inner is not None and closed_inner.startswith(STATUS_PREFIX):
+        findings.append(f"status: '{closed_inner[:60]}' is inside a code fence - the footer is "
+                        f"plain text, never in a fence")
     last = len(lines) - 1
     for index, line in enumerate(lines):
         if not line.startswith(STATUS_PREFIX):

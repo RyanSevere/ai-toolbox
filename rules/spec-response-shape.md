@@ -361,8 +361,9 @@ reads `unchecked`: it may mark none, and still not more than one.
 
 ### A reply with no operator message before it
 
-A turn a background event opens, such as a subagent's hand-back or a task notification
-arriving right after a finished reply, has no operator message before it. Its reply
+A turn a background event opens, such as a subagent's hand-back, a message from another
+session or a task notification arriving right after a finished reply, has no operator
+message before it. Its reply
 opens, on the first line after the header, with:
 
 ```
@@ -388,8 +389,10 @@ only after a finished reply, as a hand-back does; the first prompt opens one alw
 
 The checker reads `--previous` for this, on Claude Code turns of that kind only. It
 reports a missing continuation line, and any item ID whose number is not above the
-highest of the same prefix in the preceding reply. `--stop` has no previous turn and
-skips it. If the check misfires in use it is dropped and the rule stays.
+highest of the same prefix in the preceding reply. `--stop` runs the same check: it
+reads the hook's `transcript_path`, takes the transcript's last turn as the current one
+and the turn before it as the previous one, and grades the hook's own reply in place of
+the current turn's text. If the check misfires in use it is dropped and the rule stays.
 
 | Condition | Finding |
 |---|---|
@@ -419,13 +422,18 @@ It is required for layers 1 and 2. On Claude Code the checker marks a turn as on
 them when an earlier assistant record in the transcript holds a `Skill` tool call that
 loads `orchestrator` or `workstream-primary`, a plugin-prefixed name ending in either
 included. Cursor and Copilot never mark it, so there the line is form-checked when
-present and never required. `--stop` has no transcript and does not require it.
+present and never required. `--stop` requires the line when it can read the transcript,
+taking the layer from the hook's `transcript_path`; with no readable transcript the layer
+is unknown and the line is only form-checked. The line is plain text, never in a fence: a
+fenced STATUS line is not read as the footer. A `status:` finding is report-only under
+`--stop`.
 
 | Condition | Finding |
 |---|---|
 | A line starting `STATUS:` that lacks one of the three fields, or has one empty | `status: ...` |
 | A line starting `STATUS:` that is not the reply's last line, such as one in the header | `status: ...` |
 | No STATUS last line, in a turn marked as layer 1 or 2 | `status: ...` |
+| The reply's last non-empty content is a code fence whose last line is a `STATUS:` line | `status: ...`, naming the fence |
 
 ---
 
@@ -923,9 +931,13 @@ look-back skips it.
 `check_response.py --stop` is the Claude Code `Stop` hook mode. It reads the hook's JSON
 from stdin and grades `last_assistant_message`, because the transcript may lag the turn.
 The reply is the text from the last marker line, or, with no marker, the whole message
-plus the `reply marker missing` finding. It prints every finding to stderr, in two
+plus the `reply marker missing` finding. It also reads the hook's `transcript_path` to
+check continuation, so a notification turn's reply is compared with the turn before it,
+and to take the layer that decides whether the STATUS footer is required; a missing
+`transcript_path`, a missing file or an unreadable transcript skips both and never
+blocks. It prints every finding to stderr, in two
 classes. A *send-back* finding can change what the operator is asked or decides: it starts
-with an entry of `SEND_BACK_PREFIXES` in `shape.py` (`decisions:`). Any send-back finding
+with an entry of `SEND_BACK_PREFIXES` in `shape.py` (`decisions:`, `continuation:`). Any send-back finding
 exits 2, which sends the turn back once. Every other finding is *report-only*: it prints
 and exits 0, and the next turn's `--previous` look-back reports it again. A profile moves
 the split by editing that constant. When `stop_hook_active` is true it prints and exits 0,
