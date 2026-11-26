@@ -68,7 +68,8 @@ not as clear.
 
 ## STATUS
 
-Every wrap-up recap carries one line, copied in this form:
+The reply ends with the STATUS line, as its last line. The wrap-up recap carries the
+same line, copied word for word from the reply's footer, in this form:
 
 ```text
 STATUS: needs operator: <none or what>; workers running: <n, which tickets>; background tasks: <none or what>

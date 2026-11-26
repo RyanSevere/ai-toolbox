@@ -39,7 +39,9 @@ from memory of an earlier one:
 
 - **Sitrep and status:** what each workstream is doing, what is waiting on the
   operator, which workers are running. Each primary's last wrap-up carries a
-  `STATUS:` line; read that first.
+  `STATUS:` line; read that first. In turn, layer 1 ends its replies with the same STATUS line,
+  with the fields as the primary's; its `workers running:` counts the subagents it
+  started itself, normally 0.
 - **Title prefixes:** read each session's title prefix against its STATUS line, under
   the `workstream-primary` skill's title prefix section. A `working` prefix on a
   session that is not running is stale. `pending workers` and `pending ci` are waits

@@ -401,6 +401,34 @@ shape=<full|condensed> | <n> chars | <n> sections`.
 
 ---
 
+## STATUS footer
+
+A reply from a layer 1 or layer 2 session ends with one line, in this form:
+
+```
+STATUS: needs operator: <none or what>; workers running: <n, which tickets>; background tasks: <none or what>
+```
+
+It is a footer, not a header line. The header's `Needs from you` triages this one
+reply; STATUS reports the session's state. The line is the reply's last line, and the
+three fields `needs operator:`, `workers running:` and `background tasks:` are each
+non-empty. A reply that carries the continuation line keeps it in the header, and still
+ends with STATUS.
+
+It is required for layers 1 and 2. On Claude Code the checker marks a turn as one of
+them when an earlier assistant record in the transcript holds a `Skill` tool call that
+loads `orchestrator` or `workstream-primary`, a plugin-prefixed name ending in either
+included. Cursor and Copilot never mark it, so there the line is form-checked when
+present and never required. `--stop` has no transcript and does not require it.
+
+| Condition | Finding |
+|---|---|
+| A line starting `STATUS:` that lacks one of the three fields, or has one empty | `status: ...` |
+| A line starting `STATUS:` that is not the reply's last line, such as one in the header | `status: ...` |
+| No STATUS last line, in a turn marked as layer 1 or 2 | `status: ...` |
+
+---
+
 ## "aria"
 
 - "aria", as an explicit one-word reply, takes every option marked `(recommended)`

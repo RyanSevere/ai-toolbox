@@ -92,6 +92,14 @@ ID_AT_START = re.compile(r"^(" + "|".join(ID_PREFIXES) + r")(\d+)\b")
 BOLD_REFERENCE = re.compile(
     r"^\s*(?:[-*]\s+)?\*\*(?:" + "|".join(ID_PREFIXES) + r")\d+\b[^*]*\*\*\s+\w")
 
+# The reply's footer for layers 1 and 2: its last line, three fields, each non-empty.
+STATUS_PREFIX = "STATUS:"
+STATUS_SHAPE = ("STATUS: needs operator: <text>; workers running: <text>; "
+                "background tasks: <text>")
+STATUS_FORM = re.compile(
+    r"STATUS:\s*needs operator:\s*[^;\s][^;]*;\s*workers running:\s*[^;\s][^;]*;\s*"
+    r"background tasks:\s*\S.*")
+
 MODES = {"planning", "execution", "planning + execution"}
 
 REQUIRED = {
@@ -186,6 +194,7 @@ class Turn:
     last: str = ""
     findings: list[str] = field(default_factory=list)
     operator_input: bool = False  # the operator gave input inside this turn
+    layer: bool = False  # the transcript shows a layer 1 or 2 skill loaded: STATUS required
 
 
 def invoked_in(message: str) -> str | None:
@@ -585,11 +594,43 @@ def continuation_findings(turns: list[Turn], index: int) -> list[str]:
     return findings
 
 
+def status_findings(text: str, layer: bool = False) -> list[str]:
+    """Findings about the STATUS footer of one reply.
+
+    Any line starting 'STATUS:' outside a fence must be well formed and be the reply's
+    last non-empty line, in any session. A reply with no such last line is a finding
+    only when the adapter marked the turn as layer 1 or 2."""
+    lines: list[str] = []
+    fence: str | None = None
+    for raw in text.splitlines():
+        marker = re.match(r"^\s*(`{3,}|~{3,})", raw)
+        if marker and (fence is None or marker.group(1).startswith(fence)):
+            fence = marker.group(1)[:3] if fence is None else None
+            continue
+        if fence is None and raw.strip():
+            lines.append(raw.strip())
+    findings: list[str] = []
+    last = len(lines) - 1
+    for index, line in enumerate(lines):
+        if not line.startswith(STATUS_PREFIX):
+            continue
+        if not STATUS_FORM.fullmatch(line):
+            findings.append(f"status: '{line[:60]}' lacks a non-empty field - the line reads "
+                            f"'{STATUS_SHAPE}'")
+        if index != last:
+            findings.append(f"status: '{line[:60]}' is not the reply's last line")
+    if layer and not (lines and lines[-1].startswith(STATUS_PREFIX)):
+        findings.append(f"status: no STATUS last line - a layer 1 or 2 reply ends with "
+                        f"'{STATUS_SHAPE}'")
+    return findings
+
+
 def grade(label: str, text: str, interrupted: bool = False, invoked: str | None = None,
-          extra: list[str] | None = None) -> int:
+          extra: list[str] | None = None, layer: bool = False) -> int:
     """Report one reply. Returns 0 clean, 1 findings, EXIT_NOT_APPLICABLE if unshaped.
 
-    extra is a Turn's own findings, reported after the structural ones."""
+    extra is a Turn's own findings, reported after the structural ones. layer is whether
+    the adapter marked the turn as layer 1 or 2, which makes the STATUS footer required."""
     if interrupted:
         print(f"\n{label}: NOT APPLICABLE - cut short by a message sent mid-turn. The turn")
         print("carried on after it, so this slice is progress narration, not a reply.")
@@ -605,6 +646,7 @@ def grade(label: str, text: str, interrupted: bool = False, invoked: str | None 
 
     header, sections = parse(text)
     findings, mode = check(header, sections)
+    findings.extend(status_findings(text, layer))
     findings.extend(extra or [])
     count = sum(not name.endswith((ENTRIES, LINES)) for name in sections)
     print(f"\n{label}: mode={mode} | shape={shape_of(sections)} | {len(text)} chars | "

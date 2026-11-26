@@ -56,6 +56,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PRIMARY = ROOT / "skills" / "workstream-primary" / "procedure.md"
 ORCHESTRATOR = ROOT / "skills" / "orchestrator" / "procedure.md"
+SPEC = ROOT / "rules" / "spec-response-shape.md"
 
 
 def squash(text: str) -> str:
@@ -192,6 +193,33 @@ class LayerRulings(unittest.TestCase):
         section = squash(PRIMARY.read_text(encoding="utf-8")).split("## Modes", 1)[1]
         self.assertIn("Remote Control is the operator's to switch. Never set it.", section)
         self.assertNotIn("the orchestrator sets Remote Control", section)
+
+    def test_spec_defines_the_status_footer(self):
+        """Intent: the ticket's Done when, first item - the response-shape spec has a
+        STATUS footer section naming the three fields, saying it is the reply's last
+        line, and saying layers 1 and 2 require it."""
+        text = SPEC.read_text(encoding="utf-8")
+        match = re.search(r"^## STATUS footer\s*$", text, re.MULTILINE)
+        self.assertIsNotNone(match, "no '## STATUS footer' section in the spec")
+        section = squash(re.split(r"^## ", text[match.end():], maxsplit=1, flags=re.MULTILINE)[0])
+        for field in ("needs operator:", "workers running:", "background tasks:"):
+            self.assertIn(field, section)
+        self.assertIn("the reply's last line", section)
+        self.assertIn("layers 1 and 2", section)
+
+    def test_primary_status_section_says_the_reply_ends_with_the_line(self):
+        """Intent: the ticket's Done when, fifth item - the workstream-primary STATUS
+        section says the reply ends with the line, and the wrap-up copy matches it
+        word for word."""
+        section = between(PRIMARY, "## STATUS", "## Title prefix")
+        self.assertIn("The reply ends with the STATUS line", section)
+        self.assertIn("word for word", section)
+
+    def test_orchestrator_says_layer_1_ends_its_replies_with_the_same_line(self):
+        """Intent: the ticket's Done when, fifth item - the orchestrator procedure says
+        layer 1 ends its replies with the same STATUS line."""
+        text = squash(ORCHESTRATOR.read_text(encoding="utf-8"))
+        self.assertIn("layer 1 ends its replies with the same STATUS line", text)
 
 
 if __name__ == "__main__":
