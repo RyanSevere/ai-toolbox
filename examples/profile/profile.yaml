@@ -143,7 +143,8 @@ targets:
   # `kind: folder` declares a plain folder that is not a git repository, such as the folder
   # that holds several repositories. `--write` renders into it and `--check` compares a
   # fresh render with the files on disk, with no git. A rollout skips it: nothing is
-  # committed or pushed there, and it is not in the rendered repository list. Leave `kind` out for a repository; any other value refuses.
+  # committed or pushed there, and it is not in the rendered repository list. Leave `kind`
+  # out for a repository; any other value refuses.
   # Uncomment to use.
   # example-parent:
   #   kind: folder
