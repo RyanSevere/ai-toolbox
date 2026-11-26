@@ -2493,6 +2493,153 @@ class StopHook(unittest.TestCase):
             self.assertEqual(len(err.strip().splitlines()), 1, stdin)
 
 
+class StopHookContinuation(TranscriptCase):
+    """--stop with a transcript_path: a notification turn's reply is checked against the turn
+    before it, and a continuation finding sends the reply back once."""
+
+    LINE = ContinuationReplies.LINE
+    PREVIOUS = CONDENSED_CLEAN.replace("DC1", "DC2")
+    CONTINUED = ContinuationReplies.CONTINUED
+    REUSED = CONTINUED.replace("DC2", "DC1")
+    NO_LINE = CONTINUED.replace(LINE + "\n", "")
+    ROOT = Path(__file__).resolve().parent.parent
+    SPEC = ROOT / "rules" / "spec-response-shape.md"
+
+    def run_stop(self, reply: str, path: Path | str | None, **extra) -> tuple[int, str, str]:
+        hook: dict[str, object] = {"last_assistant_message": K_MARKER + "\n" + reply, **extra}
+        if path is not None:
+            hook["transcript_path"] = str(path)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", ["check_response.py", "--stop"]), \
+                mock.patch("sys.stdin", new=io.StringIO(json.dumps(hook))), \
+                mock.patch("sys.stdout", new=out), mock.patch("sys.stderr", new=err):
+            code = cr.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def notified(self, *tail: str) -> Path:
+        """A transcript whose last turn is a subagent hand-back, after a finished reply."""
+        return self.transcript(k_user("one"), k_final(self.PREVIOUS), k_peer("a report"), *tail)
+
+    def spec_text(self) -> str:
+        return " ".join(self.SPEC.read_text(encoding="utf-8").split())
+
+    def test_a_reused_id_in_a_notification_turn_sends_the_reply_back(self):
+        """Intent: the ticket's Done when, first item - --stop with a transcript_path whose
+        previous turn reached DC2 reports a reply that opens at DC1 as a continuation
+        finding and exits 2."""
+        code, out, err = self.run_stop(self.REUSED, self.notified())
+        self.assertEqual(code, 2, err)
+        self.assertIn("  - continuation: DC1 reuses an ID", err)
+        self.assertIn("already reached DC2", err)
+        self.assertEqual(out, "")
+
+    def test_a_missing_continuation_line_sends_the_reply_back(self):
+        """Intent: the ticket's Done when, first item - the continuation finding covers the
+        missing continuation line too, and sends the reply back."""
+        code, _, err = self.run_stop(self.NO_LINE, self.notified())
+        self.assertEqual(code, 2, err)
+        self.assertIn(f"  - continuation: header lacks the line '{self.LINE}'", err)
+
+    def test_a_well_formed_continuation_reply_passes_silently(self):
+        """Characterisation: the ticket's Done when, first item - a reply with the continuation
+        line and counters carried on from the previous turn has no continuation finding.
+        Passes before the change, and guards it against a false positive."""
+        code, out, err = self.run_stop(self.CONTINUED, self.notified())
+        self.assertEqual((code, out), (0, ""), err)
+        self.assertNotIn("continuation:", err)
+
+    def test_stop_hook_active_still_exits_0_and_reports_the_finding(self):
+        """Intent: the ticket's Done when, second item - with stop_hook_active set the exit
+        is 0, and the continuation finding is still printed."""
+        code, _, err = self.run_stop(self.REUSED, self.notified(), stop_hook_active=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn("  - continuation: DC1 reuses an ID", err)
+
+    def test_an_operator_turn_has_no_continuation_finding(self):
+        """Characterisation: the continuation check runs only for a notification turn, so a
+        turn the operator opened that restarts at DC1 is not flagged. Passes before the
+        change, and guards it."""
+        path = self.transcript(k_user("one"), k_final(self.PREVIOUS), k_user("two"))
+        code, out, err = self.run_stop(CONDENSED_CLEAN, path)
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_a_transcript_holding_the_final_text_gives_the_same_result(self):
+        """Intent: the design for the ticket - the transcript may or may not already hold the
+        current turn's final text, and the reply is never compared with itself. Both give the
+        same finding, the same exit."""
+        without = self.run_stop(self.REUSED, self.notified())
+        holding = self.run_stop(self.REUSED, self.notified(k_final(self.REUSED)))
+        self.assertEqual(holding, without)
+        self.assertEqual(holding[0], 2, holding[2])
+        self.assertIn("  - continuation: DC1 reuses an ID", holding[2])
+
+    def test_a_transcript_holding_the_final_text_does_not_flag_a_good_reply(self):
+        """Characterisation: a well-formed continuation reply already in the transcript is not
+        compared with itself, so it is not flagged as reusing its own IDs. Passes before the
+        change, and guards the coder against grading the last turn as its own predecessor."""
+        code, out, err = self.run_stop(self.CONTINUED, self.notified(k_final(self.CONTINUED)))
+        self.assertEqual((code, out), (0, ""), err)
+        self.assertNotIn("continuation:", err)
+
+    def test_no_transcript_path_grades_as_today(self):
+        """Characterisation: the ticket's Done when, third item - no transcript_path grades
+        the reply alone, with no continuation finding, exit 0. Passes before the change."""
+        code, out, err = self.run_stop(self.REUSED, None)
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_a_missing_transcript_file_grades_as_today(self):
+        """Characterisation: the ticket's Done when, third item - a transcript_path to a file
+        that does not exist grades the reply alone, never blocks, never a traceback."""
+        gone = self.notified()
+        gone.unlink()
+        self.addCleanup(gone.touch)  # the case cleanup unlinks it once more
+        code, out, err = self.run_stop(self.REUSED, gone)
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_an_unparseable_transcript_file_grades_as_today(self):
+        """Characterisation: the ticket's Done when, third item - a transcript_path to a file
+        of non-JSON lines grades the reply alone, never blocks, never a traceback."""
+        junk = self.transcript("not json", "{broken", "]]]")
+        code, out, err = self.run_stop(self.REUSED, junk)
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_a_decision_finding_still_sends_back_on_an_unreadable_transcript(self):
+        """Characterisation: the ticket's Done when, third item - the unreadable transcript
+        costs the continuation check only; a decisions: finding still exits 2."""
+        reply = StopHook.DECISION_FINDING
+        code, _, err = self.run_stop(reply, self.transcript("not json"))
+        self.assertEqual(code, 2, err)
+        self.assertIn("  - decisions:", err)
+        self.assertNotIn("continuation:", err)
+
+    def test_continuation_is_a_send_back_prefix(self):
+        """Intent: the ticket's Rulings - continuation: joins SEND_BACK_PREFIXES, so a
+        continuation finding sends the reply back."""
+        self.assertIn("continuation:", shape.SEND_BACK_PREFIXES)
+        self.assertTrue(shape.sends_back("continuation: DC1 reuses an ID - the previous "
+                                         "reply already reached DC2"))
+        self.assertFalse(shape.sends_back("summary mentions continuation: here"))
+
+    def test_the_spec_names_a_message_from_another_session_as_a_notification_turn(self):
+        """Intent: the ticket's Done when, fourth item - the section on a reply with no
+        operator message before it names a message from another session."""
+        text = self.spec_text()
+        start = text.index("### A reply with no operator message before it")
+        section = text[start:text.index("```", start)]
+        self.assertIn("a message from another session", section)
+
+    def test_the_spec_lists_continuation_among_the_send_back_findings(self):
+        """Intent: the ticket's Done when, fourth item - the --stop paragraph lists
+        `continuation:` beside `decisions:` as a send-back finding, and says it reads the
+        transcript_path."""
+        text = self.spec_text()
+        start = text.index("`check_response.py --stop` is the Claude Code `Stop` hook mode")
+        paragraph = text[start:text.index("**A Cursor transcript can lag", start)]
+        self.assertIn("`decisions:`", paragraph)
+        self.assertIn("`continuation:`", paragraph)
+        self.assertIn("`transcript_path`", paragraph)
+
+
 class SummaryTopics(unittest.TestCase):
     """A Summary topic runs from one bold lead-in to the next: lists and further
     paragraphs belong inside it, and more evidence counts as a pointer."""
