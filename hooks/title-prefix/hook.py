@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/.claude/hooks/title-prefix/hook.py
 # Created by: Ryan Severe
 # Created: 2026-11-21
-# Last Updated: 2026-11-21
+# Last Updated: 2026-11-26
 # Description: Claude Code Stop hook. Reads the session's latest title from the
 #              transcript and grades its status prefix against the reply, by the
 #              rules in prefixes.yaml beside this file. A stale prefix sends the
@@ -59,7 +59,11 @@ import hookio  # noqa: E402  - the shared runtime library, rendered beside this 
 PREFIXES = Path(__file__).resolve().parent / "prefixes.yaml"
 TITLE_TOOL = "mcp__ccd_session_mgmt__set_session_title"
 REPLY_MARKER = "=== REPLY STARTS HERE ==="
-ASK_HEADINGS = ("## Decisions and clarifications", "## Operator steps")
+# An ask is a line that opens with a DC, Q or OS item ID, after any list marker. The ID form is
+# carried from the response checker's ITEM_START and QUESTION patterns in responses/shape.py,
+# which this hook cannot import (it is rendered into a different tree), with the number
+# narrowed to 1 or more.
+ASK_ITEM = re.compile(r"^(?:(?:[-*]|\d+\.)\s+)?(?:DC|Q|OS)[1-9]\d*\b")
 SEPARATOR = " - "
 SEND_BACK = 2
 
@@ -90,12 +94,20 @@ def latest_title(transcript: Path) -> str | None:
 
 
 def has_ask(reply: str) -> bool:
-    """True when an ask heading follows the last reply marker (the whole reply with no marker)."""
+    """True when a line after the last reply marker (the whole reply with no marker) opens with
+    an ask's item ID, outside fenced code blocks."""
     lines = reply.split("\n")
     marks = [i for i, line in enumerate(lines) if line.strip() == REPLY_MARKER]
     if marks:
         lines = lines[marks[-1]:]
-    return any(line.strip().startswith(ASK_HEADINGS) for line in lines)
+    fenced = False
+    for line in lines:
+        text = line.strip()
+        if text.startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and ASK_ITEM.match(text):
+            return True
+    return False
 
 
 def load_entries(path: Path) -> list[dict]:

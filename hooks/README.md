@@ -216,8 +216,8 @@ latest `set_session_title` call for `"self"` from the transcript, takes the stat
 title up to the first ` - `), and grades it against the reply by the rule its vocabulary gives
 that prefix:
 
-- `ask`: the reply must carry an open ask, a `## Decisions and clarifications` or
-  `## Operator steps` heading after the last reply marker.
+- `ask`: the reply must carry an open ask, a line after the last reply marker, outside fenced
+  code blocks, that opens with a `DC<n>`, `Q<n>` or `OS<n>` item ID, under any heading.
 - `no-ask`: it must not.
 - `unchecked`: it is not graded. A title that matches no entry is not graded either.
 
