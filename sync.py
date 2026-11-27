@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-14
-# Last Updated: 2026-11-25
+# Last Updated: 2026-11-26
 # Description: Renders the core and a profile's seeds into a consuming repository's
 #              per-tool formats and stamps each output with the source SHA.
 #              Dry-run by default; --write applies. Never writes Tier 3.
@@ -1441,7 +1441,8 @@ def title_prefixes_file(manifest: dict, sha: str | None) -> str | None:
 
 def repo_list(manifest: dict) -> dict:
     """The estate as data: owner, every repository with its GitHub name and issue key, and
-    the repositories deliberately left out. Rendered to REPO_LIST, and used in memory by
+    the repositories deliberately left out. Folder targets are left out too, because they
+    are not repositories on the host. Rendered to REPO_LIST, and used in memory by
     runner, so the file and a source run agree by construction."""
     source = manifest.get("source") or {}
     owner = source.get("owner")
@@ -1451,7 +1452,7 @@ def repo_list(manifest: dict) -> dict:
               "key": source.get("key")}]
     for name, cfg in (manifest.get("targets") or {}).items():
         cfg = cfg or {}
-        if cfg.get("skip"):
+        if cfg.get("skip") or is_folder_target(cfg):
             continue
         repos.append({"name": name,
                       "github": f"{cfg.get('owner') or owner}/{cfg.get('remote') or name}",

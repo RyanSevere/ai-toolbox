@@ -2862,6 +2862,75 @@ class FolderTarget(unittest.TestCase):
         self.assertTrue(kept.is_file())
 
 
+class RepoListFolderTarget(unittest.TestCase):
+    """A `kind: folder` target is a plain folder, not a repository on the host, so the
+    repository list that the ticket tool and the runner read must not name it.
+
+    Manifests are built in memory from synthetic names; repo_list reads only the manifest."""
+
+    @staticmethod
+    def manifest(targets: dict) -> dict:
+        return {"source": {"repo": "acme-profile", "owner": "acme-owner", "key": "ap"},
+                "targets": targets}
+
+    @staticmethod
+    def names(listing: dict) -> list[str]:
+        return [entry["name"] for entry in listing["repos"]]
+
+    def test_a_folder_target_is_absent_and_a_repository_target_is_present(self):
+        """Intent: the ticket's Done when, first item - a `kind: folder` target is absent
+        from repo_list(manifest)["repos"], and a repository target beside it is present."""
+        manifest = self.manifest({"acme-app": {"key": "app"},
+                                  "acme-parent": {"kind": "folder"}})
+        names = self.names(sync.repo_list(manifest))
+        self.assertNotIn("acme-parent", names)
+        self.assertIn("acme-app", names)
+
+    def test_the_rendered_repo_list_omits_a_folder_target(self):
+        """Intent: the ticket's Done when, second item - runner reads repo_list and the render
+        writes it, so the REPO_LIST JSON rendered with the estate opt-in must not name the
+        folder either."""
+        # The example manifest carries the identity and the rest a full render needs.
+        manifest = {**MANIFEST, "targets": {**MANIFEST["targets"],
+                                            "acme-parent": {"kind": "folder"}}}
+        plan = build_plan("t", {"estate": True}, DEFAULTS, SHA, manifest)
+        rendered = json.loads(plan[sync.REPO_LIST])
+        names = [entry["name"] for entry in rendered["repos"]]
+        self.assertNotIn("acme-parent", names)
+        self.assertIn("example-app", names)
+
+    def test_a_manifest_whose_only_target_is_a_folder_lists_the_source_alone(self):
+        """Intent: the ticket's Edge cases, boundary values - a manifest whose only target is
+        a folder renders a list holding the source repository alone."""
+        manifest = self.manifest({"acme-parent": {"kind": "folder"}})
+        listing = sync.repo_list(manifest)
+        self.assertEqual(self.names(listing), ["acme-profile"])
+        self.assertEqual(listing["repos"][0]["github"], "acme-owner/acme-profile")
+
+    def test_a_manifest_with_no_folder_target_lists_every_target_in_order(self):
+        """Characterisation: records what repo_list does today with no folder target - the
+        source first, then each target in manifest order, a skipped target left out. Passes on
+        unchanged code; it guards the ticket's Edge cases, empty or missing, once the filter
+        is added."""
+        manifest = self.manifest({"acme-one": {"key": "one"},
+                                  "acme-skipped": {"skip": "not yet"},
+                                  "acme-two": {"remote": "acme-two-repo", "owner": "other-org"}})
+        listing = sync.repo_list(manifest)
+        self.assertEqual(listing["repos"], [
+            {"name": "acme-profile", "github": "acme-owner/acme-profile", "key": "ap"},
+            {"name": "acme-one", "github": "acme-owner/acme-one", "key": "one"},
+            {"name": "acme-two", "github": "other-org/acme-two-repo", "key": None},
+        ])
+
+    def test_the_remaining_entries_keep_manifest_order_around_a_folder(self):
+        """Intent: the ticket's Edge cases, duplicates and ordering - with a folder target
+        between two repository targets, the remaining entries keep manifest order."""
+        manifest = self.manifest({"acme-first": {}, "acme-parent": {"kind": "folder"},
+                                  "acme-last": {}})
+        self.assertEqual(self.names(sync.repo_list(manifest)),
+                         ["acme-profile", "acme-first", "acme-last"])
+
+
 class StampSource(unittest.TestCase):
     """The stamp names the profile's source repository, and every detector accepts any
     source name."""
