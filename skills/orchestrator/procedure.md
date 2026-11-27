@@ -80,6 +80,15 @@ that is about to be replaced. Steps:
    <!-- end -->
 3. The successor reports the morning status: the sitrep, the open asks, and the rotation
    list.
+   <!-- requires: usage.read -->
+   On the last one or two morning statuses before the reset named in the Usage
+   conventions, the successor reads usage with {{usage.read}} and adds a burn list
+   to the status when the unused share is at or above the conventions' threshold. The
+   threshold is a guide, with judgement either way; a share exactly at it proposes a
+   list. The list is a proposal the operator picks from, never a go, and it favours
+   work whose output is read, not merged. A reading that fails is reported as unknown,
+   with no list proposed from it.
+   <!-- end -->
 4. The successor messages each session on the rotation list to rotate at its next clean
    stopping point, under the `handoff` skill. Say that the rotation is policy-ordered,
    so the pickup is pre-approved as the `handoff` skill's pickup steps say. The pickup
