@@ -19,3 +19,7 @@ What is watched, what raises an alert, and where it goes.
 ## Backup and restore
 
 What is backed up, how often, and the runbook that proves a restore works.
+
+## Change log
+
+None yet. Entries run newest first, one per redesign of the objective, each dated and saying what changed and why. Never progress or status.

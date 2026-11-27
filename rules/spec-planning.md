@@ -4,13 +4,13 @@ tier: 2
 scope: "**/{docs,project-docs,planning-docs}/**"
 alwaysApply: false
 description: >-
-  Planning SPECIFICATION - living plan document structure and the review gate
-  that must pass before implementation starts, including the twelve categories
-  a plan must address or explicitly mark N/A. Load when writing, reviewing, or
-  updating a plan or design document, or when asked whether a plan is ready to
-  implement. Do not load for small single-file changes; the spec says so itself
-  and applying it there is how planning documents stop being read. Also says where
-  runbooks live - docs/runbooks/ - and that this spec does not apply to them.
+  Planning SPECIFICATION - what belongs in a design document and what belongs in
+  a ticket, and the short design review run before tickets are marked
+  agent-ready. Load when writing or reviewing a plan or design document, or when
+  asked whether a design is ready to build. Do not load for small single-file
+  changes; the spec says so itself and applying it there is how planning
+  documents stop being read. Also says where runbooks live - docs/runbooks/ -
+  and that this spec does not apply to them.
 ---
 
 # Planning
@@ -54,10 +54,9 @@ document become the decision archive it was always better at being.
 
 ---
 
-For multi-step work: plan, get approval, then implement. The plan is a living
-document, not a one-off artifact.
+For multi-step work: plan, get approval, then implement.
 
-Lives in `docs/` or `project-docs/`, following whatever the repo already does.
+A plan document lives in `docs/` or `project-docs/`, following whatever the repo already does.
 
 ## Runbooks
 
@@ -68,71 +67,29 @@ repository's work.
 
 ---
 
-## Living plan documents
+## Design review
 
-Create one for multi-phase features, migrations, significant refactors, and
-troubleshooting that spans sessions.
+**Tickets are not marked agent-ready until the design has been reviewed.** Run it
+before marking them, and again whenever the design changes substantially.
 
-Core sections:
+The spec gate checks the ticket: its required sections, its acceptance criteria,
+and its testing approach. This review does not repeat that. It covers only what
+the spec gate does not check:
 
-| Section | Purpose |
-|---|---|
-| Decision Ledger | Locked decisions, to stop scope creep |
-| Work Tracking | Planned vs actual vs current |
-| Change Log | Modifications, timestamped |
-| Variance Log | Where reality diverged from the plan |
-| Issue Resolution | Problems hit and how they were settled |
-| Scope Evolution | Additions and requirement changes |
-| Testing Results | Validation outcomes |
+- **Rollback:** which changes are reversible, and how each is reversed.
+- **Dependency ordering:** what must land first, and what can run in parallel.
+- **Resource and timeline reality:** whether the work fits the time, tools and
+  capacity it has.
 
-Update **before** each phase starts, when implementation deviates, at
-milestones, when scope grows, and after implementation with what was learned.
-
-The living document is the single source of truth for status and decision
-history. If it disagrees with a chat transcript, the document wins.
-
----
-
-## Review gate
-
-**Implementation does not start until the plan has been reviewed and the review
-is recorded in the Change Log.**
-
-Run it per phase, and again whenever the plan changes substantially.
-
-### Checklist
-
-- [ ] Plan validated against the actual codebase, not against assumptions
-- [ ] Assumptions checked; divergences recorded in the Variance Log
-- [ ] Unknowns each resolved, deferred with a reason, or accepted as risk
-- [ ] Implementation risks and mitigations documented
-- [ ] Acceptance criteria defined per phase - explicit pass and fail
-- [ ] Testing approach defined
-- [ ] Blocking issues resolved, or deferred with explicit rationale
-- [ ] Review completion recorded with a timestamp
-
-### Categories to address
-
-Address each, or state "N/A" with a reason. Missing categories mean the plan is
-not ready.
-
-**Analysis:** assumptions; gaps; unknowns; unclear requirements.
-
-**Implementation:** dependencies and ordering, including what can run in
-parallel; integration points and data formats at boundaries; validation
-strategy and what distinguishes success from failure; rollback, and which
-changes are reversible.
-
-**Quality and risk:** edge cases and malformed input; resource and timeline
-reality; user and data impact during transition; acceptance criteria and how
-the original problem is verified solved.
+Record the outcome as a comment on the ticket, with the date. Do not record it in a
+document.
 
 ---
 
 ## Scale the ceremony
 
 This protocol is for genuinely multi-step work. A single-file fix does not need
-a Decision Ledger. Applying the full framework to small changes is how planning
+a design review or a plan document. Applying the full framework to small changes is how planning
 documents become something people stop reading.
 
 The test: **would losing this conversation cost more than writing the document

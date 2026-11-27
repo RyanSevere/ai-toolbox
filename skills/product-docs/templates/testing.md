@@ -17,3 +17,7 @@ The rules and behaviours of the product that a test has to pin down.
 ## What runs where
 
 Which tests run locally, which in CI, and which only against a live system.
+
+## Change log
+
+None yet. Entries run newest first, one per redesign of the objective, each dated and saying what changed and why. Never progress or status.

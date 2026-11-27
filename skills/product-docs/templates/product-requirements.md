@@ -25,3 +25,7 @@ Performance, availability, security, accessibility and other qualities it must m
 ## Out of scope
 
 What the product deliberately does not do.
+
+## Change log
+
+None yet. Entries run newest first, one per redesign of the objective, each dated and saying what changed and why. Never progress or status.
