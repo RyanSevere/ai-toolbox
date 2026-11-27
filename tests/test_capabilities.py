@@ -4,11 +4,13 @@
 # Path: {PROJECT_ROOT}/tests/test_capabilities.py
 # Created by: Ryan Severe
 # Created: 2026-10-13
-# Last Updated: 2026-11-23
+# Last Updated: 2026-11-26
 # Description: Tests for capabilities/tracker.yaml, the core's wireframe of ticket
 #              management, and capabilities/asks.yaml, its wireframe of asking the
 #              operator away from the session, and capabilities/sessions.yaml, its
-#              wireframe of listing the managed sessions. Each holds concepts, operations, guarantees and setup
+#              wireframe of listing the managed sessions, and capabilities/usage.yaml,
+#              its wireframe of reading a plan's usage period.
+#              Each holds concepts, operations, guarantees and setup
 #              questions, and names no tracker, transport or estate value. A
 #              wireframe that quietly names a product has to be edited to support
 #              the next one. Stdlib and PyYAML only.
@@ -400,6 +402,119 @@ class SessionsWireframe(unittest.TestCase):
         sys.path.insert(0, str(ROOT))
         import sync
         self.assertIn("sessions.digest", sync.known_capabilities())
+
+
+USAGE_FILE = ROOT / "capabilities" / "usage.yaml"
+USAGE_CONCEPTS = ("period", "reset", "unused-share", "burn-list")
+USAGE_GUARANTEES = ("unknown-not-empty", "read-back")
+USAGE_QUESTIONS = ("source", "reset", "threshold", "operations")
+
+
+def load_usage() -> dict:
+    return yaml.safe_load(USAGE_FILE.read_text(encoding="utf-8"))
+
+
+class UsageWireframe(unittest.TestCase):
+    """Intent: the ticket's Done when. The core describes reading a plan's usage period
+    without describing a product."""
+
+    def test_the_file_exists(self):
+        """Intent: the ticket's Done when, capabilities/usage.yaml is part of the core."""
+        self.assertTrue(USAGE_FILE.is_file(), f"{USAGE_FILE} is missing")
+
+    def test_the_four_sections_exist(self):
+        """Intent: the ticket's Decided, shaped like the sessions wireframe, with concepts,
+        operations, guarantees and setup."""
+        data = load_usage()
+        for section in SECTIONS:
+            with self.subTest(section=section):
+                self.assertTrue(data.get(section), f"section {section!r} is missing or empty")
+
+    def test_the_four_concepts_are_each_described(self):
+        """Intent: the ticket's Decided, the concepts are period, reset, unused-share and
+        burn-list."""
+        concepts = load_usage()["concepts"]
+        self.assertEqual(set(concepts), set(USAGE_CONCEPTS))
+        for name, entry in concepts.items():
+            with self.subTest(concept=name):
+                self.assertTrue(str((entry or {}).get("description") or "").strip())
+
+    def test_the_one_operation_is_the_usage_read_capability(self):
+        """Intent: the ticket's Done when. One operation, read, whose capability is
+        usage.read."""
+        operations = load_usage()["operations"]
+        self.assertEqual(set(operations), {"read"})
+        entry = operations["read"]
+        self.assertEqual(entry.get("capability"), "usage.read")
+        self.assertTrue(str(entry.get("description") or "").strip())
+
+    def test_the_read_operation_gives_both_guarantees_and_both_are_defined(self):
+        """Intent: the ticket's Done when, the guarantees unknown-not-empty and read-back."""
+        data = load_usage()
+        self.assertEqual(set(data["guarantees"]), set(USAGE_GUARANTEES))
+        for name, entry in data["guarantees"].items():
+            with self.subTest(guarantee=name):
+                self.assertTrue(str((entry or {}).get("description") or entry or "").strip())
+        self.assertEqual(set(data["operations"]["read"]["guarantees"]), set(USAGE_GUARANTEES))
+
+    def test_a_failed_read_is_unknown_never_a_share_of_zero(self):
+        """Intent: the ticket's Decided and edge case on a failed lookup. The guarantee says
+        a failed read is unknown, never a share of zero."""
+        text = str(load_usage()["guarantees"]["unknown-not-empty"]["description"]).lower()
+        self.assertIn("unknown", text)
+        self.assertIn("zero", text)
+
+    def test_every_question_is_present_once_and_carries_its_fields(self):
+        """Intent: the ticket's Done when, source, reset, threshold and operations are
+        asked, each with ask, why, feeds and example."""
+        setup = load_usage()["setup"]
+        self.assertEqual(sorted(q.get("id") for q in setup), sorted(USAGE_QUESTIONS))
+        for question in setup:
+            for key in QUESTION_KEYS:
+                with self.subTest(question=question.get("id"), key=key):
+                    self.assertTrue(question.get(key), f"{key!r} missing or empty")
+
+    def test_every_question_feeds_a_concept_or_an_operation(self):
+        """Intent: the ticket's Done when, each setup answer feeds something the wireframe
+        defines."""
+        data = load_usage()
+        known = set(data["concepts"]) | set(data["operations"])
+        for question in data["setup"]:
+            feeds = question["feeds"]
+            for target in [feeds] if isinstance(feeds, str) else feeds:
+                with self.subTest(question=question["id"], feeds=target):
+                    self.assertIn(target, known)
+
+    def test_source_declares_and_reset_and_threshold_render(self):
+        """Intent: the ticket's Decided. source declares, reset and threshold render as
+        conventions, and operations does neither."""
+        setup = {q["id"]: q for q in load_usage()["setup"]}
+        self.assertEqual([i for i, q in setup.items() if q.get("declares")], ["source"])
+        self.assertEqual(sorted(i for i, q in setup.items() if q.get("renders")),
+                         ["reset", "threshold"])
+        self.assertTrue(setup["source"]["declares"] is True)
+        self.assertTrue(setup["reset"]["renders"] is True)
+        self.assertTrue(setup["threshold"]["renders"] is True)
+
+    def test_the_file_names_no_product_transport_or_estate_value(self):
+        """Intent: the ticket's Done when, checked by the same forbidden-word patterns the
+        other wireframes use. The check names its file, as it does for each wireframe."""
+        text = USAGE_FILE.read_text(encoding="utf-8")
+        for word, pattern in ASKS_FORBIDDEN.items():
+            with self.subTest(word=word):
+                self.assertIsNone(re.search(pattern, text),
+                                  f"{word!r} appears in {USAGE_FILE.name}")
+
+    def test_sync_knows_the_usage_read_capability_and_its_questions(self):
+        """Intent: the ticket's Done when, sync reads the new wireframe, so a profile can
+        bind usage.read and answer its questions."""
+        import sys
+        sys.path.insert(0, str(ROOT))
+        import sync
+        self.assertIn("usage.read", sync.known_capabilities())
+        questions = sync.setup_questions()["usage"]
+        self.assertEqual(questions.declares, "source")
+        self.assertEqual(questions.renders, ("reset", "threshold"))
 
 
 if __name__ == "__main__":

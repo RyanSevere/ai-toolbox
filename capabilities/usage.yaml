@@ -1,0 +1,109 @@
+################################################################################
+# File: usage.yaml
+# Path: {PROJECT_ROOT}/capabilities/usage.yaml
+# Created by: Ryan Severe
+# Created: 2026-11-26
+# Last Updated: 2026-11-26
+# Description: The core's wireframe of reading a plan's usage period: concepts,
+#              the one operation a profile can bind, the guarantees it makes,
+#              and the setup questions. It names no product, transport or
+#              estate value.
+################################################################################
+# ===========================================================================
+#
+#
+#            "~,
+#                *m,
+#                   *9m;
+#                       *%pg
+#                          "YRWu
+#                              *9$&w
+#                                  *R$&w
+#   ;j]@@W;                   *w,      79&&w;
+#   :|*%MT"                     7&&w,      ?78BWw
+# . ,|*       -p     ~            *R$$$gw,     '*MU@m,
+#            =W/?*%NMWgw             *T&$F ,@w;     "*4[%m,
+#              7R$$$$$$$$g          yg$$Gg$@@Hh!j ,w     "*w|j=,
+#       ..     ]K@ww[T$Fff            >*MB&&@@Hh ]hk{!!~^     "*v'
+#          '|;, *M@@&&$P                 $$&@HHH\  ` ;w,,   ,~""
+#            "|jj]]%@F"                  ]$@@H, ;*M%P)a$$C  c
+#           . :|j[M"                     ]@@HHr TfR4&$NE*,/~<'
+#             `!||j]@@@A`                ]@@Hh~ *TT"" "* ^ r  '~
+#                *ojKM"                  l@Hh~  "*|"'   /        `
+#                                        @HHkC ,;!"
+#                                       ]HHhr/|!"'
+#                                       #Hhr!||"
+#                             ,@r       hkr!||'
+#                                      [k{|!"
+#                                     (r!!"        r
+#                                     !!"        r
+#                                      ";      /
+#                                             '
+#                                            '
+# ===========================================================================
+
+# Reading how much of a plan's usage period is left, described without describing a meter.
+#
+# This is a wireframe: concepts every way of reading usage has, the operation a profile
+# can bind, the guarantees that operation makes, and the questions the setup process asks to
+# fit it to one profile. It carries no implementation, no transport and no product name -
+# tests/test_capabilities.py refuses any. Anything not universal to every usage meter is
+# an answer to a setup question, never a concept here.
+#
+# One source for two readers: a profile reads it as the template for its own reading, and
+# capability binding validates a profile's bindings against the names under `operations`.
+
+# What every way of reading usage has, named and never typed to one meter.
+concepts:
+  period:
+    description: The span of time a plan's usage quota covers, after which the quota starts again.
+  reset:
+    description: The moment a period ends and its quota starts again, and how often that recurs.
+  unused-share:
+    description: The part of the period's quota not yet used, as a share of the whole, read at the time of asking.
+  burn-list:
+    description: A proposal of work that would use the unused share before the reset, for the operator to pick from and never to run unasked.
+
+# The one operation a profile binds, so a profile that lacks it loses only what needs it.
+operations:
+  read:
+    capability: usage.read
+    description: Report the used share of the current period and the time of its reset.
+    guarantees: [unknown-not-empty, read-back]
+
+# Promises that come from the core's design principles, not from any one implementation.
+guarantees:
+  unknown-not-empty:
+    description: A usage reading that cannot be made is reported as unknown. A failed read reports failure, never a used share of zero or an unused share of everything.
+  read-back:
+    description: The share and the reset time are read live when asked, never from a figure kept earlier.
+
+# Asked by the setup process; the answers belong to the profile and are stored there,
+# under answers: as usage.<id>. Each `example` is written for an invented meter.
+# `declares: true` marks the one answer that names the source: answered with nothing
+# bound, render reports the usage reading unbuilt. `renders: true` marks an answer that
+# is rendered into the profile as a convention.
+setup:
+  - id: source
+    declares: true
+    ask: Which tool or service reports how much of the plan's usage period has been used? Any source works.
+    why: Every other answer depends on it. Nothing is built from the answer until a skill is bound to it, so naming a source only records it.
+    feeds: [period, read]
+    example: "ExampleMeter, a command-line client that prints the used share of the current period."
+  - id: reset
+    renders: true
+    ask: When does the usage period reset, and how often?
+    why: The reading is only useful near the reset, so the caller needs to know when the last one or two reports before it fall.
+    feeds: [reset, period]
+    example: "The period resets every Monday at 09:00, weekly."
+  - id: threshold
+    renders: true
+    ask: What unused share prompts a burn list, and how much judgement applies either side of it?
+    why: The threshold is a guide, so the caller takes it from the profile and stays free to propose a list a little below it or hold one a little above.
+    feeds: [unused-share, burn-list]
+    example: "Forty percent unused prompts a list. Within ten points either way it is a judgement call."
+  - id: operations
+    ask: "Which operations will this profile bind? The one operation is read."
+    why: An unbound operation is reported as unavailable, never silently skipped.
+    feeds: [read]
+    example: "Read."

@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-21
+# Last Updated: 2026-11-26
 # Description: Tests for sync.py - the renderer that decides what every AI
 #              session in the estate reads. Covers build_plan over every real
 #              manifest target, exclude validation, the hand-owned guard, stamp
@@ -283,7 +283,7 @@ class BuildPlan(unittest.TestCase):
                          [("design-partner", ["tracker.create", "tracker.edit", "tracker.status"])])
         self.assertEqual(sorted(p.parent.name for p, _, _ in bare.dropped_sections),
                          ["context", "context", "handoff", "orchestrator", "orchestrator",
-                          "orchestrator", "orchestrator", "workstream-primary",
+                          "orchestrator", "orchestrator", "orchestrator", "workstream-primary",
                           "workstream-primary", "workstream-primary"])
 
     def test_agents_md_says_to_hand_off_after_a_summary(self):
@@ -5755,7 +5755,8 @@ class LayerSkills(unittest.TestCase):
     ASKS_BOUND = {"asks.ask": {"skill": "example-asker"},
                   "asks.list": {"skill": "example-asker"}}
     BOUND = {**ASKS_BOUND, "tracker.query": {"skill": "example-asker"},
-             "sessions.digest": {"skill": "example-asker"}}
+             "sessions.digest": {"skill": "example-asker"},
+             "usage.read": {"skill": "example-asker"}}
     OUT = ".cursor/skills/{}/SKILL.md"
 
     def setUp(self):
@@ -5928,6 +5929,119 @@ class LayerSkills(unittest.TestCase):
         drops = [caps for _, caps in self.core_drops(plan, "orchestrator")
                  if "sessions.digest" in caps]
         self.assertEqual(drops, [["sessions.digest"]])
+
+    USAGE_ANSWERS = {"usage.source": "ExampleMeter, a command-line client that prints usage.",
+                     "usage.reset": "Resets every Monday at 09:00, weekly.",
+                     "usage.threshold": "Forty percent unused prompts a list, judgement either way."}
+    USAGE_RULE = f"{sync.ON_DEMAND_DIR}/usage-conventions.md"
+
+    def usage_plan(self, capabilities: dict, answers: dict | None = None) -> sync.Plan:
+        manifest = {**MANIFEST, "features": lock_all_on(self.profile),
+                    "capabilities": capabilities}
+        if answers:
+            manifest["answers"] = answers
+        return build_plan("t", {}, DEFAULTS, SHA, manifest, profile_dir=self.profile)
+
+    @staticmethod
+    def burn_lines(text: str) -> list[str]:
+        return [line for line in text.splitlines() if "burn list" in line.lower()]
+
+    def test_a_bound_usage_read_names_its_skill_in_the_burn_list_step(self):
+        """Intent: the ticket's Done when. A profile binding usage.read renders the
+        burn-list step with the bound skill's name, and nothing is dropped for it."""
+        plan = self.usage_plan({"usage.read": {"skill": "example-asker"}}, self.USAGE_ANSWERS)
+        text = plan[self.OUT.format("orchestrator")]
+        named = [line for line in self.burn_lines(text) if "the `example-asker` skill" in line]
+        self.assertTrue(named, "no burn-list line names the bound skill")
+        self.assertNotIn("{{", text)
+        self.assertEqual([caps for _, caps in self.core_drops(plan, "orchestrator")
+                          if "usage.read" in caps], [])
+
+    def test_a_bound_usage_read_renders_a_usage_conventions_rule_with_its_answers(self):
+        """Intent: the ticket's Done when. The Usage conventions rule carries the reset and
+        threshold answers, in its on-demand path and its Cursor path."""
+        plan = self.usage_plan({"usage.read": {"skill": "example-asker"}}, self.USAGE_ANSWERS)
+        for path in (self.USAGE_RULE, ".cursor/rules/usage-conventions.mdc"):
+            with self.subTest(path=path):
+                self.assertIn(path, plan)
+                self.assertIn("Usage conventions", plan[path])
+                self.assertIn(self.USAGE_ANSWERS["usage.reset"], plan[path])
+                self.assertIn(self.USAGE_ANSWERS["usage.threshold"], plan[path])
+
+    def test_a_profile_binding_nothing_renders_no_burn_list_step_and_no_usage_rule(self):
+        """Intent: the ticket's Done when and its empty-or-missing edge case. With
+        usage.read unbound the orchestrator skill has no burn-list step, no usage rule is
+        rendered, and the only drop reported for it is the step's own block."""
+        plan = self.usage_plan({})
+        text = plan[self.OUT.format("orchestrator")]
+        self.assertEqual(self.burn_lines(text), [])
+        self.assertNotIn("example-asker", text)
+        self.assertNotIn("{{", text)
+        self.assertEqual([p for p in plan if "usage-conventions" in p], [])
+        self.assertNotIn("usage-conventions", plan["AGENTS.md"])
+        drops = [caps for _, caps in self.core_drops(plan, "orchestrator")
+                 if "usage.read" in caps]
+        self.assertEqual(drops, [["usage.read"]])
+
+    def test_a_usage_source_answered_with_nothing_bound_is_unbuilt(self):
+        """Intent: the ticket's edge case, source answered with nothing bound. Render
+        reports the usage capability unbuilt, as for the other wireframes, and binding
+        usage.read clears it."""
+        unbound = self.usage_plan({}, self.USAGE_ANSWERS)
+        self.assertEqual(unbound.unbuilt, ["usage.source"])
+        bound = self.usage_plan({"usage.read": {"skill": "example-asker"}}, self.USAGE_ANSWERS)
+        self.assertEqual(bound.unbuilt, [])
+
+    def test_usage_read_bound_to_a_skill_no_seed_provides_refuses(self):
+        """Intent: the ticket's malformed-input edge case. A usage.read bound to a skill
+        no seed provides refuses at render, as every capability binding does."""
+        with self.assertRaises(sync.SyncError) as caught:
+            self.usage_plan({"usage.read": {"skill": "acme-missing"}})
+        self.assertIn("usage.read", str(caught.exception))
+        self.assertIn("acme-missing", str(caught.exception))
+
+    @staticmethod
+    def procedure_text() -> str:
+        return (sync.SKILLS_DIR / "orchestrator" / "procedure.md").read_text(encoding="utf-8")
+
+    def burn_block(self) -> str:
+        text = self.procedure_text()
+        start = text.find("<!-- requires: usage.read -->")
+        self.assertNotEqual(start, -1, "no usage.read requires block in the procedure")
+        end = text.find("<!-- end -->", start)
+        self.assertNotEqual(end, -1, "the usage.read block is never closed")
+        return text[start:end]
+
+    def test_the_burn_list_step_uses_the_bound_skill_marker(self):
+        """Intent: the ticket's Decided, the step reads usage with {{usage.read}}, inside a
+        requires block, so unbound the step is not rendered."""
+        self.assertIn("{{usage.read}}", self.burn_block())
+
+    def test_the_burn_list_step_says_a_failed_reading_is_unknown_and_proposes_no_list(self):
+        """Intent: the ticket's Done when. The step says a failed reading is reported as
+        unknown with no list proposed, and that the list is a proposal."""
+        block = " ".join(self.burn_block().lower().split())
+        self.assertIn("unknown", block)
+        self.assertIn("no list", block)
+        self.assertIn("proposal", block)
+
+    def test_the_burn_list_step_states_the_boundary_and_the_judgement_band(self):
+        """Intent: the ticket's boundary-values edge case. A share exactly at the
+        threshold proposes a list, and the judgement band is stated, not computed."""
+        block = " ".join(self.burn_block().lower().split())
+        self.assertIn("at or above", block)
+        self.assertIn("judgement", block)
+
+    def test_the_burn_list_step_sits_after_the_report_and_before_the_rotation_messages(self):
+        """Intent: the ticket's duplicates-and-ordering edge case. The step comes after the
+        report step and before the rotation messages, so the list is part of the status."""
+        text = " ".join(self.procedure_text().split())
+        report = text.index("reports the morning status")
+        rotation = text.index("messages each session on the rotation list")
+        burn = text.find("<!-- requires: usage.read -->")
+        self.assertNotEqual(burn, -1, "no usage.read requires block in the procedure")
+        self.assertLess(report, burn)
+        self.assertLess(burn, rotation)
 
 
 if __name__ == "__main__":
