@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_hooks.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-21
+# Last Updated: 2026-11-26
 # Description: Tests for the editor safety hooks, hooks/no-secret-defaults,
 #              hooks/no-shell-file-edits, hooks/no-destructive-shell and
 #              hooks/no-generated-edits, hooks/session-start,
@@ -1469,8 +1469,8 @@ class TitlePrefix(unittest.TestCase):
 
     MARKER = "=== REPLY STARTS HERE ==="
     NO_ASK = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Recommended next\n\nNothing.\n"
-    WITH_ASK = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Decisions and clarifications\n\nWhich?\n"
-    WITH_STEPS = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Operator steps\n\n1. Run it.\n"
+    WITH_ASK = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Decisions and clarifications\n\nDC1 Which?\n"
+    WITH_STEPS = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Operator steps\n\nOS1 Run it.\n"
 
     @classmethod
     def setUpClass(cls):
