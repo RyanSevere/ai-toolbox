@@ -313,6 +313,28 @@ class BuildPlan(unittest.TestCase):
         self.assertIn("re-checks its state from live queries", " ".join(skill.split()))
         self.assertIn("Reason: <why this session ended", skill)
 
+    def test_the_pickup_steps_take_the_previous_session_from_parent_session_id(self):
+        """Intent: ticket tbx-236 Done when, first item - the rendered handoff skill's
+        "Picking up a seed" steps take the previous session from `parentSessionId` and
+        report a mismatch with the id in the prompt."""
+        plan = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)
+        skill = " ".join(plan[".github/skills/handoff/SKILL.md"].split())
+        start = skill.index("## Picking up a seed")
+        steps = skill[start:skill.index("## Closing a workstream", start)]
+        self.assertIn("parentSessionId", steps)
+        self.assertRegex(steps, r"(?i)mismatch")
+
+    def test_the_claude_code_rule_names_parent_session_id_in_its_handing_off_steps(self):
+        """Intent: ticket tbx-236 Done when, second item - the rendered Claude Code rule's
+        handing-off steps name `parentSessionId` as the id the new session releases and
+        un-archives."""
+        defaults = {**DEFAULTS, "tier2": list(DEFAULTS.get("tier2", [])) + ["claude-code"]}
+        plan = build_plan("t", {"estate": True}, defaults, SHA, MANIFEST)
+        rule = plan[".claude/rules/claude-code.md"]
+        start = rule.index("## Handing off")
+        end = rule.find("\n## ", start + 1)
+        self.assertIn("parentSessionId", rule[start:end if end != -1 else len(rule)])
+
     def test_repo_list_replaces_the_file_beside_the_ticket_tool(self):
         """Intent: the core renders the repo list at a profile path, and the
         ticket tool's old copy is no longer rendered."""
