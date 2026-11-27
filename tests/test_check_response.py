@@ -2837,7 +2837,7 @@ class PickupId(TranscriptCase):
     # The checker, called directly
 
     def test_the_bare_transcript_id_is_a_finding(self):
-        """Intent: ticket tbx-236 Done when, third item - a previous-session line carrying
+        """Intent: the pickup-id ticket'sDone when, third item - a previous-session line carrying
         the transcript id bare gets a finding that starts `pickup:` and names the line and
         the lookup to use instead."""
         found = cr.pickup_findings(self.reply(self.line(K_SESSION)), K_SESSION)
@@ -2848,14 +2848,14 @@ class PickupId(TranscriptCase):
         self.assertIn("self", found[0])
 
     def test_a_local_prefixed_id_is_a_finding(self):
-        """Intent: ticket tbx-236 Edge cases, boundary values - the id with a `local_`
+        """Intent: the pickup-id ticket'sEdge cases, boundary values - the id with a `local_`
         prefix counts as the transcript id."""
         found = cr.pickup_findings(self.reply(self.line("local_" + K_SESSION)), K_SESSION)
         self.assertEqual(len(found), 1, found)
         self.assertTrue(found[0].startswith("pickup:"), found)
 
     def test_a_backticked_id_is_a_finding(self):
-        """Intent: ticket tbx-236 Edge cases, boundary values - the id wrapped in
+        """Intent: the pickup-id ticket'sEdge cases, boundary values - the id wrapped in
         backticks counts as the transcript id, bare or with the `local_` prefix."""
         for value in (f"`{K_SESSION}`", f"`local_{K_SESSION}`"):
             with self.subTest(value=value):
@@ -2864,19 +2864,19 @@ class PickupId(TranscriptCase):
                 self.assertTrue(found[0].startswith("pickup:"), found)
 
     def test_the_fence_is_read_as_raw_text(self):
-        """Intent: ticket tbx-236 Decided, item 2 - the check reads the reply's raw text,
+        """Intent: the pickup-id ticket'sDecided, item 2 - the check reads the reply's raw text,
         fences included, so a line inside a fenced block is found."""
         found = cr.pickup_findings("```\n" + self.line(K_SESSION) + "\n```", K_SESSION)
         self.assertEqual(len(found), 1, found)
 
     def test_a_different_id_is_not_a_finding(self):
-        """Intent: ticket tbx-236 Done when, fourth item - a previous-session line naming
+        """Intent: the pickup-id ticket'sDone when, fourth item - a previous-session line naming
         a different id gets no `pickup:` finding."""
         text = self.reply(self.line(K_OTHER))
         self.assertEqual(cr.pickup_findings(text, K_SESSION), [])
 
     def test_an_id_that_only_shares_a_prefix_is_not_a_finding(self):
-        """Intent: ticket tbx-236 Edge cases, boundary values - an id that only shares a
+        """Intent: the pickup-id ticket'sEdge cases, boundary values - an id that only shares a
         prefix with the transcript id does not count, whether it is a near miss of the
         same length or a truncation of it."""
         for value in (self.NEAR, K_SESSION[:8], "local_" + self.NEAR):
@@ -2885,14 +2885,14 @@ class PickupId(TranscriptCase):
                     cr.pickup_findings(self.reply(self.line(value)), K_SESSION), [])
 
     def test_an_empty_value_is_not_a_finding(self):
-        """Intent: ticket tbx-236 Edge cases, malformed - a `Previous session id:` line
+        """Intent: the pickup-id ticket'sEdge cases, malformed - a `Previous session id:` line
         with nothing after the colon gets no finding."""
         for line in ("Previous session id:", "Previous session id: "):
             with self.subTest(line=line):
                 self.assertEqual(cr.pickup_findings(self.reply(line), K_SESSION), [])
 
     def test_a_template_placeholder_is_not_a_finding(self):
-        """Intent: ticket tbx-236 Edge cases, malformed - a `<id>` placeholder gets no
+        """Intent: the pickup-id ticket'sEdge cases, malformed - a `<id>` placeholder gets no
         finding."""
         for value in ("<id>", "<previous session id>"):
             with self.subTest(value=value):
@@ -2900,14 +2900,14 @@ class PickupId(TranscriptCase):
                     cr.pickup_findings(self.reply(self.line(value)), K_SESSION), [])
 
     def test_a_reply_with_no_such_line_is_not_a_finding(self):
-        """Intent: ticket tbx-236 Edge cases, empty or missing - a reply with no
+        """Intent: the pickup-id ticket'sEdge cases, empty or missing - a reply with no
         `Previous session id:` line gets no finding, even one that mentions the id."""
         self.assertEqual(cr.pickup_findings(CONDENSED_CLEAN, K_SESSION), [])
         mention = self.reply(f"The transcript id is {K_SESSION}.")
         self.assertEqual(cr.pickup_findings(mention, K_SESSION), [])
 
     def test_two_matching_lines_get_two_findings(self):
-        """Intent: ticket tbx-236 Edge cases, duplicates - each previous-session line that
+        """Intent: the pickup-id ticket'sEdge cases, duplicates - each previous-session line that
         names the transcript id gets its own finding; a line that does not gets none."""
         text = self.reply(self.line(K_SESSION), self.line(K_OTHER),
                           self.line("local_" + K_SESSION))
@@ -2916,7 +2916,7 @@ class PickupId(TranscriptCase):
         self.assertTrue(all(f.startswith("pickup:") for f in found), found)
 
     def test_no_transcript_id_skips_the_check(self):
-        """Intent: ticket tbx-236 Edge cases, empty or missing - with no transcript id
+        """Intent: the pickup-id ticket'sEdge cases, empty or missing - with no transcript id
         the check is skipped and records nothing."""
         text = self.reply(self.line(K_SESSION))
         self.assertEqual(cr.pickup_findings(text, None), [])
@@ -2925,7 +2925,7 @@ class PickupId(TranscriptCase):
     # --stop
 
     def test_stop_reports_the_finding_and_exits_2(self):
-        """Intent: ticket tbx-236 Done when, third and fifth items - under --stop, with
+        """Intent: the pickup-id ticket'sDone when, third and fifth items - under --stop, with
         the hook JSON's session_id and transcript_path, a pickup prompt naming the
         transcript id gets a `pickup:` finding, and the turn is sent back."""
         for value in (K_SESSION, "local_" + K_SESSION, f"`{K_SESSION}`"):
@@ -2936,31 +2936,31 @@ class PickupId(TranscriptCase):
                 self.assertEqual(out, "")
 
     def test_stop_hook_active_exits_0_and_still_reports_the_finding(self):
-        """Intent: ticket tbx-236 Done when, fifth item - with stop_hook_active set the
+        """Intent: the pickup-id ticket'sDone when, fifth item - with stop_hook_active set the
         exit is 0, and the finding is still printed."""
         code, _, err = self.run_stop(self.reply(self.line(K_SESSION)), stop_hook_active=True)
         self.assertEqual(code, 0, err)
         self.assertIn("  - pickup:", err)
 
     def test_stop_with_a_different_id_is_clean(self):
-        """Characterisation: ticket tbx-236 Done when, fourth item - a different id gets no
+        """Characterisation: the pickup-id ticket'sDone when, fourth item - a different id gets no
         finding and the turn passes. Passes before the change; the control for the exit-2
         tests, whose reply around the prompt is clean, and a guard against a false positive."""
         self.assertEqual(self.run_stop(self.reply(self.line(K_OTHER))), (0, "", ""))
 
     def test_stop_with_a_near_miss_id_is_clean(self):
-        """Characterisation: ticket tbx-236 Edge cases, boundary values - a prefix-sharing id
+        """Characterisation: the pickup-id ticket'sEdge cases, boundary values - a prefix-sharing id
         is not the transcript id, so the turn passes. Passes before the change; guards the
         coder against a prefix match."""
         self.assertEqual(self.run_stop(self.reply(self.line(self.NEAR))), (0, "", ""))
 
     def test_stop_with_no_prompt_line_is_clean(self):
-        """Characterisation: ticket tbx-236 Done when, fourth item - a reply with no
+        """Characterisation: the pickup-id ticket'sDone when, fourth item - a reply with no
         previous-session line gets no finding. Passes before the change; guards it."""
         self.assertEqual(self.run_stop(CONDENSED_CLEAN), (0, "", ""))
 
     def test_stop_with_two_lines_reports_two_findings(self):
-        """Intent: ticket tbx-236 Edge cases, duplicates - two matching lines print two
+        """Intent: the pickup-id ticket'sEdge cases, duplicates - two matching lines print two
         findings."""
         code, _, err = self.run_stop(self.reply(self.line(K_SESSION),
                                                 self.line("local_" + K_SESSION)))
@@ -2968,7 +2968,7 @@ class PickupId(TranscriptCase):
         self.assertEqual(err.count("  - pickup:"), 2, err)
 
     def test_stop_with_no_transcript_id_skips_the_check_and_does_not_fail(self):
-        """Characterisation: ticket tbx-236 Edge cases, empty or missing - a hook JSON with
+        """Characterisation: the pickup-id ticket'sEdge cases, empty or missing - a hook JSON with
         no session_id and no transcript_path skips the check, and the turn is not failed.
         Passes before the change; guards the coder against failing a turn with no id."""
         code, out, err = self.run_stop(self.reply(self.line(K_SESSION)), session=None)
@@ -2977,7 +2977,7 @@ class PickupId(TranscriptCase):
     # --previous
 
     def test_previous_reports_the_finding(self):
-        """Intent: ticket tbx-236 Done when, third item - under --previous, with the
+        """Intent: the pickup-id ticket'sDone when, third item - under --previous, with the
         session id the adapter identifies, a pickup prompt naming it gets a `pickup:`
         finding, bare and with the `local_` prefix."""
         for value in (K_SESSION, "local_" + K_SESSION, f"`{K_SESSION}`"):
@@ -2987,7 +2987,7 @@ class PickupId(TranscriptCase):
                 self.assertIn("  - pickup:", out)
 
     def test_previous_takes_the_id_from_the_environment(self):
-        """Intent: ticket tbx-236 Decided, item 2 - --previous gets the transcript id from
+        """Intent: the pickup-id ticket'sDecided, item 2 - --previous gets the transcript id from
         the adapter's identity, which falls back to CLAUDE_CODE_SESSION_ID."""
         code, out, err = self.run_previous(self.reply(self.line(K_SESSION)),
                                            env={"CLAUDE_CODE_SESSION_ID": K_SESSION})
@@ -2995,14 +2995,14 @@ class PickupId(TranscriptCase):
         self.assertIn("  - pickup:", out)
 
     def test_previous_with_a_different_id_is_clean(self):
-        """Characterisation: ticket tbx-236 Done when, fourth item - a different id gets no
+        """Characterisation: the pickup-id ticket'sDone when, fourth item - a different id gets no
         finding under --previous. Passes before the change; guards it."""
         code, out, err = self.previous(self.reply(self.line(K_OTHER)))
         self.assertEqual(code, 0, out + err)
         self.assertNotIn("pickup:", out)
 
     def test_previous_with_no_prompt_line_is_clean(self):
-        """Characterisation: ticket tbx-236 Done when, fourth item - a reply with no
+        """Characterisation: the pickup-id ticket'sDone when, fourth item - a reply with no
         previous-session line gets no finding under --previous. Passes before the change;
         guards it."""
         code, out, err = self.previous(CONDENSED_CLEAN)
@@ -3010,7 +3010,7 @@ class PickupId(TranscriptCase):
         self.assertNotIn("pickup:", out)
 
     def test_previous_with_no_transcript_id_skips_the_check_and_does_not_fail(self):
-        """Characterisation: ticket tbx-236 Edge cases, empty or missing - with no session id
+        """Characterisation: the pickup-id ticket'sEdge cases, empty or missing - with no session id
         passed and none in the environment the check is skipped, and the run is not failed.
         Passes before the change; guards the coder against failing a run with no id."""
         code, out, err = self.run_previous(self.reply(self.line(K_SESSION)))
@@ -3020,7 +3020,7 @@ class PickupId(TranscriptCase):
     # The send-back prefix
 
     def test_pickup_is_a_send_back_prefix(self):
-        """Intent: ticket tbx-236 Decided, item 2 - `pickup:` joins SEND_BACK_PREFIXES, so
+        """Intent: the pickup-id ticket'sDecided, item 2 - `pickup:` joins SEND_BACK_PREFIXES, so
         a pickup finding sends the reply back, and only at the start of a finding."""
         self.assertIn("pickup:", shape.SEND_BACK_PREFIXES)
         self.assertTrue(shape.sends_back("pickup: the previous-session line names this "

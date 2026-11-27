@@ -314,7 +314,7 @@ class BuildPlan(unittest.TestCase):
         self.assertIn("Reason: <why this session ended", skill)
 
     def test_the_pickup_steps_take_the_previous_session_from_parent_session_id(self):
-        """Intent: ticket tbx-236 Done when, first item - the rendered handoff skill's
+        """Intent: the pickup-id ticket'sDone when, first item - the rendered handoff skill's
         "Picking up a seed" steps take the previous session from `parentSessionId` and
         report a mismatch with the id in the prompt."""
         plan = build_plan("t", {}, DEFAULTS, SHA, MANIFEST)
@@ -325,7 +325,7 @@ class BuildPlan(unittest.TestCase):
         self.assertRegex(steps, r"(?i)mismatch")
 
     def test_the_claude_code_rule_names_parent_session_id_in_its_handing_off_steps(self):
-        """Intent: ticket tbx-236 Done when, second item - the rendered Claude Code rule's
+        """Intent: the pickup-id ticket'sDone when, second item - the rendered Claude Code rule's
         handing-off steps name `parentSessionId` as the id the new session releases and
         un-archives."""
         defaults = {**DEFAULTS, "tier2": list(DEFAULTS.get("tier2", [])) + ["claude-code"]}
