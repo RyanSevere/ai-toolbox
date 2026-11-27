@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_layer_rulings.py
 # Created by: Ryan Severe
 # Created: 2026-11-23
-# Last Updated: 2026-11-23
+# Last Updated: 2026-11-26
 # Description: The layer-skill rulings. The workstream-primary and orchestrator
 #              skills state that information goes on STATUS and a message is for
 #              action, that no rotation starts while Remote Control is on, that
@@ -57,6 +57,27 @@ ROOT = Path(__file__).resolve().parent.parent
 PRIMARY = ROOT / "skills" / "workstream-primary" / "procedure.md"
 ORCHESTRATOR = ROOT / "skills" / "orchestrator" / "procedure.md"
 SPEC = ROOT / "rules" / "spec-response-shape.md"
+PRESCRIPTIONS = ROOT / "rules" / "prescriptions.md"
+
+
+def engineering_bullets() -> list[str]:
+    """The bullets of the Engineering section, each with its wrapped continuation
+    lines joined. A line starting with whitespace continues the bullet above it."""
+    text = PRESCRIPTIONS.read_text(encoding="utf-8")
+    match = re.search(r"^## Engineering\s*$", text, re.MULTILINE)
+    if match is None:
+        raise AssertionError("prescriptions.md: no '## Engineering' heading")
+    section = re.split(r"^## ", text[match.end():], maxsplit=1, flags=re.MULTILINE)[0]
+    bullets: list[str] = []
+    for line in section.splitlines():
+        if line.startswith("- "):
+            bullets.append(line)
+        elif line[:1].isspace() and bullets and bullets[-1] != "":
+            bullets[-1] += " " + line.strip()
+        elif bullets and bullets[-1] != "":
+            # A blank line, rule, or comment marker ends the open bullet.
+            bullets.append("")
+    return [squash(b) for b in bullets if b.strip()]
 
 
 def squash(text: str) -> str:
@@ -220,6 +241,28 @@ class LayerRulings(unittest.TestCase):
         layer 1 ends its replies with the same STATUS line."""
         text = squash(ORCHESTRATOR.read_text(encoding="utf-8"))
         self.assertIn("layer 1 ends its replies with the same STATUS line", text)
+
+    def test_engineering_section_has_a_line_on_questions_asked_of_a_person(self):
+        """Intent: the ticket's Done when, first item - the Engineering section of the
+        prescriptions carries a line saying a question asked of a person states what
+        happened, then what each answer does. The line sits between the Engineering
+        heading and the next heading."""
+        matching = [b.lower() for b in engineering_bullets()
+                    if "what happened" in b.lower() and "what each answer does" in b.lower()]
+        self.assertEqual(len(matching), 1,
+                         "expected one Engineering line with 'what happened' and "
+                         f"'what each answer does', found {len(matching)}")
+
+    def test_the_question_line_is_a_single_bullet(self):
+        """Intent: the ticket's Done when, first item - the rule is one line, in the
+        prescriptions' one-line-per-rule form: a wrapped continuation is allowed, a
+        second bullet is not, so neither phrase appears in any other Engineering bullet."""
+        carrying = [b for b in engineering_bullets()
+                    if "what happened" in b.lower() or "what each answer does" in b.lower()]
+        self.assertEqual(len(carrying), 1,
+                         f"expected the two phrases in one bullet, found {len(carrying)} bullets")
+        self.assertIn("what happened", carrying[0].lower())
+        self.assertIn("what each answer does", carrying[0].lower())
 
 
 if __name__ == "__main__":
