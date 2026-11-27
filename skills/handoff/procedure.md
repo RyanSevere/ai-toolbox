@@ -162,7 +162,12 @@ reads as before. Fill the previous-session line only in Claude Code's desktop ap
 where the tool's own rule says why; everywhere else leave it out. `<id>` is the
 writer's own session id, read from the tool's session lookup for itself (in Claude
 Code's desktop app, `get_session` with `"self"`) at the time of writing - never the
-transcript id, and never the writer's parent. Fill the rotation line
+transcript id, and never the writer's parent. Two checks hold it to that. The response
+checker refuses a reply whose previous-session line names the writer's own transcript
+id, and sends the turn back once. It cannot tell whether an id of the right shape is
+the right session, so the successor cross-checks the prompt's id against the
+`parentSessionId` its own `get_session` reports and uses `parentSessionId` on a
+mismatch (step 8 of "Picking up a seed"). Fill the rotation line
 only when a standing rotation policy ordered this handoff, naming the policy; step 5 of
 "Picking up a seed" says what it pre-approves.
 
@@ -201,14 +206,20 @@ Where the tool can start a session itself, its own rule says how; the prompt is 
    seed's first line `Picked up <date and time>, by <tool or service>.` - an edit, not a delete. A seed
    carrying that line is spent: a later session reads it as history, never as a
    workstream to take. It goes with the directory's cleanup. Leave `Not yours` alone.
-8. Where the prompt names a previous session, message it right after detaching, without
-   waiting for the confirmation, so it archives itself and only one session shows for
-   the workstream. Check it shows as archived, and tell the operator if it does not. A
-   session is not reported as archived until the check shows it. If the check cannot
-   read the old session, say so to the operator; never report it archived.
+8. Where the prompt names a previous session, read your own `get_session` with
+   `"self"` and find the previous session from it. When `parentSessionId` is present, that
+   is the previous session: use it to message it right after detaching, without waiting
+   for the confirmation, so it archives itself and only one session shows for the
+   workstream. Compare it with the id in the prompt, and tell the operator about any
+   mismatch. With no parent, because the operator started you by hand, the prompt's id is
+   the only source. Check the previous session shows as archived, and tell the operator
+   if it does not. A session is not reported as archived until the check shows it. If
+   the check cannot read the old session, or its id is not found, say so to the
+   operator; never report it archived.
 9. If the operator does not confirm the pickup, or the pickup fails, un-archive the
-   previous session by its id (the tool's own rule names the call), check that it is no
-   longer archived, and tell the operator which session is live. A refused or pending
+   previous session by the same id - `parentSessionId` when there is one, the prompt's
+   id otherwise (the tool's own rule names the call) - check that it is no longer
+   archived, and tell the operator which session is live. A refused or pending
    un-archive is reported as such, never as restored.
 
 ## Closing a workstream
