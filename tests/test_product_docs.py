@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_product_docs.py
 # Created by: Ryan Severe
 # Created: 2026-11-23
-# Last Updated: 2026-11-23
+# Last Updated: 2026-11-26
 # Description: The product-docs skill. A template per product document, a
 #              procedure for a new product and for a backfill, the script that
 #              derives a repository's expected documents from docs/products.yaml,
@@ -236,6 +236,36 @@ class Templates(unittest.TestCase):
         for word in ("decision", "alternatives", "rejected", "date"):
             self.assertIn(word, text)
 
+    def test_every_template_ends_with_a_change_log_section(self):
+        """Intent: the ticket's Done when, "every product-docs template ends with a
+        `## Change log` section": the last `## ` heading of each of the nine templates
+        is Change log, and a line of instruction follows it."""
+        for name in SECTIONS:
+            with self.subTest(template=name):
+                text = read(TEMPLATES / name)
+                titles = headings(text)
+                self.assertTrue(titles, "no `## ` sections")
+                self.assertEqual(titles[-1].casefold(), "change log", titles)
+                body = [ln for ln in section(text, "change log").splitlines() if ln.strip()]
+                self.assertTrue(body, "the Change log section is empty")
+
+    def test_the_change_log_section_says_none_yet_when_there_is_no_redesign(self):
+        """Intent: the ticket's Edge cases, "empty or missing": a document with no redesign
+        yet keeps the section with one line saying none yet, so none and missing differ."""
+        for name in SECTIONS:
+            with self.subTest(template=name):
+                body = squash(section(read(TEMPLATES / name), "change log")).casefold()
+                self.assertIn("none yet", body)
+
+    def test_the_change_log_section_runs_newest_first_and_records_redesigns_only(self):
+        """Intent: the ticket's Edge cases, "duplicates and ordering: newest first, one per
+        redesign", and Decided, "never progress or status"."""
+        for name in SECTIONS:
+            with self.subTest(template=name):
+                body = squash(section(read(TEMPLATES / name), "change log")).casefold()
+                self.assertIn("newest first", body)
+                self.assertIn("redesign", body)
+
     def test_the_operations_template_points_at_runbooks_rather_than_holding_them(self):
         """Intent: the build brief's step 2, "operations.md points at runbooks": it names
         the runbook folder of the planning spec."""
@@ -283,6 +313,24 @@ class Procedure(unittest.TestCase):
                 self.assertGreaterEqual(len(steps), 3)
                 self.assertIn("Last verified:", body)
                 self.assertIn("expected_docs.py", body)
+
+    def test_a_redesign_of_the_objective_adds_a_change_log_entry_to_each_affected_document(self):
+        """Intent: the ticket's Done when, "the procedure says a redesign of the objective
+        adds a change log entry", and Edge cases, "a redesign touching one document adds an
+        entry to that document only": a numbered step names all three."""
+        # A step or paragraph, with its wrapped lines folded in.
+        blocks = [squash(p).casefold() for p in re.split(r"\n(?=\s*\d+\. )|\n\n", self.text)]
+        hits = [p for p in blocks
+                if "redesign of the objective" in p and "change log" in p and "entry" in p]
+        self.assertTrue(hits, "no step says a redesign of the objective adds a change log entry")
+        self.assertTrue(any("affected" in p for p in hits), hits)
+
+    def test_the_constraints_say_the_change_log_records_redesigns_only(self):
+        """Intent: the ticket's Done when, "the change log records redesigns only", as a
+        line of the Constraints section."""
+        body = squash(section(self.text, "constraints")).casefold()
+        self.assertIn("change log", body)
+        self.assertIn("redesigns only", body)
 
     def test_it_states_the_not_applicable_form_and_the_constraints(self):
         """Intent: ticket 172 Proposal and Design constraints: a document that does not
