@@ -25,3 +25,7 @@ The systems this product calls, and the ones that call it.
 ## Data flow
 
 How data moves through the product, from where it enters to where it rests or leaves.
+
+## Change log
+
+None yet. Entries run newest first, one per redesign of the objective, each dated and saying what changed and why. Never progress or status.

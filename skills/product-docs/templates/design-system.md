@@ -21,3 +21,7 @@ The grid, spacing and responsive rules.
 ## Consistency rules
 
 The rules that keep new screens looking like the rest.
+
+## Change log
+
+None yet. Entries run newest first, one per redesign of the objective, each dated and saying what changed and why. Never progress or status.
