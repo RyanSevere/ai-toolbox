@@ -184,6 +184,8 @@ look optional.
 - Every outbound call gets an explicit timeout.
 - Validate every externally supplied value before it reaches a path or command,
   not just the first one.
+- Anything that asks a person for input states what happened in plain words,
+  then what each answer does.
 
 ---
 
