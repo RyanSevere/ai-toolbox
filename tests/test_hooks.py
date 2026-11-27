@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/tests/test_hooks.py
 # Created by: Ryan Severe
 # Created: 2026-09-26
-# Last Updated: 2026-11-21
+# Last Updated: 2026-11-26
 # Description: Tests for the editor safety hooks, hooks/no-secret-defaults,
 #              hooks/no-shell-file-edits, hooks/no-destructive-shell and
 #              hooks/no-generated-edits, hooks/session-start,
@@ -1469,8 +1469,8 @@ class TitlePrefix(unittest.TestCase):
 
     MARKER = "=== REPLY STARTS HERE ==="
     NO_ASK = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Recommended next\n\nNothing.\n"
-    WITH_ASK = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Decisions and clarifications\n\nWhich?\n"
-    WITH_STEPS = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Operator steps\n\n1. Run it.\n"
+    WITH_ASK = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Decisions and clarifications\n\nDC1 Which?\n"
+    WITH_STEPS = f"{MARKER}\n\n## Summary\n\nDone.\n\n## Operator steps\n\nOS1 Run it.\n"
 
     @classmethod
     def setUpClass(cls):
@@ -1607,6 +1607,75 @@ class TitlePrefix(unittest.TestCase):
 
     def test_an_ask_before_the_last_marker_does_not_count(self):
         reply = f"{self.WITH_ASK}\n{self.NO_ASK}"
+        self.assertEqual(self.graded("needs you - x", reply)[0], 2)
+
+    def reply_with(self, body: str) -> str:
+        """A marked reply whose only content after the marker is the given body."""
+        return f"{self.MARKER}\n\n## Summary\n\nDone.\n\n{body}\n"
+
+    def test_a_q_item_under_you_missed_this_is_an_ask(self):
+        """Intent: the ticket's Done when - a `needs you` reply whose only ask is a
+        `Q<n>` under `## You missed this` is not sent back."""
+        reply = self.reply_with("## You missed this\n\nQ1 Still waiting on the earlier question.")
+        self.assertEqual(self.graded("needs you - x", reply), (0, ""))
+
+    def test_a_q_item_nested_under_a_came_up_item_is_an_ask(self):
+        """Intent: the ticket's Done when - a `needs you` reply whose only ask is a `Q<n>`
+        nested (indented) under a `Came up while doing it` item is not sent back."""
+        reply = self.reply_with("## Came up while doing it\n\n- Found a stale flag.\n"
+                                "  - Q1 Remove it now, or file it?")
+        self.assertEqual(self.graded("needs you - x", reply), (0, ""))
+
+    def test_a_q_item_anywhere_after_the_marker_is_an_ask_for_pending_workers(self):
+        """Intent: the ticket's Done when - a `pending workers` reply holding a `Q<n>`
+        anywhere is sent back as carrying an open ask."""
+        for body in ("## You missed this\n\nQ1 Still open.",
+                     "## Recommended next\n\nQ1 Which one first?"):
+            with self.subTest(body=body[:20]):
+                code, err = self.graded("pending workers - x", self.reply_with(body))
+                self.assertEqual(code, 2)
+                self.assertIn("carries an open ask", err)
+
+    def test_a_q_item_inside_a_fence_is_not_an_ask(self):
+        """Characterisation: passes before the change, since no heading is present; it guards
+        the ticket's Edge cases item (a `Q1` inside a fenced code block is quoted text, not
+        an ask) against a line match that ignores fences."""
+        reply = self.reply_with("## Recommended next\n\n```\nQ1 Example question\n```")
+        self.assertEqual(self.graded("pending workers - x", reply), (0, ""))
+        self.assertEqual(self.graded("needs you - x", reply)[0], 2)
+
+    def test_an_id_mid_sentence_is_not_an_ask(self):
+        """Characterisation: passes before the change; it guards the ticket's Done when item
+        ("DC1" mid-sentence is not an ask, as it is not at the start of a line) against a
+        match anywhere in the line."""
+        reply = self.reply_with("## Recommended next\n\nSee DC1 and Q2 for the background.")
+        self.assertEqual(self.graded("pending workers - x", reply), (0, ""))
+
+    def test_q0_and_a_bare_dc_are_not_asks_but_q10_is(self):
+        """Intent: the ticket's Edge cases - only an ID with a number of 1 or more counts:
+        `Q0` and `DC` with no number are not asks, `Q10` is."""
+        for line, sent_back in (("Q0 Nothing.", False), ("DC Nothing.", False),
+                                ("Q10 Which?", True)):
+            with self.subTest(line=line):
+                code, _ = self.graded("pending workers - x", self.reply_with(line))
+                self.assertEqual(code, 2 if sent_back else 0)
+
+    def test_dc_and_os_items_under_any_heading_are_asks(self):
+        """Intent: the ticket's Decided - an ask is any line after the marker whose item ID,
+        after stripping list markers and leading whitespace, is `DC<n>`, `Q<n>` or `OS<n>`,
+        under any heading."""
+        for line in ("DC1 Which way?", "OS1 Run it.", "- DC2 Which way?", "  1. OS3 Run it."):
+            with self.subTest(line=line):
+                reply = self.reply_with(f"## Anything at all\n\n{line}")
+                self.assertEqual(self.graded("pending workers - x", reply)[0], 2)
+                self.assertEqual(self.graded("needs you - x", reply)[0], 0)
+
+    def test_an_id_item_before_the_last_marker_does_not_count(self):
+        """Characterisation: passes before the change; it guards the ticket's Edge cases item
+        (an ask before the last reply marker counts for nothing) once matching is by ID."""
+        earlier = self.reply_with("## You missed this\n\nQ1 Old question.")
+        reply = f"{earlier}\n{self.NO_ASK}"
+        self.assertEqual(self.graded("pending workers - x", reply), (0, ""))
         self.assertEqual(self.graded("needs you - x", reply)[0], 2)
 
     def test_the_later_title_call_is_graded(self):
