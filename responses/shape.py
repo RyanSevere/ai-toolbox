@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/shape.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-26
+# Last Updated: 2026-11-27
 # Description: The tool-neutral half of the response checker.
 #              Parses a reply against the response shape, grades it, and walks
 #              back over finished turns to collect replies whose turn never ran
@@ -133,7 +133,7 @@ CAPS = {"cameupwhiledoingit": 3, "recommendednext": 4}  # decisions deliberately
 # The Stop hook sends a reply back only for a finding that starts with one of these: it can
 # change what the operator is asked or decides. Every other finding is report-only. A
 # profile changes the split by editing this tuple.
-SEND_BACK_PREFIXES = ("decisions:", "continuation:")
+SEND_BACK_PREFIXES = ("decisions:", "continuation:", "pickup:")
 
 
 def sends_back(finding: str) -> bool:

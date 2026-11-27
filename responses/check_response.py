@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/responses/check_response.py
 # Created by: Ryan Severe
 # Created: 2026-10-09
-# Last Updated: 2026-11-26
+# Last Updated: 2026-11-27
 # Description: Checks assistant replies against the response shape in
 #              rules/spec-response-shape.md, rendered into each repo as
 #              .github/rules/response-shape.md. The entry point of a shared
@@ -56,6 +56,7 @@ import dataclasses
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -259,6 +260,34 @@ def stop_continuation(data: dict, reply: str) -> tuple[list[str], bool]:
     return shape.continuation_findings(turns, len(turns) - 1), layer
 
 
+PICKUP_LINE = "Previous session id:"
+
+
+def pickup_findings(text: str, transcript_id: str | None) -> list[str]:
+    """`pickup:` findings for a reply whose pickup prompt names this session's transcript id.
+
+    The text is read raw, fences included, because the handoff procedure puts the prompt in
+    a fence. Each line that starts `Previous session id:` is checked; its value runs to the
+    first whitespace or full stop, with backticks stripped. Only a value equal to the
+    transcript id, bare or with a `local_` prefix, is a finding: an empty value, a
+    placeholder or an id that only shares a prefix is not. No transcript id skips the check.
+    """
+    if not transcript_id:
+        return []
+    found = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped.startswith(PICKUP_LINE):
+            continue
+        rest = stripped[len(PICKUP_LINE):].strip()
+        value = re.split(r"[\s.]", rest, maxsplit=1)[0].strip("`")
+        if value in (transcript_id, "local_" + transcript_id):
+            found.append(
+                f"pickup: the previous-session line names this session's transcript id "
+                f"{value}, not its session id - read the session id with get_session \"self\"")
+    return found
+
+
 def stop_hook() -> int:
     """A Claude Code Stop hook: grade the reply about to end the turn.
 
@@ -290,9 +319,12 @@ def stop_hook() -> int:
     # for the STATUS footer; an unreadable transcript skips the first and leaves the second
     # off. Both grade the same text the other checks do.
     continuation, layer = stop_continuation(data, text)
+    # The hook JSON's session_id is the transcript id; absent or not a string skips the check.
+    session = data.get("session_id")
+    pickup = pickup_findings(text, session if isinstance(session, str) else None)
     report = io.StringIO()
     with contextlib.redirect_stdout(report):
-        result = shape.grade("reply", text, extra=extra + continuation, layer=layer)
+        result = shape.grade("reply", text, extra=extra + continuation + pickup, layer=layer)
     if result != 1:
         return 0
     # The ledger line is about --previous's run ledgers, which this mode never touches.
@@ -429,7 +461,8 @@ def main() -> int:
         results = [
             shape.grade("previous reply" if back == 0 else f"{back} turn(s) back, UNGRADED",
                         turn.text, turn.cut_short, turn.invoked,
-                        turn.findings + continuation_for(adapter, walked, back),
+                        turn.findings + continuation_for(adapter, walked, back)
+                        + pickup_findings(turn.text, adapter.identity(args, env)),
                         layer=turn.layer)
             for back, turn in picked
         ]

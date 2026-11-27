@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -2769,6 +2770,262 @@ class StopHookContinuation(TranscriptCase):
         self.assertIn("`decisions:`", paragraph)
         self.assertIn("`continuation:`", paragraph)
         self.assertIn("`transcript_path`", paragraph)
+
+
+class PickupId(TranscriptCase):
+    """A fenced pickup prompt whose `Previous session id:` line names the writer's own
+    transcript id gets a `pickup:` finding, in --stop and in --previous."""
+
+    LINE = "Previous session id: "
+    # Shares every character but the last with K_SESSION, so it only shares a prefix.
+    NEAR = K_SESSION[:-1] + "6"
+
+    def setUp(self):
+        ledger = tempfile.TemporaryDirectory()
+        self.addCleanup(ledger.cleanup)
+        patcher = mock.patch.object(cr.tempfile, "gettempdir", return_value=ledger.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+
+    @staticmethod
+    def reply(*prompt_lines: str) -> str:
+        """A clean reply that ends in a fenced pickup prompt carrying the given lines."""
+        return CONDENSED_CLEAN + "\n\n```\n" + "\n".join(prompt_lines) + "\n```\n"
+
+    def line(self, value: str) -> str:
+        return f"{self.LINE}{value}. Detach from it first, then message it at once."
+
+    def named(self) -> Path:
+        """A transcript file named after K_SESSION, as Claude Code names it."""
+        path = Path(self.folder.name) / f"{K_SESSION}.jsonl"
+        path.write_text(k_user("one") + "\n", encoding="utf-8", newline="\n")
+        return path
+
+    def run_stop(self, reply: str, session: str | None = K_SESSION,
+                 **extra) -> tuple[int, str, str]:
+        hook: dict[str, object] = {"last_assistant_message": K_MARKER + "\n" + reply, **extra}
+        if session is not None:
+            hook["session_id"] = session
+            hook["transcript_path"] = str(self.named())
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", ["check_response.py", "--stop"]), \
+                mock.patch("sys.stdin", new=io.StringIO(json.dumps(hook))), \
+                mock.patch("sys.stdout", new=out), mock.patch("sys.stderr", new=err):
+            code = cr.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def run_previous(self, reply: str, *extra: str, env: dict | None = None
+                     ) -> tuple[int, str, str]:
+        path = self.transcript(k_user("one"), k_final(K_MARKER + "\n" + reply),
+                               k_user("two - in progress"))
+        out, err = io.StringIO(), io.StringIO()
+        argv = ["check_response.py", "--tool", "claude", "--transcript", str(path),
+                "--previous", *extra]
+        # The session id comes only from what the test passes, never from the real shell.
+        kept = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        with mock.patch.dict(os.environ, {**kept, **(env or {})}, clear=True), \
+                mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new=out), \
+                mock.patch("sys.stderr", new=err):
+            code = cr.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def previous(self, reply: str) -> tuple[int, str, str]:
+        return self.run_previous(reply, "--session", K_SESSION)
+
+    # The checker, called directly
+
+    def test_the_bare_transcript_id_is_a_finding(self):
+        """Intent: the pickup-id ticket'sDone when, third item - a previous-session line carrying
+        the transcript id bare gets a finding that starts `pickup:` and names the line and
+        the lookup to use instead."""
+        found = cr.pickup_findings(self.reply(self.line(K_SESSION)), K_SESSION)
+        self.assertEqual(len(found), 1, found)
+        self.assertTrue(found[0].startswith("pickup:"), found)
+        self.assertIn(K_SESSION, found[0])
+        self.assertIn("get_session", found[0])
+        self.assertIn("self", found[0])
+
+    def test_a_local_prefixed_id_is_a_finding(self):
+        """Intent: the pickup-id ticket'sEdge cases, boundary values - the id with a `local_`
+        prefix counts as the transcript id."""
+        found = cr.pickup_findings(self.reply(self.line("local_" + K_SESSION)), K_SESSION)
+        self.assertEqual(len(found), 1, found)
+        self.assertTrue(found[0].startswith("pickup:"), found)
+
+    def test_a_backticked_id_is_a_finding(self):
+        """Intent: the pickup-id ticket'sEdge cases, boundary values - the id wrapped in
+        backticks counts as the transcript id, bare or with the `local_` prefix."""
+        for value in (f"`{K_SESSION}`", f"`local_{K_SESSION}`"):
+            with self.subTest(value=value):
+                found = cr.pickup_findings(self.reply(self.line(value)), K_SESSION)
+                self.assertEqual(len(found), 1, found)
+                self.assertTrue(found[0].startswith("pickup:"), found)
+
+    def test_the_fence_is_read_as_raw_text(self):
+        """Intent: the pickup-id ticket'sDecided, item 2 - the check reads the reply's raw text,
+        fences included, so a line inside a fenced block is found."""
+        found = cr.pickup_findings("```\n" + self.line(K_SESSION) + "\n```", K_SESSION)
+        self.assertEqual(len(found), 1, found)
+
+    def test_a_different_id_is_not_a_finding(self):
+        """Intent: the pickup-id ticket'sDone when, fourth item - a previous-session line naming
+        a different id gets no `pickup:` finding."""
+        text = self.reply(self.line(K_OTHER))
+        self.assertEqual(cr.pickup_findings(text, K_SESSION), [])
+
+    def test_an_id_that_only_shares_a_prefix_is_not_a_finding(self):
+        """Intent: the pickup-id ticket'sEdge cases, boundary values - an id that only shares a
+        prefix with the transcript id does not count, whether it is a near miss of the
+        same length or a truncation of it."""
+        for value in (self.NEAR, K_SESSION[:8], "local_" + self.NEAR):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    cr.pickup_findings(self.reply(self.line(value)), K_SESSION), [])
+
+    def test_an_empty_value_is_not_a_finding(self):
+        """Intent: the pickup-id ticket'sEdge cases, malformed - a `Previous session id:` line
+        with nothing after the colon gets no finding."""
+        for line in ("Previous session id:", "Previous session id: "):
+            with self.subTest(line=line):
+                self.assertEqual(cr.pickup_findings(self.reply(line), K_SESSION), [])
+
+    def test_a_template_placeholder_is_not_a_finding(self):
+        """Intent: the pickup-id ticket'sEdge cases, malformed - a `<id>` placeholder gets no
+        finding."""
+        for value in ("<id>", "<previous session id>"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    cr.pickup_findings(self.reply(self.line(value)), K_SESSION), [])
+
+    def test_a_reply_with_no_such_line_is_not_a_finding(self):
+        """Intent: the pickup-id ticket'sEdge cases, empty or missing - a reply with no
+        `Previous session id:` line gets no finding, even one that mentions the id."""
+        self.assertEqual(cr.pickup_findings(CONDENSED_CLEAN, K_SESSION), [])
+        mention = self.reply(f"The transcript id is {K_SESSION}.")
+        self.assertEqual(cr.pickup_findings(mention, K_SESSION), [])
+
+    def test_two_matching_lines_get_two_findings(self):
+        """Intent: the pickup-id ticket'sEdge cases, duplicates - each previous-session line that
+        names the transcript id gets its own finding; a line that does not gets none."""
+        text = self.reply(self.line(K_SESSION), self.line(K_OTHER),
+                          self.line("local_" + K_SESSION))
+        found = cr.pickup_findings(text, K_SESSION)
+        self.assertEqual(len(found), 2, found)
+        self.assertTrue(all(f.startswith("pickup:") for f in found), found)
+
+    def test_no_transcript_id_skips_the_check(self):
+        """Intent: the pickup-id ticket'sEdge cases, empty or missing - with no transcript id
+        the check is skipped and records nothing."""
+        text = self.reply(self.line(K_SESSION))
+        self.assertEqual(cr.pickup_findings(text, None), [])
+        self.assertEqual(cr.pickup_findings(text, ""), [])
+
+    # --stop
+
+    def test_stop_reports_the_finding_and_exits_2(self):
+        """Intent: the pickup-id ticket'sDone when, third and fifth items - under --stop, with
+        the hook JSON's session_id and transcript_path, a pickup prompt naming the
+        transcript id gets a `pickup:` finding, and the turn is sent back."""
+        for value in (K_SESSION, "local_" + K_SESSION, f"`{K_SESSION}`"):
+            with self.subTest(value=value):
+                code, out, err = self.run_stop(self.reply(self.line(value)))
+                self.assertEqual(code, 2, err)
+                self.assertIn("  - pickup:", err)
+                self.assertEqual(out, "")
+
+    def test_stop_hook_active_exits_0_and_still_reports_the_finding(self):
+        """Intent: the pickup-id ticket'sDone when, fifth item - with stop_hook_active set the
+        exit is 0, and the finding is still printed."""
+        code, _, err = self.run_stop(self.reply(self.line(K_SESSION)), stop_hook_active=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn("  - pickup:", err)
+
+    def test_stop_with_a_different_id_is_clean(self):
+        """Characterisation: the pickup-id ticket'sDone when, fourth item - a different id gets no
+        finding and the turn passes. Passes before the change; the control for the exit-2
+        tests, whose reply around the prompt is clean, and a guard against a false positive."""
+        self.assertEqual(self.run_stop(self.reply(self.line(K_OTHER))), (0, "", ""))
+
+    def test_stop_with_a_near_miss_id_is_clean(self):
+        """Characterisation: the pickup-id ticket'sEdge cases, boundary values - a prefix-sharing id
+        is not the transcript id, so the turn passes. Passes before the change; guards the
+        coder against a prefix match."""
+        self.assertEqual(self.run_stop(self.reply(self.line(self.NEAR))), (0, "", ""))
+
+    def test_stop_with_no_prompt_line_is_clean(self):
+        """Characterisation: the pickup-id ticket'sDone when, fourth item - a reply with no
+        previous-session line gets no finding. Passes before the change; guards it."""
+        self.assertEqual(self.run_stop(CONDENSED_CLEAN), (0, "", ""))
+
+    def test_stop_with_two_lines_reports_two_findings(self):
+        """Intent: the pickup-id ticket'sEdge cases, duplicates - two matching lines print two
+        findings."""
+        code, _, err = self.run_stop(self.reply(self.line(K_SESSION),
+                                                self.line("local_" + K_SESSION)))
+        self.assertEqual(code, 2, err)
+        self.assertEqual(err.count("  - pickup:"), 2, err)
+
+    def test_stop_with_no_transcript_id_skips_the_check_and_does_not_fail(self):
+        """Characterisation: the pickup-id ticket'sEdge cases, empty or missing - a hook JSON with
+        no session_id and no transcript_path skips the check, and the turn is not failed.
+        Passes before the change; guards the coder against failing a turn with no id."""
+        code, out, err = self.run_stop(self.reply(self.line(K_SESSION)), session=None)
+        self.assertEqual((code, out, err), (0, "", ""))
+
+    # --previous
+
+    def test_previous_reports_the_finding(self):
+        """Intent: the pickup-id ticket'sDone when, third item - under --previous, with the
+        session id the adapter identifies, a pickup prompt naming it gets a `pickup:`
+        finding, bare and with the `local_` prefix."""
+        for value in (K_SESSION, "local_" + K_SESSION, f"`{K_SESSION}`"):
+            with self.subTest(value=value):
+                code, out, err = self.previous(self.reply(self.line(value)))
+                self.assertEqual(code, 1, out + err)
+                self.assertIn("  - pickup:", out)
+
+    def test_previous_takes_the_id_from_the_environment(self):
+        """Intent: the pickup-id ticket'sDecided, item 2 - --previous gets the transcript id from
+        the adapter's identity, which falls back to CLAUDE_CODE_SESSION_ID."""
+        code, out, err = self.run_previous(self.reply(self.line(K_SESSION)),
+                                           env={"CLAUDE_CODE_SESSION_ID": K_SESSION})
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("  - pickup:", out)
+
+    def test_previous_with_a_different_id_is_clean(self):
+        """Characterisation: the pickup-id ticket'sDone when, fourth item - a different id gets no
+        finding under --previous. Passes before the change; guards it."""
+        code, out, err = self.previous(self.reply(self.line(K_OTHER)))
+        self.assertEqual(code, 0, out + err)
+        self.assertNotIn("pickup:", out)
+
+    def test_previous_with_no_prompt_line_is_clean(self):
+        """Characterisation: the pickup-id ticket'sDone when, fourth item - a reply with no
+        previous-session line gets no finding under --previous. Passes before the change;
+        guards it."""
+        code, out, err = self.previous(CONDENSED_CLEAN)
+        self.assertEqual(code, 0, out + err)
+        self.assertNotIn("pickup:", out)
+
+    def test_previous_with_no_transcript_id_skips_the_check_and_does_not_fail(self):
+        """Characterisation: the pickup-id ticket'sEdge cases, empty or missing - with no session id
+        passed and none in the environment the check is skipped, and the run is not failed.
+        Passes before the change; guards the coder against failing a run with no id."""
+        code, out, err = self.run_previous(self.reply(self.line(K_SESSION)))
+        self.assertEqual(code, 0, out + err)
+        self.assertNotIn("pickup:", out)
+
+    # The send-back prefix
+
+    def test_pickup_is_a_send_back_prefix(self):
+        """Intent: the pickup-id ticket'sDecided, item 2 - `pickup:` joins SEND_BACK_PREFIXES, so
+        a pickup finding sends the reply back, and only at the start of a finding."""
+        self.assertIn("pickup:", shape.SEND_BACK_PREFIXES)
+        self.assertTrue(shape.sends_back("pickup: the previous-session line names this "
+                                         "session's transcript id"))
+        self.assertFalse(shape.sends_back("summary mentions pickup: here"))
 
 
 class SummaryTopics(unittest.TestCase):
