@@ -937,7 +937,10 @@ and to take the layer that decides whether the STATUS footer is required; a miss
 `transcript_path`, a missing file or an unreadable transcript skips both and never
 blocks. It prints every finding to stderr, in two
 classes. A *send-back* finding can change what the operator is asked or decides: it starts
-with an entry of `SEND_BACK_PREFIXES` in `shape.py` (`decisions:`, `continuation:`). Any send-back finding
+with an entry of `SEND_BACK_PREFIXES` in `shape.py` (`decisions:`, `continuation:`, `pickup:`).
+`pickup:` is raised when a line starting `Previous session id:` names the session's own transcript
+id, the hook JSON's `session_id`, bare or with a `local_` prefix: the handoff's pickup prompt needs
+the session id from the tool's own lookup, and `--previous` runs the same check. Any send-back finding
 exits 2, which sends the turn back once. Every other finding is *report-only*: it prints
 and exits 0, and the next turn's `--previous` look-back reports it again. A profile moves
 the split by editing that constant. When `stop_hook_active` is true it prints and exits 0,
