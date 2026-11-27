@@ -78,6 +78,12 @@ Done before anything is built.
 4. Copy each missing template into the product's folder and write it.
 5. Set `Last verified:` to the date, in each document written.
 
+## Redesigning the objective
+
+A redesign of the objective updates the affected documents and adds a change log
+entry to each one affected, dated and saying what changed and why. A redesign that touches
+one document adds an entry to that document only. Day-to-day work stays in tickets.
+
 ## Not applicable
 
 A document or section that does not apply says so on one line, `Not applicable: <reason>`,
@@ -91,6 +97,8 @@ and is never deleted, so "not applicable" and "missing" do not look alike.
 - **Documents plan; tickets track.** No status, next steps or blockers in these documents.
 - **Security documents are safe to publish.** They describe controls, never secret values,
   hostnames or account names that would help an attacker.
+- **The change log records redesigns only.** One entry per redesign of the objective, newest
+  first; never progress or status.
 - **Usable, not required.** Nothing refuses work for a missing document.
 
 The written documents carry the consuming repository's file header, as its own header rule
