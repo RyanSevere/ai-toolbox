@@ -283,7 +283,7 @@ class BuildPlan(unittest.TestCase):
                          [("design-partner", ["tracker.create", "tracker.edit", "tracker.status"])])
         self.assertEqual(sorted(p.parent.name for p, _, _ in bare.dropped_sections),
                          ["context", "context", "handoff", "orchestrator", "orchestrator",
-                          "orchestrator", "orchestrator", "workstream-primary",
+                          "orchestrator", "orchestrator", "orchestrator", "workstream-primary",
                           "workstream-primary", "workstream-primary"])
 
     def test_agents_md_says_to_hand_off_after_a_summary(self):
@@ -5755,7 +5755,8 @@ class LayerSkills(unittest.TestCase):
     ASKS_BOUND = {"asks.ask": {"skill": "example-asker"},
                   "asks.list": {"skill": "example-asker"}}
     BOUND = {**ASKS_BOUND, "tracker.query": {"skill": "example-asker"},
-             "sessions.digest": {"skill": "example-asker"}}
+             "sessions.digest": {"skill": "example-asker"},
+             "usage.read": {"skill": "example-asker"}}
     OUT = ".cursor/skills/{}/SKILL.md"
 
     def setUp(self):
