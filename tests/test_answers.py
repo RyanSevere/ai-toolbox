@@ -288,6 +288,31 @@ class Conventions(unittest.TestCase):
         conventions rule."""
         self.assertIn(f"`{self.RULE}`", self.plan(self.ANSWERS)["AGENTS.md"])
 
+    def test_the_rule_body_says_use_not_write(self):
+        """Intent: the conventions-wording ticket, Done when 1: the rendered rule
+        body says "before using the tracker" and does not limit itself to writes."""
+        text = self.plan(self.ANSWERS)[self.RULE]
+        self.assertIn("Read them before using the tracker.", text)
+        self.assertNotIn("before writing to the", text)
+
+    def test_the_rule_description_says_use_not_write(self):
+        """Intent: the conventions-wording ticket, Done when 2: the rule's
+        advertised description says "how it uses its tracker" and "Read before any
+        use of its tracker", and does not mention a write."""
+        text = self.plan(self.ANSWERS)[self.CURSOR]
+        self.assertIn("how it uses its tracker", text)
+        self.assertIn("Read before any use of its tracker", text)
+        self.assertNotIn("tracker write", text)
+
+    def test_the_routing_row_says_use_not_write(self):
+        """Intent: the conventions-wording ticket, Done when 3: the AGENTS.md
+        routing row for the rule reads "Before any use of its tracker", not a write."""
+        rows = [line for line in self.plan(self.ANSWERS)["AGENTS.md"].splitlines()
+                if "tracker-conventions.md" in line]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertIn("Before any use of its tracker", rows[0])
+        self.assertNotIn("Before any tracker write", rows[0])
+
     def test_a_rule_with_nowhere_to_route_refuses(self):
         """Characterisation: a conventions rule with no routing row is never found, so render
         refuses rather than writing it."""

@@ -4,7 +4,7 @@
 # Path: {PROJECT_ROOT}/sync.py
 # Created by: Ryan Severe
 # Created: 2026-09-14
-# Last Updated: 2026-11-27
+# Last Updated: 2026-11-28
 # Description: Renders the core and a profile's seeds into a consuming repository's
 #              per-tool formats and stamps each output with the source SHA.
 #              Dry-run by default; --write applies. Never writes Tier 3.
@@ -1812,7 +1812,7 @@ def conventions(answers: dict[str, str], questions: dict[str, Questions]
             continue
         lines = [f"# {stem.capitalize()} conventions", "",
                  f"This profile's answers to the setup questions in `capabilities/{stem}.yaml`.",
-                 f"Read them before writing to the {stem}."]
+                 f"Read them before using the {stem}."]
         missing = []
         for question, ask in entry.asks:
             key = f"{stem}.{question}"
@@ -1828,13 +1828,13 @@ def conventions(answers: dict[str, str], questions: dict[str, Questions]
 def conventions_meta(stem: str) -> dict:
     """The description a conventions rule is advertised by."""
     return {"description": f"{stem.capitalize()} CONVENTIONS - this profile's answers to the "
-                           f"{stem} setup questions, which say how it writes to its {stem}. "
-                           f"Read before any {stem} write."}
+                           f"{stem} setup questions, which say how it uses its {stem}. "
+                           f"Read before any use of its {stem}."}
 
 
 def conventions_rows(rules: list[tuple[str, str, list[str]]]) -> str:
     """One routing-table row per rendered conventions rule, or nothing."""
-    return "".join(f"| `{ON_DEMAND_DIR}/{stem}-conventions.md` | Before any {stem} write - "
+    return "".join(f"| `{ON_DEMAND_DIR}/{stem}-conventions.md` | Before any use of its {stem} - "
                    f"this profile's answers to its {stem} setup questions |\n"
                    for stem, _, _ in rules)
 
