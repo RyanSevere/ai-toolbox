@@ -4884,6 +4884,7 @@ class Rollout(unittest.TestCase):
         return remote_commit
 
     def alpha_line(self, result: subprocess.CompletedProcess) -> str:
+        """The rollout's one report line for the alpha target."""
         lines = [line for line in result.stdout.splitlines() if line.startswith("alpha: ")]
         self.assertEqual(len(lines), 1, result.stdout + result.stderr)
         return lines[0]
