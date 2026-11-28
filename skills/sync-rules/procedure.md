@@ -87,7 +87,7 @@ the target holds. Anything that tests for a stamp accepts both.
 
 ## Rolling out to every target
 
-`python core/sync.py --profile . --rollout "<subject>" [--push] [--break-lock]` renders and
+`python core/sync.py --profile . --rollout "<subject>" [--push] [--break-lock] [--ff-behind]` renders and
 commits every target in `profile.yaml` not marked `skip:`, in one run.
 
 It refuses the whole run, before any target is touched, if:
@@ -111,7 +111,11 @@ that target:
 - is dirty,
 - is not on its manifest `branch` (default `main`),
 - has no upstream, or its fetch fails, so whether it is current cannot be checked,
-- is behind its upstream. Run `git pull --ff-only` there first,
+- is behind its upstream. Run `git pull --ff-only` there first, or re-run with
+  `--ff-behind`, which fast-forwards the target itself, and only when it is clean, on its
+  manifest `branch` and not ahead of its upstream. Rendered paths the fast-forward changes
+  are counted in the report line and overwritten by the render. Without the flag the
+  rollout never pulls,
 - is ahead of its upstream by a commit the rollout did not make. Push or reset
   that clone first. A commit an earlier rollout made and left local is not
   counted, so a re-run with `--push` still pushes it,

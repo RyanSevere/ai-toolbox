@@ -3047,9 +3047,13 @@ def read_lock(path: Path) -> dict | None:
 
 
 def rollout_target(name: str, cfg: dict, root: Path, defaults: dict, sha: str,
-                   manifest: dict, subject: str, profile_dir: Path) -> str:
+                   manifest: dict, subject: str, profile_dir: Path,
+                   ff_behind: bool = False) -> str:
     """Render and commit one target. Returns what was done; raises SyncError on a
-    refusal or failure, so the caller moves on. Pushing is a separate phase."""
+    refusal or failure, so the caller moves on. Pushing is a separate phase.
+
+    With ff_behind, a clean target that is only behind its upstream is fast-forwarded
+    first. Without it the rollout never pulls."""
     repo = root / name
     if not (repo / ".git").exists():
         raise SyncError(f"{repo} is not a git repository")
@@ -3071,8 +3075,22 @@ def rollout_target(name: str, cfg: dict, root: Path, defaults: dict, sha: str,
     except SyncError as exc:
         raise SyncError(f"git fetch failed, so whether it is current cannot be checked: {exc}") from exc
     behind = git_at(repo, "rev-list", "--count", "HEAD..@{u}").strip()
+    fast_forwarded = None
     if behind != "0":
-        raise SyncError(f"{behind} commit(s) behind its upstream; run 'git pull --ff-only' there first")
+        if not ff_behind:
+            raise SyncError(f"{behind} commit(s) behind its upstream; run 'git pull --ff-only' "
+                            f"there first, or re-run with --ff-behind")
+        # Only a clone that is only behind is moved; a diverged one is never merged.
+        ahead = git_at(repo, "rev-list", "--count", "@{u}..HEAD").strip()
+        if ahead != "0":
+            raise SyncError(f"{behind} commit(s) behind and {ahead} ahead of its upstream; "
+                            f"--ff-behind fast-forwards only a clone that is only behind")
+        # A failed lookup raises: it must never read as zero rendered paths.
+        fast_forwarded = set(git_at(repo, "diff", "--name-only", "HEAD", "@{u}").splitlines())
+        try:
+            git_at(repo, "merge", "--ff-only", "--quiet", "@{u}")
+        except SyncError as exc:
+            raise SyncError(f"fast-forward failed: {exc}") from exc
     # An earlier rollout's own unpushed commit is not foreign work: a re-run with --push pushes it.
     log = git_at(repo, "log", "--format=%s%x1f%b%x1e", "@{u}..HEAD")
     prefix = f"From {source_repo(manifest)}@"
@@ -3088,6 +3106,11 @@ def rollout_target(name: str, cfg: dict, root: Path, defaults: dict, sha: str,
                         f"push or reset that clone first")
 
     plan = build_plan(name, cfg, defaults, sha, manifest, profile_dir)
+    said = ""
+    if fast_forwarded is not None:
+        # The render below overwrites these, which is why they are counted, not refused.
+        said = (f"fast-forwarded {behind} commit(s), "
+                f"{len(fast_forwarded & set(plan))} rendered path(s) among them, ")
     report_drops(plan)
     refuse_orphan_readers(repo, find_orphans(repo, plan), plan)
     ident = identity(manifest)
@@ -3111,7 +3134,7 @@ def rollout_target(name: str, cfg: dict, root: Path, defaults: dict, sha: str,
     changed = [entry[3:] for entry in
                git_at(repo, "status", "--porcelain=v1", "-z", "-uall").split("\0") if entry]
     if not changed:
-        return "already current"
+        return f"{said}already current"
     stray = sorted(rel for rel in changed if rel not in allowed)
     if stray:
         raise SyncError(f"changed outside the render plan, nothing committed: {', '.join(stray)}")
@@ -3124,7 +3147,7 @@ def rollout_target(name: str, cfg: dict, root: Path, defaults: dict, sha: str,
     git_at(repo, "commit", "--quiet", "-m", f"Sync rules: {subject}", "-m",
            f"From {source_repo(manifest)}@{sha}.")
     commit = git_at(repo, "rev-parse", "--short", "HEAD").strip()
-    return f"committed {commit} ({len(changed)} file(s))"
+    return f"{said}committed {commit} ({len(changed)} file(s))"
 
 
 def hidden_plan_paths(repo: Path, plan: dict[str, str]) -> list[str]:
@@ -3310,7 +3333,7 @@ def rollout(args: argparse.Namespace, manifest: dict, defaults: dict) -> int:
                 continue
             try:
                 line = rollout_target(name, cfg, args.root, defaults, sha, manifest, subject,
-                                      profile_dir)
+                                      profile_dir, ff_behind=args.ff_behind)
             except SyncError as exc:
                 print(f"{name}: FAILED - {exc}")
                 failed += 1
@@ -3437,11 +3460,11 @@ def pull(args: argparse.Namespace) -> int:
     committed on the current branch. Nothing is pushed.
     """
     if (args.target or args.self_only or args.write or args.check or args.no_fetch
-            or args.push or args.break_lock or args.rollout is not None
+            or args.push or args.break_lock or args.ff_behind or args.rollout is not None
             or args.parallel is not None or args.profile or args.root):
         raise SyncError("--pull takes no target and none of --self, --write, --check, "
-                        "--no-fetch, --profile, --root, --rollout, --push, --break-lock "
-                        "or --parallel: it is run in the repository to update")
+                        "--no-fetch, --profile, --root, --rollout, --push, --break-lock, "
+                        "--ff-behind or --parallel: it is run in the repository to update")
     target = Path(git_at(Path.cwd(), "rev-parse", "--show-toplevel").strip())
     profile_dir = pull_profile(target)
     manifest = load_profile(profile_dir)
@@ -3551,6 +3574,11 @@ def main(argv: list[str] | None = None) -> int:
         help="with --rollout: remove a rollout lock of any age first",
     )
     parser.add_argument(
+        "--ff-behind", action="store_true",
+        help="with --rollout: fast-forward a clean target that is only behind its upstream, "
+             "then render it",
+    )
+    parser.add_argument(
         "--parallel", type=int, metavar="N",
         help="with --rollout --push: push N targets at once, for this run only, instead of "
              "rollout.parallel",
@@ -3614,7 +3642,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.print_source_sha:
             if (args.target or args.self_only or args.write or args.check or args.no_fetch
                     or args.rollout is not None or args.push or args.break_lock
-                    or args.parallel is not None):
+                    or args.ff_behind or args.parallel is not None):
                 raise SyncError("--print-source-sha takes only --profile")
             refuse_dirty_source()
             print(source_commit(resolve_profile(args.profile)))
@@ -3630,8 +3658,8 @@ def main(argv: list[str] | None = None) -> int:
             return runner(args, manifest)
         if args.rollout is not None:
             return rollout(args, manifest, defaults)
-        if args.push or args.break_lock or args.parallel is not None:
-            raise SyncError("--push, --break-lock and --parallel only apply to --rollout")
+        if args.push or args.break_lock or args.ff_behind or args.parallel is not None:
+            raise SyncError("--push, --break-lock, --parallel and --ff-behind only apply to --rollout")
 
         if args.self_only:
             if args.target:
