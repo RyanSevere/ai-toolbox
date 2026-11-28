@@ -4869,6 +4869,118 @@ class Rollout(unittest.TestCase):
         result = self.rollout("x")
 
         self.assert_alpha_refused(result, before, "git pull --ff-only")
+        self.assertIn("--ff-behind", result.stdout + result.stderr)
+
+    def leave_behind(self, name: str, filename: str, content: str = "on the remote only\n") -> str:
+        """Put one commit on a target's remote and reset the clone past it, so the clone is
+        one commit behind its upstream. Returns that commit's id."""
+        repo = self.root / name
+        (repo / filename).write_text(content, encoding="utf-8", newline="\n")
+        git("add", "-A", cwd=repo)
+        git("commit", "--quiet", "-m", "remote only", cwd=repo)
+        git("push", "--quiet", cwd=repo)
+        remote_commit = git("rev-parse", "HEAD", cwd=repo)
+        git("reset", "--quiet", "--hard", "HEAD~1", cwd=repo)
+        return remote_commit
+
+    def alpha_line(self, result: subprocess.CompletedProcess) -> str:
+        lines = [line for line in result.stdout.splitlines() if line.startswith("alpha: ")]
+        self.assertEqual(len(lines), 1, result.stdout + result.stderr)
+        return lines[0]
+
+    def test_ff_behind_fast_forwards_a_clean_target_only_behind(self):
+        """Intent: the fast-forward ticket, Done when 1. With --ff-behind a clean
+        target that is only behind its upstream is fast-forwarded, rendered and committed,
+        and its line names the commit count and the rendered-path count."""
+        remote_commit = self.leave_behind("alpha", "remote.txt")
+
+        result = self.rollout("x", "--ff-behind")
+
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertEqual(self.summary(result.stdout), "ROLLOUT COMPLETE: 3 ok, 0 failed", output)
+        alpha = self.root / "alpha"
+        git("merge-base", "--is-ancestor", remote_commit, "HEAD", cwd=alpha)
+        self.assertTrue((alpha / "remote.txt").is_file(), "the remote commit was not brought in")
+        self.assertNotEqual(self.head("alpha"), remote_commit, "the render was not committed")
+        line = self.alpha_line(result)
+        self.assertIn("fast-forwarded 1 commit(s)", line)
+        self.assertIn("0 rendered path(s) among them", line)
+        self.assertIn("committed", line)
+
+    def test_ff_behind_refuses_a_diverged_target(self):
+        """Intent: the fast-forward ticket, Done when 2. With --ff-behind a target
+        behind its upstream and ahead by a foreign commit is refused, unchanged, and the
+        refusal names both counts."""
+        self.leave_behind("alpha", "remote.txt")
+        self.commit_foreign("alpha", "foreign.txt")
+        before = self.state("alpha")
+
+        result = self.rollout("x", "--ff-behind")
+
+        self.assert_alpha_refused(result, before, "1 commit(s) behind and 1 ahead")
+        self.assertIn("only behind", result.stdout + result.stderr)
+
+    def test_ff_behind_refuses_behind_and_ahead_by_its_own_rollout_commit(self):
+        """Intent: the fast-forward ticket, Done when 3. With --ff-behind a target
+        behind its upstream and ahead by an earlier rollout's own commit is refused,
+        unchanged: a diverged clone is never merged."""
+        self.leave_behind("alpha", "remote.txt")
+        alpha = self.root / "alpha"
+        (alpha / "rolled.txt").write_text("as an earlier rollout left it\n", encoding="utf-8",
+                                          newline="\n")
+        git("add", "-A", cwd=alpha)
+        git("commit", "--quiet", "-m", "Sync rules: earlier", "-m",
+            f"From {MANIFEST['source']['repo']}@abc1234.", cwd=alpha)
+        before = self.state("alpha")
+
+        result = self.rollout("x", "--ff-behind")
+
+        self.assert_alpha_refused(result, before, "1 commit(s) behind and 1 ahead")
+
+    def test_ff_behind_never_pulls_a_dirty_target(self):
+        """Intent: the fast-forward ticket, Done when 4. With --ff-behind a dirty
+        target that is also behind is refused as dirty, and its HEAD does not move."""
+        self.leave_behind("alpha", "remote.txt")
+        alpha = self.root / "alpha"
+        (alpha / "scribble.txt").write_text("uncommitted\n", encoding="utf-8", newline="\n")
+        before = self.state("alpha")
+
+        result = self.rollout("x", "--ff-behind")
+
+        self.assert_alpha_refused(result, before, "dirty")
+        self.assertEqual(self.head("alpha"), before[1], "HEAD moved on a dirty target")
+
+    def test_ff_behind_counts_and_overwrites_rendered_paths(self):
+        """Intent: the fast-forward ticket, Done when 5. An upstream commit that
+        changed a rendered file is counted, and the render overwrites it."""
+        self.leave_behind("alpha", "AGENTS.md", "the remote's version\n")
+
+        result = self.rollout("x", "--ff-behind")
+
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("1 rendered path(s) among them", self.alpha_line(result))
+        rendered = (self.root / "alpha" / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertNotIn("the remote's version", rendered)
+        self.assertIn("generated from", rendered)
+
+    def test_ff_behind_without_rollout_is_refused(self):
+        """Intent: the fast-forward ticket, Done when 7. --ff-behind without
+        --rollout is refused with the combined flag error, and touches no target."""
+        self.leave_behind("alpha", "remote.txt")
+        before = {name: self.state(name) for name in LIVE}
+
+        result = subprocess.run(
+            (sys.executable, "core/sync.py", "--profile", ".", "--ff-behind",
+             "--root", str(self.root)),
+            cwd=self.source, env=self.env, capture_output=True, text=True, timeout=600)
+
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("--ff-behind", output)
+        self.assertIn("only apply to --rollout", output)
+        self.assertEqual({name: self.state(name) for name in LIVE}, before, "a target was touched")
 
     def commit_foreign(self, name: str, filename: str) -> None:
         """Commit a file the rollout did not make, leaving the clone ahead of its upstream."""
